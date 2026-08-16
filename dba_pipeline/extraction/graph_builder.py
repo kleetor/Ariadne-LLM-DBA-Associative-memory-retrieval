@@ -30,6 +30,12 @@ class _WriteTransaction:
         self._created_edges: List[Tuple[str, str]] = []
         # 被更新节点的旧内容 {node_id: old_content}
         self._updated_nodes: Dict[str, str] = {}
+        # 被修正类型节点的旧类型 {node_id: old_node_type}
+        self._fixed_types: Dict[str, NodeType] = {}
+        # 被废弃节点的旧废弃标记 {node_id: old_deprecated}
+        self._deprecated_nodes: Dict[str, bool] = {}
+        # 被删除的边 (from, to, rel_type)（回滚时恢复）
+        self._deleted_edges: List[Tuple[str, str, RelationType]] = []
         # 统计快照（回滚时恢复）
         self._stats_snapshot: Dict = {}
 
@@ -42,6 +48,17 @@ class _WriteTransaction:
     def track_update_node(self, node_id: str, old_content: str):
         if node_id not in self._updated_nodes:
             self._updated_nodes[node_id] = old_content
+
+    def track_fix_type(self, node_id: str, old_type: NodeType):
+        if node_id not in self._fixed_types:
+            self._fixed_types[node_id] = old_type
+
+    def track_deprecate_node(self, node_id: str, old_deprecated: bool):
+        if node_id not in self._deprecated_nodes:
+            self._deprecated_nodes[node_id] = old_deprecated
+
+    def track_delete_edge(self, from_id: str, to_id: str, rel_type: RelationType):
+        self._deleted_edges.append((from_id, to_id, rel_type))
 
     def snapshot_stats(self, stats: Dict):
         self._stats_snapshot = dict(stats)
@@ -57,12 +74,24 @@ class _WriteTransaction:
         for node_id, old_content in self._updated_nodes.items():
             if node_id in builder.graph.graph:
                 builder.graph.graph.nodes[node_id]["content"] = old_content
+        for node_id, old_type in self._fixed_types.items():
+            if node_id in builder.graph.graph:
+                builder.graph.graph.nodes[node_id]["node_type"] = old_type
+        for node_id, old_deprecated in self._deprecated_nodes.items():
+            if node_id in builder.graph.graph:
+                builder.graph.graph.nodes[node_id]["deprecated"] = old_deprecated
+        for from_id, to_id, rel_type in self._deleted_edges:
+            if (from_id in builder.graph.graph and to_id in builder.graph.graph
+                    and not builder.graph.graph.has_edge(from_id, to_id)):
+                builder.graph.graph.add_edge(from_id, to_id, rel_type=rel_type)
         if self._stats_snapshot:
             for key, val in self._stats_snapshot.items():
                 builder.stats[key] = val
         logger.warning(
             f"事务回滚: 撤销 {len(self._created_nodes)} 节点, "
-            f"{len(self._created_edges)} 边, {len(self._updated_nodes)} 更新"
+            f"{len(self._created_edges)} 边, {len(self._updated_nodes)} 更新, "
+            f"{len(self._fixed_types)} 类型修正, {len(self._deprecated_nodes)} 废弃, "
+            f"{len(self._deleted_edges)} 删边"
         )
 
     def commit(self):
@@ -70,6 +99,9 @@ class _WriteTransaction:
         self._created_nodes.clear()
         self._created_edges.clear()
         self._updated_nodes.clear()
+        self._fixed_types.clear()
+        self._deprecated_nodes.clear()
+        self._deleted_edges.clear()
         self._stats_snapshot.clear()
 
 
@@ -205,9 +237,9 @@ class GraphBuilder:
         elif action == "update":
             self._update_node(op, txn)
         elif action == "fix_type":
-            self._fix_node_type(op)
+            self._fix_node_type(op, txn)
         elif action == "deprecate":
-            self._deprecate_node(op)
+            self._deprecate_node(op, txn)
         else:
             raise ValueError(f"未知节点操作: {action}")
 
@@ -268,7 +300,7 @@ class GraphBuilder:
         self.stats["nodes_updated"] += 1
         logger.info(f"更新节点 [{target_id}]: '{old_content[:40]}...' → '{new_content[:40]}...' ({reason})")
 
-    def _fix_node_type(self, op: Dict):
+    def _fix_node_type(self, op: Dict, txn: _WriteTransaction):
         """修正节点类型"""
         target_id = op["target_id"]
         new_type_str = op["node_type"]
@@ -280,12 +312,13 @@ class GraphBuilder:
 
         new_type = self._parse_node_type(new_type_str)
         old_type = node["node_type"]
+        txn.track_fix_type(target_id, old_type)
         self.graph.graph.nodes[target_id]["node_type"] = new_type
 
         self.stats["nodes_fixed"] += 1
         logger.info(f"修正节点类型 [{target_id}]: {old_type.value} → {new_type.value} ({reason})")
 
-    def _deprecate_node(self, op: Dict):
+    def _deprecate_node(self, op: Dict, txn: _WriteTransaction):
         """标记节点失效"""
         target_id = op["target_id"]
         reason = op.get("reason", "")
@@ -294,6 +327,7 @@ class GraphBuilder:
         if node is None:
             raise ValueError(f"节点 {target_id} 不存在，无法 deprecate")
 
+        txn.track_deprecate_node(target_id, node.get("deprecated", False))
         self.graph.graph.nodes[target_id]["deprecated"] = True
         self.graph.graph.nodes[target_id]["deprecate_reason"] = reason
 
@@ -309,7 +343,7 @@ class GraphBuilder:
         if action == "create":
             self._create_edge(op, txn)
         elif action == "delete":
-            self._delete_edge(op)
+            self._delete_edge(op, txn)
         else:
             raise ValueError(f"未知边操作: {action}")
 
@@ -359,7 +393,7 @@ class GraphBuilder:
         self.stats["edges_created"] += 1
         logger.info(f"创建边: {from_id} --[{rel_type_str}]--> {to_id}")
 
-    def _delete_edge(self, op: Dict):
+    def _delete_edge(self, op: Dict, txn: _WriteTransaction):
         """删除边"""
         from_id = op["from"]
         to_id = op["to"]
@@ -370,11 +404,14 @@ class GraphBuilder:
             return
 
         rel_type = self.graph.graph.edges[from_id, to_id].get("rel_type")
+        txn.track_delete_edge(from_id, to_id, rel_type)
         self.graph.graph.remove_edge(from_id, to_id)
 
         # 双向边同步删除
         if rel_type in (RelationType.SCENARIO, RelationType.SOCIAL, RelationType.ATTRIBUTE):
             if self.graph.graph.has_edge(to_id, from_id):
+                rev_rel = self.graph.graph.edges[to_id, from_id].get("rel_type")
+                txn.track_delete_edge(to_id, from_id, rev_rel)
                 self.graph.graph.remove_edge(to_id, from_id)
 
         self.stats["edges_deleted"] += 1

@@ -311,6 +311,7 @@ class VectorStore:
         if not os.path.exists(path):
             raise FileNotFoundError(f"FAISS 索引文件不存在: {path}")
         emb = embeddings or self.embeddings
+        # 注意：FAISS 索引基于 pickle 反序列化，仅应从可信的本地 checkpoint 加载
         self.store = FAISS.load_local(
             path, emb, allow_dangerous_deserialization=True,
         )
@@ -318,7 +319,8 @@ class VectorStore:
         vec_path = os.path.join(os.path.dirname(path) or ".", "content_vectors.npz")
         if os.path.exists(vec_path):
             import numpy as np
-            data = np.load(vec_path, allow_pickle=True)
+            # 缓存仅含常规 dtype 数组，禁用 pickle 以降低反序列化风险
+            data = np.load(vec_path, allow_pickle=False)
             ids = data["ids"]
             vectors = data["vectors"]
             self._content_vectors = {str(k): v for k, v in zip(ids, vectors)}

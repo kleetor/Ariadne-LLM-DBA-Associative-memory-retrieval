@@ -237,7 +237,6 @@ class MaintenanceScheduler:
                             f"[DBA 维护] 自动跳过（连续 {self._consecutive_skips} 次空转），"
                             f"丢弃 {batch_count} 轮对话"
                         )
-                        self._on_flush_done(skipped=False, auto_skipped=True)
                         return
 
             merged = "\n\n".join(conversations)
@@ -274,9 +273,9 @@ class MaintenanceScheduler:
         except Exception as e:
             logger.error(f"[DBA 维护] 失败: {e}", exc_info=True)
         finally:
-            self._on_flush_done(skipped=False, auto_skipped=False)
+            self._on_flush_done()
 
-    def _on_flush_done(self, skipped: bool = False, auto_skipped: bool = False):
+    def _on_flush_done(self):
         """维护完成后的清理"""
         with self._lock:
             self._flushing = False

@@ -1,4 +1,0 @@
-[console_scripts]
-ariadne-api = dba_pipeline.viz.api_server:main
-ariadne-mcp = dba_pipeline.mcp_server:main
-ariadne-render = dba_pipeline.viz.renderer:main

@@ -30,7 +30,7 @@ canvas { display:block; }
 .panel button:hover { background:rgba(255,255,255,0.12); color:#fff; }
 .panel button.active { border-color:#5DADE2; color:#5DADE2; }
 
-#panel-left { left:16px; top:16px; width:220px; }
+#panel-left { left:16px; top:16px; width:350px; }
 #panel-right { right:16px; top:16px; width:240px; display:none; }
 #panel-left .toggle-icon { display:none; }
 
@@ -53,7 +53,7 @@ canvas { display:block; }
   #panel-left { width:40px; overflow:hidden; }
   #panel-left h3, #panel-left label, #panel-left button, #panel-left .divider { display:none; }
   #panel-left .toggle-icon { display:block; text-align:center; font-size:18px; cursor:pointer; }
-  #panel-left:hover { width:220px; }
+  #panel-left:hover { width:350px; }
   #panel-left:hover h3, #panel-left:hover label, #panel-left:hover button, #panel-left:hover .divider { display:block; }
   #panel-right { width:180px; font-size:11px; }
 }
@@ -91,7 +91,12 @@ canvas { display:block; }
 #crud-panel .toolbar input { flex:1; min-width:100px; padding:4px 8px; border:1px solid rgba(255,255,255,0.08);
   border-radius:5px; background:rgba(255,255,255,0.04); color:#c8d6e5; font-size:12px; outline:none; }
 #crud-panel .toolbar input:focus { border-color:#5DADE2; }
-#crud-panel .body { flex:1; overflow-y:auto; padding:0; }
+#crud-panel .body { flex:1; overflow-y:auto; padding:0; scrollbar-width:thin; scrollbar-color:rgba(255,255,255,0.18) transparent; }
+/* CRUD 控制台自定义滚动条 */
+#crud-panel .body::-webkit-scrollbar { width:8px; }
+#crud-panel .body::-webkit-scrollbar-track { background:transparent; }
+#crud-panel .body::-webkit-scrollbar-thumb { background:rgba(255,255,255,0.18); border-radius:4px; }
+#crud-panel .body::-webkit-scrollbar-thumb:hover { background:rgba(255,255,255,0.3); }
 #crud-panel .section-title { font-size:11px; text-transform:uppercase; letter-spacing:1px; color:rgba(255,255,255,0.3);
   padding:10px 12px 4px; }
 #crud-panel .node-list-item { padding:6px 12px; display:flex; align-items:center; gap:8px; cursor:pointer;
@@ -163,12 +168,14 @@ body.edge-mode canvas { cursor:crosshair !important; }
   <span class="toggle-icon" title="展开面板">☰</span>
   <h3>图层过滤</h3>
   <label style="font-size:11px;color:rgba(255,255,255,0.3);text-transform:uppercase;letter-spacing:1px;padding:2px 0;">节点类型</label>
-  <label><input type="checkbox" checked data-nt="STATUS"> STATUS 状态</label>
-  <label><input type="checkbox" checked data-nt="REASON"> REASON 原因</label>
-  <label><input type="checkbox" checked data-nt="ACTION"> ACTION 行为</label>
-  <label><input type="checkbox" checked data-nt="THING"> THING 事物</label>
-  <label><input type="checkbox" checked data-nt="PERSON"> PERSON 人物</label>
-  <label><input type="checkbox" checked data-nt="EMOTION"> EMOTION 情绪</label>
+  <div class="row">
+    <label><input type="checkbox" checked data-nt="STATUS"> STATUS 状态</label>
+    <label><input type="checkbox" checked data-nt="REASON"> REASON 原因</label>
+    <label><input type="checkbox" checked data-nt="ACTION"> ACTION 行为</label>
+    <label><input type="checkbox" checked data-nt="THING"> THING 事物</label>
+    <label><input type="checkbox" checked data-nt="PERSON"> PERSON 人物</label>
+    <label><input type="checkbox" checked data-nt="EMOTION"> EMOTION 情绪</label>
+  </div>
   <div class="divider"></div>
   <label style="font-size:11px;color:rgba(255,255,255,0.3);text-transform:uppercase;letter-spacing:1px;padding:2px 0;">边类型</label>
   <div class="row">

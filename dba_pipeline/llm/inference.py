@@ -28,15 +28,22 @@ STATUS_INFERENCE_PROMPT = ChatPromptTemplate.from_messages([
 # ---- 目的推断 Prompt ----
 
 PURPOSE_INFERENCE_PROMPT = ChatPromptTemplate.from_messages([
-    ("system", """你是一个心理状态分析助手。根据用户的消息，推断用户的隐含状态和目的。
+    ("system", """你是对话意图分析助手。根据用户消息，先判断查询类型，再推断用户的目的。
+
+查询类型：
+- information：信息查询（询问事实/偏好/经历/细节，如「用户喜欢喝什么咖啡？」「他高考考得怎么样？」）
+- emotional：情绪表达（倾诉、吐槽、寻求安慰、分享感受）
 
 输出格式（严格 JSON）：
 {{
     "status": "用户当前状态",
+    "query_type": "information 或 emotional",
     "purposes": ["目的1", "目的2", "目的3"]
 }}
 
-目的应该是简洁的动词或短语，如"缓解"、"倾诉"、"寻求建议"、"理解原因"等。
+规则：
+- information 类型：目的必须是信息获取类（如「获取信息」「了解事实」「确认细节」「比较选择」「还原经历」），禁止社交/情绪类目的（如「社交互动」「建立关系」「倾诉」）
+- emotional 类型：目的可以是「倾诉」「寻求建议」「理解原因」「寻求安慰」等
 只输出 JSON。"""),
     ("human", "{query}"),
 ])

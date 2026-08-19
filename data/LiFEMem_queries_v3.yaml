@@ -1,0 +1,221 @@
+# LiFEMem 查询集 v3（陈述触发式 · 对话记忆范式）
+#
+# 范式纠正（2026-08-18）：
+#   真实对话中用户与 LLM 是「我/你」关系——用户**表达状态**（如「压力好大」），
+#   不做明确提问（提问是 RAG 知识库的事）。记忆系统在**无明确提问**的语境下触发：
+#   陈述 → 目的推断（隐含状态与目的）→ 联想检索 → 搜集相关记忆 → 生成有记忆的回应。
+#
+# 本查询集将 35 条查询重构为**用户第一人称陈述**：
+#   - text：用户对 LLM 说的话（无「？」式提问）
+#   - purpose_hint：该陈述的隐含目的（设计参考，不输入系统）
+#   - expected：该陈述应触发联想的关键记忆集（评测参考，非一对一的"正确答案"）
+#   - no_gold：开放陈述（联想目标宽泛，以 CROSS_VALID 为主）
+#   - 弃权类：陈述隐含图中不存在的信息，测试系统不强行联想
+
+meta:
+  dataset: LiFEMem
+  version: v3
+  paradigm: statement-triggered
+  metric:
+    - 目的推断合理性
+    - 联想召回（expected 覆盖）
+    - 故事质量五维（主指标）
+    - CROSS_VALID 合理联想率（主指标）
+    - 弃权正确率
+
+queries:
+  # ============ 工作 / 压力 ============
+  - id: s01
+    scenario: work_pressure
+    text: "最近项目排得太满了，天天加班到十一二点，感觉整个人都被掏空了。"
+    purpose_hint: 倾诉疲惫，寻求缓解
+    expected: [w1, w2, e27, w37]
+  - id: s02
+    scenario: work_pressure
+    text: "在这家公司待了三年，感觉学不到东西了，工资也不涨。"
+    purpose_hint: 表达不满，寻求建议
+    expected: [w20, n37, w12]
+  - id: s03
+    scenario: work_pressure
+    text: "上个月奖金又没了，公司现在是越来越抠了。"
+    purpose_hint: 抱怨待遇
+    expected: [n37, w20]
+  - id: s04
+    scenario: work_pressure
+    text: "这活儿我干腻了，想换个环境试试。"
+    purpose_hint: 表达换工作意向
+    expected: [w12, w20]
+
+  # ============ 健康 ============
+  - id: s05
+    scenario: health
+    text: "体检报告出来了，轻度脂肪肝，医生说要注意饮食。"
+    purpose_hint: 分享结果，求建议
+    expected: [he0, he1, he40]
+  - id: s06
+    scenario: health
+    text: "我是不是该开始锻炼了？总感觉精力不如以前。"
+    purpose_hint: 寻求建议
+    expected: [he3, t0]
+  - id: s07
+    scenario: health
+    text: "咖啡喝太多对身体不好，我在想要不要戒了。"
+    purpose_hint: 犹豫权衡
+    expected: [w5, w6, he18]
+
+  # ============ 情绪 ============
+  - id: s08
+    scenario: emotion
+    text: "今天也不知道怎么了，就是提不起劲，心情很低落。"
+    purpose_hint: 倾诉，寻求安慰
+    expected: [e0, e27, e1]
+  - id: s09
+    scenario: emotion
+    text: "我发现自己每隔几周就会情绪低落一阵子。"
+    purpose_hint: 倾诉，想理解原因
+    expected: [e27, e29]
+  - id: s10
+    scenario: emotion
+    text: "以前有段时间真的很难，现在想起来还有点恍惚。"
+    purpose_hint: 回忆低谷，倾诉
+    expected: [h21, h22, c3]
+    no_gold: true
+  - id: s11
+    scenario: emotion
+    text: "朋友说我太敏感了，我有时候也觉得是这样。"
+    purpose_hint: 倾诉，自我认知
+    expected: [e29, e30]
+
+  # ============ 怀旧 / 学生时代 ============
+  - id: s12
+    scenario: nostalgia
+    text: "突然想起高中那会儿，晚自习传纸条的日子。"
+    purpose_hint: 怀旧分享
+    expected: [h5, h25, h4]
+  - id: s13
+    scenario: nostalgia
+    text: "我高中那个同桌，扎马尾的那个，不知道现在咋样了。"
+    purpose_hint: 怀旧
+    expected: [h4, h5]
+  - id: s14
+    scenario: nostalgia
+    text: "大学那几年浑浑噩噩的，现在想想挺后悔的。"
+    purpose_hint: 回忆反思
+    expected: [c1, c2, c3]
+  - id: s15
+    scenario: nostalgia
+    text: "其实我特别感谢当年拉我去编程社团的室友。"
+    purpose_hint: 回忆感恩
+    expected: [c4, c5, c6]
+
+  # ============ 感情 ============
+  - id: s16
+    scenario: relationship
+    text: "她走了以后，我缓了特别久。"
+    purpose_hint: 回忆倾诉
+    expected: [h20, h21, h22]
+  - id: s17
+    scenario: relationship
+    text: "现在想想，高中那段感情其实挺单纯的。"
+    purpose_hint: 回忆感慨
+    expected: [h1, h2, h20]
+  - id: s18
+    scenario: relationship
+    text: "当年爸妈知道我们早恋，反应特别大。"
+    purpose_hint: 回忆倾诉
+    expected: [f6, h2]
+
+  # ============ 生活日常 ============
+  - id: s19
+    scenario: life
+    text: "困死我了，得整杯咖啡，不然下午撑不住。"
+    purpose_hint: 表达需求
+    expected: [w5, w6, w7]
+  - id: s20
+    scenario: life
+    text: "回家跟豆豆玩一会儿，一天的疲惫都没了。"
+    purpose_hint: 分享日常
+    expected: [e6, e7]
+  - id: s21
+    scenario: life
+    text: "我妈做的饭就是香，每次回家都吃撑。"
+    purpose_hint: 分享温情
+    expected: [f1, f4, he4]
+  - id: s22
+    scenario: life
+    text: "最近在攒钱，想换台新电脑跑跑模型。"
+    purpose_hint: 分享目标
+    expected: [sh1, ln13]
+
+  # ============ 学习 / 转行 ============
+  - id: s23
+    scenario: learning
+    text: "我最近在学机器学习，报了个吴恩达的课。"
+    purpose_hint: 分享进展
+    expected: [ln3, ln4, ln5]
+  - id: s24
+    scenario: learning
+    text: "看 Transformer 论文看到怀疑人生，公式完全看不懂。"
+    purpose_hint: 倾诉，寻求共鸣
+    expected: [ln27, ln29, ln30]
+  - id: s25
+    scenario: learning
+    text: "第一次跑通神经网络的时候，真的特别激动。"
+    purpose_hint: 分享成就感
+    expected: [ln9, ln13, ln24]
+
+  # ============ 社交 ============
+  - id: s26
+    scenario: social
+    text: "周末和朋友们玩桌游，阿瓦隆真是太好玩了。"
+    purpose_hint: 分享快乐
+    expected: [so1, so3]
+  - id: s27
+    scenario: social
+    text: "最近有点想找人聊聊，感觉憋得慌。"
+    purpose_hint: 求助倾诉
+    expected: [so0, e4, so12]
+  - id: s28
+    scenario: social
+    text: "每次情绪不好的时候，小陈都特别会安慰人。"
+    purpose_hint: 分享感恩
+    expected: [e4, e5, so3]
+
+  # ============ 未来规划 ============
+  - id: s29
+    scenario: future
+    text: "以后想多回家陪陪爸妈和妹妹。"
+    purpose_hint: 表达愿望
+    expected: [f8, f9, f1]
+  - id: s30
+    scenario: future
+    text: "我想重新规划一下自己的职业方向了。"
+    purpose_hint: 寻求建议
+    expected: [w20, ln0, c9]
+
+  # ============ 弃权（陈述隐含图中不存在的信息） ============
+  - id: s31
+    scenario: abstention
+    text: "我家那小子今天又惹祸了。"
+    purpose_hint: 分享日常
+    expected: []            # 图中无孩子（陷阱：有家庭节点）
+  - id: s32
+    scenario: abstention
+    text: "我最近想学吉他，朋友说他能教。"
+    purpose_hint: 分享打算
+    expected: []            # 图中无吉他（陷阱：e15 弹钢琴）
+  - id: s33
+    scenario: abstention
+    text: "五一想去日本玩一圈。"
+    purpose_hint: 分享计划
+    expected: []            # 图中无日本（陷阱：c16/t2 去过西藏）
+  - id: s34
+    scenario: abstention
+    text: "我家狗子最近掉毛好厉害。"
+    purpose_hint: 分享烦恼
+    expected: []            # 图中无狗（陷阱：n49 他人遛狗）
+  - id: s35
+    scenario: abstention
+    text: "要是当年复读一年就好了。"
+    purpose_hint: 遗憾反思
+    expected: []            # 图中未复读（陷阱：高考失利但未复读）

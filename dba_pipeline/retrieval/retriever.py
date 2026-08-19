@@ -73,8 +73,18 @@ class PurposeDrivenRetriever:
         seed_k: int = 5,
         max_hops: int = 5,
         expand_k: int = None,
+        purpose: Optional[List[str]] = None,
     ) -> Dict:
         """执行完整的目的驱动联想检索
+
+        Args:
+            query: 用户查询
+            seed_k: 种子数量
+            max_hops: 最大跳数
+            expand_k: 每轮扩展数（默认=seed_k）
+            purpose: 可选，调用方（主聊天 LLM/agent）注入的目的列表。
+                     提供时跳过独立的目的推断（infer_purpose），检索意图由主 LLM
+                     在对话上下文理解中给出；None 时退化到系统内部推断。
 
         Returns:
             {
@@ -85,8 +95,11 @@ class PurposeDrivenRetriever:
                 "total_candidates": int,
             }
         """
-        # Step 1: 推断状态和目的
-        purpose_info = self.inference.infer_purpose(query)
+        # Step 1: 推断状态和目的（可注入：主 LLM 提供则跳过独立推断）
+        if purpose is not None:
+            purpose_info = {"status": "injected", "purposes": list(purpose)}
+        else:
+            purpose_info = self.inference.infer_purpose(query)
         purposes = purpose_info.get("purposes", [])
         purpose_vec = self.purpose_model.get_purpose_vector(purposes)
 

@@ -1,0 +1,181 @@
+# LiFEMem 查询集 v2（对话触发式）
+#
+# 重构要点（2026-08-18）：
+#   1. 查询形态：从「问答式」改为「对话触发式」——口语化、碎片化、带上下文痕迹
+#      （"好像说过""来着""上次提过"），贴合对话记忆系统的真实回忆触发方式。
+#   2. expected 审查清理：开放叙述性问题（走出低谷/影响/形成/印象）标记 no_gold，
+#      不设固定答案集，评测以 CROSS_VALID（联想合理性）+ 故事质量为准；
+#      单点事实/偏好/时序/知识更新类保留明确 expected。
+#   3. 弃权类保留（含语义陷阱题）。
+
+meta:
+  dataset: LiFEMem
+  version: v2
+  metric:
+    - 故事质量五维（主指标）
+    - CROSS_VALID 合理联想率（主指标）
+    - R@all（辅助，仅 expected 非空查询）
+    - 弃权正确率
+
+queries:
+  # ================= 一、单跳·事实 =================
+  - id: q01
+    category: single_fact
+    text: "对了，他现在是做什么工作的来着？我记得好像跟技术有关。"
+    expected: [w0]
+  - id: q02
+    category: single_fact
+    text: "他大专学的啥专业？之前聊天好像提过一嘴。"
+    expected: [c0]
+  - id: q03
+    category: single_fact
+    text: "他当年高考考得怎么样啊？"
+    expected: [h23]
+  - id: q04
+    category: single_fact
+    text: "他高中那会儿的同桌是谁来着？"
+    expected: [h4]
+  - id: q05
+    category: single_fact
+    text: "他爸是干什么工作的？听他提过一两次。"
+    expected: [f0]
+  - id: q06
+    category: single_fact
+    text: "他家是不是养了只猫？叫什么名字来着？"
+    expected: [e6, e17]
+
+  # ================= 二、单跳·偏好 =================
+  - id: q07
+    category: preference
+    text: "他平时爱喝咖啡不？好像说过喜欢拿铁？"
+    expected: [w5, w6]
+  - id: q08
+    category: preference
+    text: "他追不追番啊？喜欢看啥类型的动画？"
+    expected: [e9, e22]
+  - id: q09
+    category: preference
+    text: "他闲下来一般怎么放松？"
+    expected: [e1, e3]
+  - id: q10
+    category: preference
+    text: "他周末一般干嘛？"
+    expected: [so0, so1, so4]
+  - id: q11
+    category: preference
+    text: "他平时运动吗？喜欢啥运动？"
+    expected: [he3, t0]
+
+  # ================= 三、多跳·联想 =================
+  - id: q12
+    category: multi_hop
+    text: "他最近压力挺大吧？一般咋缓解的？"
+    expected: [w37, he3, e1, e7, e9, so1]
+  - id: q13
+    category: multi_hop
+    text: "他之前有段低谷期，说是后来慢慢走出来了，具体咋走出来的？"
+    expected: []
+    no_gold: true
+    note: "开放叙述性问题：走出低谷是过程，无固定答案集，以 CROSS_VALID 评"
+  - id: q14
+    category: multi_hop
+    text: "他说要转行，都做了啥准备啊？"
+    expected: [ln0, ln3, ln5, ln8]
+  - id: q15
+    category: multi_hop
+    text: "他高中那会儿最开心的事是啥？"
+    expected: [h5, h7, h25, h30]
+  - id: q16
+    category: multi_hop
+    text: "他心情不好的时候一般干啥？"
+    expected: [e1, e7, e8, e9, e11]
+
+  # ================= 四、知识更新 =================
+  - id: q17
+    category: knowledge_update
+    text: "他高中成绩咋样？好像一开始挺好、后来下滑了？"
+    expected: [h0, h3]
+  - id: q18
+    category: knowledge_update
+    text: "他公司现在待遇咋样？上次他好像吐槽过。"
+    expected: [n37]
+  - id: q19
+    category: knowledge_update
+    text: "他还打游戏吗？以前可沉迷了。"
+    expected: [so4]
+  - id: q20
+    category: knowledge_update
+    text: "他身体最近咋样？以前是不是不太健康？"
+    expected: [he28, he40]
+
+  # ================= 五、时序 =================
+  - id: q21
+    category: temporal
+    text: "他啥时候开始晨跑的来着？"
+    expected: [he2, he3]
+  - id: q22
+    category: temporal
+    text: "他和那个早恋的女孩啥时候分的？"
+    expected: [h20]
+  - id: q23
+    category: temporal
+    text: "他成绩是从啥时候开始下滑的？"
+    expected: [h3]
+  - id: q24
+    category: temporal
+    text: "他啥时候开始自学编程的？"
+    expected: [c7, c9]
+  - id: q25
+    category: temporal
+    text: "他职业经历是咋一路过来的？"
+    expected: [c11, w0, w42]
+
+  # ================= 六、跨场景联想 =================
+  - id: q26
+    category: cross_scene
+    text: "高考失利那事，对他后来影响大吗？"
+    expected: []
+    no_gold: true
+    note: "开放叙述性问题：影响是主观评估，无固定答案集"
+  - id: q27
+    category: cross_scene
+    text: "他现在那帮朋友都是咋认识的？"
+    expected: []
+    no_gold: true
+    note: "开放叙述性问题：朋友圈形成是过程，无固定答案集"
+  - id: q28
+    category: cross_scene
+    text: "他妈做饭好吃，这对他有啥影响？"
+    expected: [f1, f4, he4, he21]
+  - id: q29
+    category: cross_scene
+    text: "他高中印象最深的是啥事？"
+    expected: []
+    no_gold: true
+    note: "开放叙述性问题：印象深是主观的，无固定答案集"
+  - id: q30
+    category: cross_scene
+    text: "他现在的压力都是哪来的？"
+    expected: [w1, w2, w27, h19, he1]
+
+  # ================= 七、弃权/过滤 =================
+  - id: q31
+    category: abstention
+    text: "他当年复读过吗？"
+    expected: []
+  - id: q32
+    category: abstention
+    text: "他会弹吉他吗？"
+    expected: []            # 陷阱：图中有 e15 弹钢琴
+  - id: q33
+    category: abstention
+    text: "他好像去过日本？"
+    expected: []            # 陷阱：图中有 c16/t2 去过西藏
+  - id: q34
+    category: abstention
+    text: "他养狗不？"
+    expected: []            # 陷阱：图中有 n49 他人遛狗
+  - id: q35
+    category: abstention
+    text: "他孩子多大了？"
+    expected: []

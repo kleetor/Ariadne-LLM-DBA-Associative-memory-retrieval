@@ -1,0 +1,328 @@
+meta:
+  source: data/LiFEMem.yaml
+  language: en
+  query_ids:
+  - s01
+  - s05
+  - s07
+  - s08
+  - s12
+  - s16
+  - s19
+  - s23
+  - s26
+  - s29
+nodes:
+- id: c4
+  content: The roommate dragged the user to join the programming club.
+  type: action
+- id: c7
+  content: Starting from sophomore year, the user regularly went to the study room
+    to self-study.
+  type: action
+- id: e1
+  content: The user likes listening to soothing piano music to relax.
+  type: action
+- id: e11
+  content: The user sometimes goes alone to the rooftop to zone out.
+  type: action
+- id: e15
+  content: The user learned piano in college and is now out of practice.
+  type: action
+- id: e3
+  content: The user most likes listening to music while taking walks.
+  type: action
+- id: e7
+  content: Playing with Doudou makes the user forget worries.
+  type: action
+- id: e8
+  content: The user sometimes writes in a diary to express emotions.
+  type: action
+- id: e9
+  content: The user likes watching healing anime to relax.
+  type: action
+- id: f10
+  content: The user's mother knows Lin Xiaoyu, the user's deskmate, and praises her
+    for being sensible.
+  type: action
+- id: f4
+  content: The user's mother gets up early every morning to make breakfast for the
+    user.
+  type: action
+- id: f8
+  content: The whole family eats together on weekends.
+  type: action
+- id: f9
+  content: When the user goes home, they take their younger sister to the supermarket
+    to buy snacks.
+  type: action
+- id: h22
+  content: The user entered the college entrance examination room in low spirits.
+  type: action
+- id: h27
+  content: The user tutored Lin Xiaoyu, the deskmate, in math.
+  type: action
+- id: h30
+  content: The user and the deskmate once shared an earphone to listen to music.
+  type: action
+- id: h5
+  content: The user and the deskmate passed notes and secretly horsed around during
+    evening self-study.
+  type: action
+- id: h8
+  content: Chen Hao often came to the user's home to do homework.
+  type: action
+- id: he17
+  content: The doctor advised the user to eat less seafood and drink less beer.
+  type: action
+- id: he18
+  content: The user used to love eating barbecue and drinking beer.
+  type: action
+- id: he2
+  content: The doctor advised the user to exercise at least three times a week.
+  type: action
+- id: he20
+  content: The user reluctantly declined a barbecue gathering organized by friends.
+  type: action
+- id: he21
+  content: The user learned how to make chicken breast salad.
+  type: action
+- id: he3
+  content: The user jogs around the neighborhood for half an hour every morning.
+  type: action
+- id: he4
+  content: The user started cooking at home to reduce oil and salt intake.
+  type: action
+- id: he6
+  content: The user made an appointment with a nutritionist for dietary planning.
+  type: action
+- id: ln3
+  content: The user signed up for a machine learning course by Andrew Ng.
+  type: action
+- id: ln34
+  content: The user did a small image classification project.
+  type: action
+- id: ln4
+  content: The user studies for two hours after work every day.
+  type: action
+- id: ln5
+  content: The user did a house price prediction project on Kaggle.
+  type: action
+- id: ln9
+  content: The user wrote their first neural network in Python.
+  type: action
+- id: so1
+  content: The user has a regular group of friends who play board games every week.
+  type: action
+- id: so10
+  content: The user attended an in-person tech sharing event once.
+  type: action
+- id: so30
+  content: The user went back to their hometown during the Chinese New Year and gathered
+    with high school classmates once.
+  type: action
+- id: w12
+  content: The user is considering changing to a different work environment.
+  type: action
+- id: w17
+  content: The user often orders takeout for lunch and eats at their desk.
+  type: action
+- id: w2
+  content: The user often works overtime until 11 p.m.
+  type: action
+- id: w29
+  content: The user has at least two hours of meetings every day.
+  type: action
+- id: w3
+  content: Overtime work often causes the user's cervical spine to ache.
+  type: action
+- id: w37
+  content: The user sometimes goes downstairs for a ten-minute walk in the afternoon.
+  type: action
+- id: w5
+  content: The user likes drinking coffee to refresh himself.
+  type: action
+- id: c3
+  content: The user felt that life had no direction during that period.
+  type: emotion
+- id: e10
+  content: The user felt that time would slowly heal everything.
+  type: emotion
+- id: e27
+  content: The user felt that his emotions were cyclical and would turn low every
+    few weeks.
+  type: emotion
+- id: e28
+  content: The user has learned to coexist peacefully with low moods.
+  type: emotion
+- id: e29
+  content: Friends said he was too sensitive.
+  type: emotion
+- id: h18
+  content: In his senior year of high school, the user silently bore pressure and
+    often had insomnia late at night.
+  type: emotion
+- id: h21
+  content: After the breakup, the user's mood hit rock bottom.
+  type: emotion
+- id: h33
+  content: In high school, the user's biggest fear was the Monday math test.
+  type: emotion
+- id: he12
+  content: The user was gratified to see the follow-up indicators had dropped.
+  type: emotion
+- id: he40
+  content: After persisting for three months, the user's checkup indicators improved
+    significantly.
+  type: emotion
+- id: ln14
+  content: The user felt very frustrated when he couldn't solve algorithm problems.
+  type: emotion
+- id: ln15
+  content: The user felt the barrier to switching careers was higher than he had imagined.
+  type: emotion
+- id: ln16
+  content: Andrew Ng's course was especially easy to understand.
+  type: emotion
+- id: w20
+  content: The user felt there was no room for growth in his job.
+  type: emotion
+- id: e4
+  content: The user's friend Xiao Chen often comforted him.
+  type: person
+- id: f1
+  content: His mother, Wang Xiulan, was gentle, liked to nag, and cooked delicious
+    food.
+  type: person
+- id: f2
+  content: His younger sister, Liu Yutong, is in junior high school and has a very
+    close relationship with the user.
+  type: person
+- id: h4
+  content: His deskmate Lin Xiaoyu wore a ponytail and had dimples when she smiled.
+  type: person
+- id: h6
+  content: His best friend Chen Hao wears glasses and is talkative.
+  type: person
+- id: h9
+  content: Su Wanting has long hair, loves wearing white dresses, and her eyes curve
+    into arcs when she smiles.
+  type: person
+- id: he10
+  content: Dr. Li, the nutritionist, gave many practical suggestions.
+  type: person
+- id: he14
+  content: The user's parents are very worried about the user's health.
+  type: person
+- id: so15
+  content: There is a friend who especially likes studying tabletop game rules.
+  type: person
+- id: so3
+  content: Friend Xiao Chen is the initiator of the tabletop game.
+  type: person
+- id: w38
+  content: While walking, the user often runs into the product manager from the next
+    department.
+  type: person
+- id: w8
+  content: Colleague Xiao Wang often works overtime with the user.
+  type: person
+- id: he1
+  content: Eating takeout year-round and sitting for long periods are the main reasons.
+  type: reason
+- id: ln1
+  content: The current job has no prospects and the salary does not go up.
+  type: reason
+- id: n31
+  content: The user has been working overtime frequently recently.
+  type: reason
+- id: w1
+  content: The project often requires working overtime to catch up on progress.
+  type: reason
+- id: w25
+  content: The cause of the failure was the exhaustion of the database connection
+    pool.
+  type: reason
+- id: e0
+  content: The user is feeling very down today.
+  type: status
+- id: h16
+  content: After the teacher informed the parents about the early relationship, the
+    user was forced to focus on studies again.
+  type: status
+- id: h20
+  content: On the eve of the college entrance exam, Su Wanting proposed a breakup.
+  type: status
+- id: h23
+  content: The user failed the college entrance exam and was only admitted to an ordinary
+    junior college.
+  type: status
+- id: h26
+  content: In the first year of high school, the user won a third prize in the school-level
+    math contest.
+  type: status
+- id: he0
+  content: The user's physical exam found mild fatty liver and high cholesterol.
+  type: status
+- id: he16
+  content: The physical exam also found that the uric acid level was high.
+  type: status
+- id: so0
+  content: On weekends, the user likes to gather with friends.
+  type: status
+- id: w0
+  content: The user works as a backend developer at an internet company.
+  type: status
+- id: e2
+  content: The user saved a piano playlist.
+  type: thing
+- id: e6
+  content: The user has a cat named Doudou.
+  type: thing
+- id: h25
+  content: Evening self-study was the quietest time in the user's high school.
+  type: thing
+- id: h34
+  content: The whole class was very quiet during the last evening self-study before
+    the Gaokao.
+  type: thing
+- id: he19
+  content: Grilled lamb chops at the barbecue restaurant are the user's favorite.
+  type: thing
+- id: ln10
+  content: The user has a few projects on GitHub.
+  type: thing
+- id: ln17
+  content: The user earned a course certificate on Coursera.
+  type: thing
+- id: ln19
+  content: The user bought another course, Dive into Deep Learning by Li Mu.
+  type: thing
+- id: ln7
+  content: The user bought the Watermelon Book and the Flower Book.
+  type: thing
+- id: n3
+  content: The user passed by a newly opened milk tea shop but didn't go in.
+  type: thing
+- id: sh2
+  content: The user spends a fair amount of money on snacks and milk tea every month.
+  type: thing
+- id: so13
+  content: The board game group has 15 people and rotates locations every week.
+  type: thing
+- id: so2
+  content: The user most enjoys playing Avalon and Catan.
+  type: thing
+- id: th0
+  content: The three years of high school were a turning point in the user's life.
+  type: thing
+- id: w4
+  content: There is a 24-hour convenience store near the user's company.
+  type: thing
+- id: w6
+  content: Latte is the coffee the user orders most often.
+  type: thing
+- id: w7
+  content: 'There are two coffee shops downstairs from the user''s company: Luckin
+    and Starbucks.'
+  type: thing

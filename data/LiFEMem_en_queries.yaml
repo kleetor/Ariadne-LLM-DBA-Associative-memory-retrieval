@@ -1,0 +1,91 @@
+meta:
+  source: data/LiFEMem_queries_v3.yaml
+  language: en
+queries:
+- id: s01
+  scenario: work_pressure
+  text: Lately the project schedule has been way too packed, I'm working overtime
+    till eleven or twelve every day, feeling completely drained.
+  purpose_hint: 倾诉疲惫，寻求缓解
+  expected:
+  - w1
+  - w2
+  - e27
+  - w37
+- id: s05
+  scenario: health
+  text: The physical exam report came out, mild fatty liver, the doctor said to watch
+    my diet.
+  purpose_hint: 分享结果，求建议
+  expected:
+  - he0
+  - he1
+  - he40
+- id: s07
+  scenario: health
+  text: Drinking too much coffee is bad for you, I'm thinking about whether to quit.
+  purpose_hint: 犹豫权衡
+  expected:
+  - w5
+  - w6
+  - he18
+- id: s08
+  scenario: emotion
+  text: I don't know what's wrong today, I just can't get motivated, feeling really
+    down.
+  purpose_hint: 倾诉，寻求安慰
+  expected:
+  - e0
+  - e27
+  - e1
+- id: s12
+  scenario: nostalgia
+  text: Suddenly I think back to high school, the days of passing notes during evening
+    self-study.
+  purpose_hint: 怀旧分享
+  expected:
+  - h5
+  - h25
+  - h4
+- id: s16
+  scenario: relationship
+  text: After she left, it took me a really long time to recover.
+  purpose_hint: 回忆倾诉
+  expected:
+  - h20
+  - h21
+  - h22
+- id: s19
+  scenario: life
+  text: I'm so sleepy, I need to get a coffee, otherwise I won't make it through the
+    afternoon.
+  purpose_hint: 表达需求
+  expected:
+  - w5
+  - w6
+  - w7
+- id: s23
+  scenario: learning
+  text: I've been learning machine learning recently, I signed up for Andrew Ng's
+    course.
+  purpose_hint: 分享进展
+  expected:
+  - ln3
+  - ln4
+  - ln5
+- id: s26
+  scenario: social
+  text: On weekends I play board games with friends, Avalon is really fun.
+  purpose_hint: 分享快乐
+  expected:
+  - so1
+  - so3
+- id: s29
+  scenario: future
+  text: In the future I want to go home more often to spend time with my parents and
+    my little sister.
+  purpose_hint: 表达愿望
+  expected:
+  - f8
+  - f9
+  - f1

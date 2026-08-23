@@ -13,8 +13,36 @@ A full-pipeline system for LLM-driven memory graph construction, retrieval, and 
 
 ---
 
+## Goals & Rationale
+
+> Memory is not a single storehouse, but a duet of "facts" and "experiences."
+
+Ariadne's long-term goal is to answer one question: **how should an Agent manage and retrieve memory and knowledge in a way that is as scientific and efficient as a human's?**
+
+Cognitive science distinguishes two types of human long-term memory (Tulving):
+
+- **Semantic Memory** — decontextualized, stable knowledge: facts, concepts, and rules about the world ("The Earth revolves around the Sun", "the user is a backend engineer"). It is like a **knowledge base**, emphasizing accuracy, consistency, and verifiability.
+- **Episodic Memory** — personal experiences as time-space-emotion fragments ("last Tuesday I worked overtime until midnight and my neck ached"). It emphasizes **context, causality, sequence, and emotional color**, and tolerates approximation and association.
+
+The human brain processes these two kinds of memory with different mechanisms and lets them **collaborate**: semantic memory provides background knowledge to make sense of new experiences, while new experiences gradually sediment into semantic knowledge. Ariadne argues that an LLM Agent's long-term memory should follow the same principle of separation and collaboration:
+
+- **Separation** — the knowledge base (semantic) and the experience store (episodic) should be stored in layers and retrieved on demand, avoiding cross-contamination between "stable facts" and "personal experiences": knowledge demands accuracy and consistency, while experiences are allowed to evolve over time.
+- **Collaboration** — semantic knowledge provides explanatory background for episodic recall; specific experiences in turn validate, correct, and consolidate semantic facts; the two convert into each other through graph relations.
+
+How this thinking lands in Ariadne today and where it is headed:
+
+| Stage | Semantic Memory (Knowledge Base) | Episodic Memory (Experience Store) |
+| --- | --- | --- |
+| **Today** | A directed, typed graph: nodes + edges carry stable facts, maintained by DBA (extraction / correction / deduplication / deprecation) for consistency | Personal experience nodes in the graph, organized by StoryRank into story fragments preserving causality / sequence / emotion |
+| **Future** | An explicit "knowledge layer": independent storage and consistency checking of decontextualized facts | An explicit "experience layer": spatiotemporal-emotional retrieval unitized by experience |
+
+The ultimate goal is to let an Agent **recall an experience like a person remembering, and consult a fact like looking something up in a database** — that is the meaning of Ariadne as a thread through the labyrinth of memory.
+
+---
+
 ## Table of Contents
 
+- [Goals & Rationale](#goals--rationale)
 - [Overview](#overview)
 - [Key Features](#key-features)
 - [Architecture](#architecture)

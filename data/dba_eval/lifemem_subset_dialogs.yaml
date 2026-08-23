@@ -1,0 +1,406 @@
+# DBA 抽取评测 · 对话语料（LiFEMem 子集）
+#
+# 从 LiFEMem 5 个场景抽取 100 节点（工作 w0-w19 / 健康 he0-he19 /
+# 社交 so0-so19 / 情绪 e0-e19 / 学生时代 h0-h19），按场景还原为 15 批
+# 多轮对话。对话口语化改写（不照念节点 content），含指代/省略/寒暄噪声，
+# 用于评测 DBA 的抽取、指代消解、省略补全与噪声过滤能力。
+#
+# 每批 turns 由评测脚本拼接为 DBA maintain() 的 conversation 文本。
+
+subset:
+  name: lifemem_subset_100
+  scenes: [工作, 健康, 社交, 情绪, 学生时代]
+  gold_nodes:
+    # 工作（20）
+    - w0
+    - w1
+    - w2
+    - w3
+    - w4
+    - w5
+    - w6
+    - w7
+    - w8
+    - w9
+    - w10
+    - w11
+    - w12
+    - w13
+    - w14
+    - w15
+    - w16
+    - w17
+    - w18
+    - w19
+    # 健康（20）
+    - he0
+    - he1
+    - he2
+    - he3
+    - he4
+    - he5
+    - he6
+    - he7
+    - he8
+    - he9
+    - he10
+    - he11
+    - he12
+    - he13
+    - he14
+    - he15
+    - he16
+    - he17
+    - he18
+    - he19
+    # 社交（20）
+    - so0
+    - so1
+    - so2
+    - so3
+    - so4
+    - so5
+    - so6
+    - so7
+    - so8
+    - so9
+    - so10
+    - so11
+    - so12
+    - so13
+    - so14
+    - so15
+    - so16
+    - so17
+    - so18
+    - so19
+    # 情绪（20）
+    - e0
+    - e1
+    - e2
+    - e3
+    - e4
+    - e5
+    - e6
+    - e7
+    - e8
+    - e9
+    - e10
+    - e11
+    - e12
+    - e13
+    - e14
+    - e15
+    - e16
+    - e17
+    - e18
+    - e19
+    # 学生时代（20）
+    - h0
+    - h1
+    - h2
+    - h3
+    - h4
+    - h5
+    - h6
+    - h7
+    - h8
+    - h9
+    - h10
+    - h11
+    - h12
+    - h13
+    - h14
+    - h15
+    - h16
+    - h17
+    - h18
+    - h19
+
+dialogs:
+  # ============ 工作（3 批） ============
+  - id: d01
+    scene: 工作
+    covers: [w0, w1, w2, w3, w8, w9]
+    turns:
+      - role: user
+        time: "09:00"
+        text: 今天又要加班，这个项目真的排得太满了，天天搞到十一二点。
+      - role: assistant
+        time: "09:01"
+        text: 这么晚啊，注意身体。
+      - role: user
+        time: "09:05"
+        text: 没办法，我在这家互联网公司做后端开发，项目一上线就得赶进度。脖子又酸了，加班太多颈椎扛不住。
+      - role: assistant
+        time: "09:06"
+        text: 老是坐着确实容易这样，起来活动活动。
+      - role: user
+        time: "09:10"
+        text: 同事小王跟我一样惨，天天一起加班，不过他有时候会帮我分担点任务，算难兄难弟了。
+
+  - id: d02
+    scene: 工作
+    covers: [w4, w5, w6, w7, w17, w18]
+    turns:
+      - role: user
+        time: "12:00"
+        text: 中午又点了外卖，在工位随便扒两口。
+      - role: assistant
+        time: "12:01"
+        text: 又是外卖啊。
+      - role: user
+        time: "12:03"
+        text: 没办法，吃多了胃还有点不舒服。下午得靠咖啡续命，最爱拿铁。
+      - role: assistant
+        time: "12:04"
+        text: 少喝点咖啡提神吧。
+      - role: user
+        time: "12:06"
+        text: 公司楼下瑞幸星巴克都有，瑞幸近一点。旁边还有个24小时便利店，加班晚了老去那买夜宵。
+
+  - id: d03
+    scene: 工作
+    covers: [w10, w11, w12, w13, w14, w15, w16, w19]
+    turns:
+      - role: user
+        time: "18:00"
+        text: 今天 Code Review 又被批了，紧张死了。我们技术主管对代码质量要求特别严。
+      - role: assistant
+        time: "18:01"
+        text: 严格点也是好事。
+      - role: user
+        time: "18:03"
+        text: 话是这么说，但这工作干了三年，工资涨幅跟不上物价，真有点想换个环境了。
+      - role: assistant
+        time: "18:05"
+        text: 有想过去哪吗？
+      - role: user
+        time: "18:07"
+        text: 还没定，不过同事小李上周离职去字节跳动了。我买了个升降桌，先把颈椎问题缓解下。公司其实有健身房，但我从来没进去过。
+
+  # ============ 健康（3 批） ============
+  - id: d04
+    scene: 健康
+    covers: [he0, he1, he2, he16, he17, he18]
+    turns:
+      - role: user
+        time: "20:00"
+        text: 体检报告出来了，轻度脂肪肝，胆固醇也偏高，尿酸还超标了。
+      - role: assistant
+        time: "20:01"
+        text: 那要重视起来啊。
+      - role: user
+        time: "20:03"
+        text: 医生说主要是我常年吃外卖又不运动，还让我少吃海鲜和啤酒。可我以前挺喜欢烧烤配啤酒的……
+      - role: assistant
+        time: "20:05"
+        text: 该忌口就忌口吧，身体要紧。
+      - role: user
+        time: "20:07"
+        text: 嗯，医生让我每周至少运动三次。
+
+  - id: d05
+    scene: 健康
+    covers: [he3, he4, he5, he6, he7, he8, he9, he15]
+    turns:
+      - role: user
+        time: "07:30"
+        text: 今天早上跑完步了，绕小区跑半小时，出了一身汗。
+      - role: assistant
+        time: "07:31"
+        text: 挺自律啊。
+      - role: user
+        time: "07:33"
+        text: 现在也开始自己做饭了，少油少盐。还约了个营养师做膳食规划，李医生人挺耐心的。沙拉食材每周在生鲜平台下单。
+      - role: assistant
+        time: "07:35"
+        text: 装备也到位了吧？
+      - role: user
+        time: "07:37"
+        text: 那必须的，跑鞋是专业减震的，跑起来很舒服。还买了个运动手环，每天记步数心率，晚上还能监测睡眠。小区旁边新开了家健身房，说不定以后去办卡。
+
+  - id: d06
+    scene: 健康
+    covers: [he11, he12, he13, he14, he19]
+    turns:
+      - role: user
+        time: "21:00"
+        text: 复查结果出来了，指标降了，还挺欣慰的。
+      - role: assistant
+        time: "21:01"
+        text: 努力没白费。
+      - role: user
+        time: "21:03"
+        text: 是啊，晨跑完出一身汗神清气爽。不过有时候早上起不来就放弃了。我妈老念叨我，说要注意身体。
+      - role: assistant
+        time: "21:05"
+        text: 家人惦记着挺好的。
+      - role: user
+        time: "21:07"
+        text: 嗯，就是戒不掉烧烤，那家店的烤羊排真是我的最爱。
+
+  # ============ 社交（2 批） ============
+  - id: d07
+    scene: 社交
+    covers: [so0, so1, so2, so3, so13, so14, so15, so16]
+    turns:
+      - role: user
+        time: "15:00"
+        text: 周末又约了桌游局，还是我们那群固定朋友，15个人每周轮换地方。
+      - role: assistant
+        time: "15:01"
+        text: 你们这局还挺大。
+      - role: user
+        time: "15:03"
+        text: 我最喜欢玩阿瓦隆和卡坦岛。上次玩阿瓦隆我抽到刺客，最后赢了，爽。小陈是发起人，每次都是他组局。
+      - role: assistant
+        time: "15:05"
+        text: 桌游规则复杂吗？
+      - role: user
+        time: "15:07"
+        text: 有个朋友特别爱研究规则，每次学新桌游光讲规则就得半小时。
+
+  - id: d08
+    scene: 社交
+    covers: [so4, so5, so6, so7, so8, so9, so10, so11, so12, so17, so18, so19]
+    turns:
+      - role: user
+        time: "19:00"
+        text: 今天不想出门，宅家打游戏，最近在玩黑神话悟空。
+      - role: assistant
+        time: "19:01"
+        text: 好玩吗？
+      - role: user
+        time: "19:03"
+        text: 一玩就忘记时间。之前和朋友约饭总吃火锅，那家老板都认识我们了，每次都留位。我吃火锅必配香油蒜泥。上次还吃到凌晨两点。
+      - role: assistant
+        time: "19:05"
+        text: 公司最近有团建吗？
+      - role: user
+        time: "19:07"
+        text: 去了趟郊区农家乐。不过我不太喜欢KTV，太吵。之前参加过一次线下技术分享会，认识了些新朋友。其实社交挺累的，但又觉得挺必要。
+
+  # ============ 情绪（3 批） ============
+  - id: d09
+    scene: 情绪
+    covers: [e0, e1, e2, e3, e9, e10, e13, e14]
+    turns:
+      - role: user
+        time: "09:00"
+        text: 今天不知道怎么了，心情特别低落，提不起劲。
+      - role: assistant
+        time: "09:01"
+        text: 要不要散散心？
+      - role: user
+        time: "09:03"
+        text: 我就喜欢听着歌散步，或者听点舒缓的钢琴曲，有个歌单，里面最多的是坂本龙一，Merry Christmas Mr. Lawrence 我听了无数遍。
+      - role: assistant
+        time: "09:05"
+        text: 治愈系的东西也不错。
+      - role: user
+        time: "09:07"
+        text: 嗯，我喜欢看治愈系动漫放松。总觉得时间会慢慢治愈一切。
+
+  - id: d10
+    scene: 情绪
+    covers: [e4, e5, e6, e7, e17, e18, e19]
+    turns:
+      - role: user
+        time: "22:00"
+        text: 下班到家，豆豆又在门口等着了。
+      - role: assistant
+        time: "22:01"
+        text: 豆豆是谁？
+      - role: user
+        time: "22:03"
+        text: 我养的猫，英短蓝猫。每天早上还跳床上蹭我脸，跟它玩会儿就什么烦恼都忘了。
+      - role: assistant
+        time: "22:05"
+        text: 有猫陪真好。
+      - role: user
+        time: "22:07"
+        text: 是啊，还有朋友小陈也老安慰我，被朋友关心着还是挺温暖的。
+
+  - id: d11
+    scene: 情绪
+    covers: [e8, e11, e12, e15, e16]
+    turns:
+      - role: user
+        time: "13:00"
+        text: 心情不好的时候我就不想说话，喜欢一个人去天台发呆。
+      - role: assistant
+        time: "13:01"
+        text: 静静也好。
+      - role: user
+        time: "13:03"
+        text: 有时候也会写写日记，抒发一下。家里有台雅马哈电子琴，大学学过钢琴，现在都生疏了，偶尔弹两下。
+
+  # ============ 学生时代（4 批） ============
+  - id: d12
+    scene: 学生时代
+    covers: [h0, h1, h2, h3, h24, h26]
+    turns:
+      - role: user
+        time: "20:00"
+        text: 说起高中，高一那会儿成绩还不错，常考进年级前五十，还拿过数学竞赛校三等奖。
+      - role: assistant
+        time: "20:01"
+        text: 那挺厉害的。
+      - role: user
+        time: "20:03"
+        text: 后来高一下学期沉迷打游戏，再加上……早恋分了心，高二成绩就跌到班级中下游了。
+      - role: assistant
+        time: "20:05"
+        text: 文理分科选的什么？
+      - role: user
+        time: "20:07"
+        text: 理科。现在想想挺后悔那会儿没好好学习。
+
+  - id: d13
+    scene: 学生时代
+    covers: [h4, h5, h6, h7, h8, h25]
+    turns:
+      - role: user
+        time: "21:00"
+        text: 我高中同桌叫林晓雨，扎个马尾，笑起来有酒窝，晚自习老跟我传纸条、偷偷打闹。
+      - role: assistant
+        time: "21:01"
+        text: 你们感情应该不错。
+      - role: user
+        time: "21:03"
+        text: 嗯，晚自习其实是我高中最安静的时刻。死党陈浩，戴眼镜一话痨，课间总跟我打闹，还老来我家写作业。
+
+  - id: d14
+    scene: 学生时代
+    covers: [h9, h10, h11, h12, h13, h14, h15, h16, h17]
+    turns:
+      - role: user
+        time: "22:00"
+        text: 高一那会儿喜欢过一个女生，苏婉婷，长头发，爱穿白裙子，笑起来眼睛弯弯的。
+      - role: assistant
+        time: "22:01"
+        text: 后来呢？
+      - role: user
+        time: "22:03"
+        text: 我鼓足勇气递了情书，她居然答应了。放学后我们偷偷去天台约会。结果上课传纸条被老师发现了。
+      - role: assistant
+        time: "22:04"
+        text: 那挺难办的。
+      - role: user
+        time: "22:06"
+        text: 班主任叫了家长，父母都反对。没办法，只能收心。成绩下滑的真实原因我也不敢告诉爸妈。
+
+  - id: d15
+    scene: 学生时代
+    covers: [h18, h19, h20, h21, h22, h23]
+    turns:
+      - role: user
+        time: "23:00"
+        text: 高三那阵子压力特别大，爸妈期望高，家里经济也紧张，我经常深夜失眠，一个人默默扛着。
+      - role: assistant
+        time: "23:01"
+        text: 熬过来就好。
+      - role: user
+        time: "23:03"
+        text: 高考前夕苏婉婷还提了分手，那阵子情绪跌到谷底，最后带着低落情绪进的考场，结果高考失利，只考上一所普通大专。

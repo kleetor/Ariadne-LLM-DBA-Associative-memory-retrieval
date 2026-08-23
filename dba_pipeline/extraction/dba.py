@@ -19,13 +19,44 @@ from dba_pipeline.extraction.graph_builder import GraphBuilder
 logger = logging.getLogger(__name__)
 
 
-# ---- System Prompt ----
+# ---- Step 1：节点抽取 Prompt（2026-08-22 起，节点抽取与边连接拆成两步）----
 
-DBA_SYSTEM_PROMPT = """你是记忆图谱维护者，维护一个关于用户的事实数据库。节点=用户事实，边=语义关系。每次对话后输出 CRUD 维护操作。
+NODE_EXTRACTION_PROMPT = """你是记忆图谱的「节点抽取器」：从对话中抽取关于用户的独立事实，只输出节点维护操作，不负责连边。
 
 ## 节点类型（6）
 STATUS=客观处境 | REASON=导致状态/行为的原因 | ACTION=主动行为 | THING=物品/地点 | PERSON=社交关系人 | EMOTION=主观情绪
 边界：客观处境→STATUS/主观感受→EMOTION；用户做的事→ACTION/导致原因→REASON；物品本身→THING/互动→ACTION
+
+## 操作
+create(新事实) | update(事实变化) | fix_type(修正类型) | deprecate(标记过时,不物理删除)
+
+## 抽取原则（重要）
+1. 只抽关于用户的独立事实，忽略助手寒暄
+2. 一个事实一个节点：一句话含多个事实时必须拆成多个节点，禁止合并
+   （如「加班又总吃外卖」→ 加班节点 + 外卖节点；「小王一起加班还帮分担任务」→ 两人同加班 + 小王帮分担 两个节点）
+3. content 为消解指代、补全省略后的完整陈述，第一人称转「用户」
+4. 保留时间维度：区分长期习惯（「用户每天晨跑半小时」）与单次事件（「用户今早跑了一次步」），不得混淆
+5. 与已有节点语义重复时用 update 更新而非新建；与已有节点矛盾时 deprecate 旧节点 + create 新节点
+6. 每条独立可读
+
+## 输出
+严格输出 JSON：{{"node_ops":[{{"action":"create","content":"...","node_type":"ACTION"}},{{"action":"update","target_id":"n3","content":"...","reason":"..."}},{{"action":"fix_type","target_id":"n7","node_type":"STATUS","reason":"..."}},{{"action":"deprecate","target_id":"n3","reason":"..."}}]}}
+无需抽取时返回空 node_ops。只输出 JSON。"""
+
+NODE_EXTRACTION_USER_PROMPT = """── 对话上下文 ──
+
+{conversation}
+
+── 已有相关节点 ──
+
+{current_nodes}
+
+── 请输出节点维护操作 ──"""
+
+
+# ---- Step 2：边连接 Prompt（与节点抽取拆分，2026-08-22）----
+
+EDGE_LINKING_PROMPT = """你是记忆图谱的「边连接器」：节点已经抽取完成，你只负责为节点建立语义关系边。
 
 ## 边类型（8）
 CAUSAL=因→果 | SCENARIO=同场景 | SEQUENCE=先→后 | PREFERENCE=偏好 | SOCIAL=社交 | ATTRIBUTE=属性 | TEMPORAL=事件→时间 | TAXONOMIC=子→父
@@ -33,88 +64,95 @@ CAUSAL=因→果 | SCENARIO=同场景 | SEQUENCE=先→后 | PREFERENCE=偏好 |
 边界：A不发生B还会发生?不会=CAUSAL,可能=SEQUENCE；B是环境=SCENARIO/自身属性=ATTRIBUTE；喜欢=PREFERENCE/需要=CAUSAL
 
 ## 操作
-节点：create(新事实,content为消解指代、补全省略后的完整陈述) | update(事实变化) | fix_type(修正类型) | deprecate(标记过时,不物理删除)
-边：create(只连有联想价值的) | delete(删错误/过时的边)
+create(连边) | delete(删错误/过时的边)
 
-## 原则
-1. 只抽用户事实，忽略助手寒暄
-2. 第一人称转"用户"，消解指代、补全省略
-3. 每条独立可读
-4. 边不全连，只连有联想价值的
-5. 错了可下次 fix_type/delete 修正
-6. deprecate 节点后检查邻居是否需重连
-7. 与已有节点矛盾时 deprecate 旧节点+create 新节点
-
-## 边审计
-检查上下文中已有边，删除已明显过时或被新事实覆盖的边（偏好改变/因果被否定/不再处于该场景/指向已废弃节点）。本轮未提到但可能仍成立的保留。
-
-## 维护判断
-跳过(返回空 ops)：纯寒暄、追问无新事实、延续话题无新信息、已被已有记忆覆盖
-需要维护：新事实、事实变化、矛盾、话题切换
+## 连边原则（激进版：宁可多连，不可漏连）
+1. **尽量全连**：同一场景内（工作/健康/社交/情绪/学生时代）所有存在关系的事实之间都要连边——场景内高相关节点是检索枢纽，应连接尽可能多的节点（如「后端开发」连接项目加班、同事、主管、工作年限、换工作意向等）
+2. **跨场景大胆桥接**：工作→健康→情绪→社交 之间，只要找得到因果/场景/时序/偏好/人物关系之一就连——跨场景联想是检索的价值所在
+3. 连接「本轮新节点」与「已有相关节点」：新事实必须尽量接入已有图谱结构，能连则连
+4. 边类型要准确：喜欢/偏好→PREFERENCE、自身属性→ATTRIBUTE、同场景并存→SCENARIO、先后来→SEQUENCE、因果→CAUSAL、人物关系→SOCIAL
+5. 保留时间维度：长期习惯与单次事件按语义连（CAUSAL/SEQUENCE）
+6. 边审计：删除已过时/被新事实覆盖的边；本轮未提到但可能仍成立的保留
 
 ## 输出
-严格输出 JSON：
-{{"node_ops":[{{"action":"create","content":"...","node_type":"ACTION"}},{{"action":"update","target_id":"n3","content":"...","reason":"..."}},{{"action":"fix_type","target_id":"n7","node_type":"STATUS","reason":"..."}},{{"action":"deprecate","target_id":"n3","reason":"..."}}],"edge_ops":[{{"action":"create","from":"n1","to":"n2","rel_type":"CAUSAL"}},{{"action":"delete","from":"n3","to":"n5","reason":"..."}}]}}
-无需维护时返回空 node_ops 和 edge_ops。只输出 JSON。"""
+严格输出 JSON：{{"edge_ops":[{{"action":"create","from":"n1","to":"n2","rel_type":"CAUSAL"}},{{"action":"delete","from":"n3","to":"n5","reason":"..."}}]}}
+无需连边时返回空 edge_ops。只输出 JSON。"""
 
+EDGE_LINKING_FEWSHOT_EXAMPLE = """参考示例（激进连边模式）：
 
-# ---- Few-shot 示例 ----
+示例 1 —— 同一场景内全连 + 跨场景也连（工作场景）：
 
-DBA_FEWSHOT_EXAMPLE = """
-示例 1 —— 简单新增：
+对话：
+user(09:00): 今天又要加班，这个项目真的排得太满了，天天搞到十一二点。
+user(09:05): 我在这家互联网公司做后端开发，项目一上线就得赶进度。脖子又酸了，加班太多颈椎扛不住。
+user(09:10): 同事小王跟我一样惨，天天一起加班，不过他有时候会帮我分担点任务。下午得靠咖啡续命，最爱拿铁。
 
-对话上下文：
-user(10:00): 最近加班太多了，咖啡都当水喝了
-assistant: 那要注意身体啊
-user(10:05): 是啊，想戒了，改喝茶吧
+本轮新抽取的节点：
+[n1 STATUS] 用户在一家互联网公司做后端开发
+[n2 ACTION] 用户项目上线时经常加班到十一二点
+[n3 STATUS] 用户加班导致颈椎经常酸痛
+[n5 ACTION] 用户喜欢喝咖啡提神
+[n6 THING] 拿铁是用户最常点的咖啡
+[n8 PERSON] 同事小王经常和用户一起加班
 
-记忆上下文：
-[n1] REASON: 用户项目上线前频繁加班
-[n2] ACTION: 用户靠喝咖啡提神
-[n3] THING: 公司楼下有家星巴克
+正确输出（场景内全连 + 跨场景桥接）：
+{{"edge_ops":[
+  {{"action":"create","from":"n1","to":"n2","rel_type":"CAUSAL"}},
+  {{"action":"create","from":"n1","to":"n8","rel_type":"SOCIAL"}},
+  {{"action":"create","from":"n1","to":"n3","rel_type":"CAUSAL"}},
+  {{"action":"create","from":"n2","to":"n3","rel_type":"CAUSAL"}},
+  {{"action":"create","from":"n2","to":"n5","rel_type":"CAUSAL"}},
+  {{"action":"create","from":"n2","to":"n8","rel_type":"SOCIAL"}},
+  {{"action":"create","from":"n5","to":"n6","rel_type":"PREFERENCE"}},
+  {{"action":"create","from":"n3","to":"n5","rel_type":"SCENARIO"}}
+]}}
 
-已有边：
-n1 --[CAUSAL]--> n2
-n2 --[SCENARIO]--> n3
+示例 2 —— 跨场景大胆桥接：
 
-输出：
-```json
-{
-  "node_ops": [
-    {"action": "deprecate", "target_id": "n2", "reason": "用户明确表示想戒咖啡，n2描述的靠咖啡提神已过时"},
-    {"action": "create", "content": "用户决定改喝茶来替代咖啡提神", "node_type": "ACTION"}
-  ],
-  "edge_ops": [
-    {"action": "create", "from": "n1", "to": "{新节点id}", "rel_type": "CAUSAL"},
-    {"action": "delete", "from": "n2", "to": "n3", "reason": "n2已deprecate，n2→n3的场景边不再有效"}
-  ]
-}
-```
-"""
+对话：
+user(20:00): 复查结果出来了，指标降了，还挺欣慰的。
+user(20:07): 就是戒不掉烧烤，那家店的烤羊排真是我的最爱。
 
+本轮新抽取的节点：
+[n20 ACTION] 用户每天早上绕小区晨跑半小时
+[n27 EMOTION] 用户看到复查指标下降很欣慰
+[n40 THING] 烧烤店的烤羊排是用户的最爱
 
-# ---- User Prompt 模板 ----
+已有相关节点：
+[n2 ACTION] 用户项目上线时经常加班到十一二点
+[e0 STATUS] 用户今天心情很低落
 
-DBA_USER_PROMPT = """── 对话上下文 ──
+正确输出（晨跑接入工作/情绪/饮食多个场景）：
+{{"edge_ops":[
+  {{"action":"create","from":"n2","to":"e0","rel_type":"CAUSAL"}},
+  {{"action":"create","from":"n20","to":"n27","rel_type":"CAUSAL"}},
+  {{"action":"create","from":"n2","to":"n20","rel_type":"SEQUENCE"}},
+  {{"action":"create","from":"n20","to":"e0","rel_type":"CAUSAL"}},
+  {{"action":"create","from":"n20","to":"n40","rel_type":"SCENARIO"}}
+]}}"""
+
+EDGE_LINKING_USER_PROMPT = """── 对话上下文 ──
 
 {conversation}
 
-── 记忆上下文 ──
+── 本轮新抽取的节点 ──
 
-与本轮对话相关的已有节点：
+{new_nodes}
+
+── 相关已有节点 ──
+
 {current_nodes}
 
 已有边：
 {current_edges}
 
-── 结构上下文 ──
+── 结构上下文（相关节点一跳邻居）──
 
-相关节点的一跳邻居：
 {neighbor_info}
 
 图谱概况：总节点 {total_nodes} 个，总边 {total_edges} 条
 
-── 请输出维护操作 ──"""
+── 请输出边维护操作 ──"""
 
 
 # ---- 维护判断（triage）Prompt ----
@@ -157,12 +195,18 @@ class MemoryDBA:
         self.builder = graph_builder
         self.current_state_k = current_state_k
 
-        # 组装 Prompt 链
-        self.prompt = ChatPromptTemplate.from_messages([
-            ("system", DBA_SYSTEM_PROMPT),
-            ("human", DBA_USER_PROMPT),
+        # 组装 Prompt 链：节点抽取与边连接拆成两步（2026-08-22）
+        self.node_prompt = ChatPromptTemplate.from_messages([
+            ("system", NODE_EXTRACTION_PROMPT),
+            ("human", NODE_EXTRACTION_USER_PROMPT),
         ])
-        self.chain = self.prompt | self.llm
+        self.node_chain = self.node_prompt | self.llm
+        self.edge_prompt = ChatPromptTemplate.from_messages([
+            ("system", EDGE_LINKING_PROMPT),
+            ("human", EDGE_LINKING_FEWSHOT_EXAMPLE),
+            ("human", EDGE_LINKING_USER_PROMPT),
+        ])
+        self.edge_chain = self.edge_prompt | self.llm
 
         # 维护判断前置（triage）：先用极小 prompt 判断是否值得维护
         self.triage_chain = ChatPromptTemplate.from_messages([
@@ -175,7 +219,7 @@ class MemoryDBA:
         self,
         conversation: str,
     ) -> Dict:
-        """对话完成后执行一次数据库维护
+        """对话完成后执行一次数据库维护（两步：节点抽取 → 边连接）
 
         Args:
             conversation: 本轮对话的完整文本（含角色和时间戳）
@@ -184,7 +228,7 @@ class MemoryDBA:
             {
                 "ops": {"node_ops": [...], "edge_ops": [...]},  # LLM 原始输出
                 "result": {"created_ids": [...], "skipped": [...], "errors": [...]},  # 执行结果
-                "context": {...},  # 组装的三层上下文（调试用）
+                "context": {...},  # 组装上下文（调试用）
             }
         """
         # 0. 维护判断前置：明显无需维护的对话直接跳过，省掉完整 prompt
@@ -197,34 +241,30 @@ class MemoryDBA:
                 "skipped": True,
             }
 
-        # 1. 组装三层上下文
-        context = self._build_context(conversation)
+        # Step 1：节点抽取（对话 + 相关旧节点 → node_ops → 执行）
+        node_context = self._build_node_context(conversation)
+        node_ops = self._parse_response(self.node_chain.invoke(node_context).content).get("node_ops", [])
+        result1 = self.builder.apply_ops(node_ops, [])
 
-        # 2. 调用 LLM
-        response = self._call_llm(context)
-
-        # 3. 解析操作指令
-        ops = self._parse_response(response)
-
-        # 4. 执行操作
-        result = self.builder.apply_ops(
-            node_ops=ops.get("node_ops", []),
-            edge_ops=ops.get("edge_ops", []),
-        )
+        # Step 2：边连接（对话 + 本轮新节点 + 相关旧节点/一跳邻居/已有边 → edge_ops → 执行）
+        new_ids = result1.get("created_ids", [])
+        edge_context = self._build_edge_context(conversation, new_ids)
+        edge_ops = self._parse_response(self.edge_chain.invoke(edge_context).content).get("edge_ops", [])
+        result2 = self.builder.apply_ops([], edge_ops)
 
         logger.info(
-            f"DBA 维护完成: 创建 {self.builder.stats['nodes_created']} 节点, "
-            f"更新 {self.builder.stats['nodes_updated']}, "
-            f"修正 {self.builder.stats['nodes_fixed']}, "
-            f"废弃 {self.builder.stats['nodes_deprecated']}, "
-            f"创建边 {self.builder.stats['edges_created']}, "
-            f"删除边 {self.builder.stats['edges_deleted']}"
+            f"DBA 维护完成: 节点创建 {len(result1.get('created_ids', []))} 更新 {len(node_ops)} "
+            f"边创建/删除 {len(edge_ops)} (累计 {self.graph.node_count} 节点 / {self.graph.edge_count} 边)"
         )
 
         return {
-            "ops": ops,
-            "result": result,
-            "context": context,
+            "ops": {"node_ops": node_ops, "edge_ops": edge_ops},
+            "result": {
+                "created_ids": result1.get("created_ids", []),
+                "skipped": result1.get("skipped", []) + result2.get("skipped", []),
+                "errors": result1.get("errors", []) + result2.get("errors", []),
+            },
+            "context": {"node": node_context, "edge": edge_context},
         }
 
     # ---- 上下文组装 ----
@@ -242,6 +282,44 @@ class MemoryDBA:
 
         return {
             "conversation": conversation_text,
+            "current_nodes": current_nodes_text,
+            "current_edges": current_edges_text,
+            "neighbor_info": neighbor_text,
+            "total_nodes": self.graph.node_count,
+            "total_edges": self.graph.edge_count,
+        }
+
+    def _build_node_context(self, conversation: str) -> Dict:
+        """Step 1 节点抽取上下文：对话 + 相关旧节点（用于去重/更新判断）"""
+        if self.graph.node_count == 0:
+            nodes_text = "（暂无已有记忆）"
+        else:
+            nodes_text, _ = self._build_memory_context(conversation)
+        return {
+            "conversation": conversation,
+            "current_nodes": nodes_text,
+        }
+
+    def _build_edge_context(self, conversation: str, new_ids: List[str]) -> Dict:
+        """Step 2 边连接上下文：对话 + 本轮新节点(全) + 相关旧节点 + 一跳邻居 + 已有边"""
+        if self.graph.node_count == 0:
+            current_nodes_text = current_edges_text = "（暂无已有记忆）"
+        else:
+            current_nodes_text, current_edges_text = self._build_memory_context(conversation)
+        neighbor_text = self._build_structure_context(conversation)
+
+        new_lines = []
+        for nid in new_ids:
+            node = self.graph.get_node(nid)
+            if node is None:
+                continue
+            type_val = node["node_type"].value if hasattr(node["node_type"], "value") else str(node["node_type"])
+            new_lines.append(f"  [{nid}] {type_val}: {node['content'][:120]}")
+        new_nodes_text = "\n".join(new_lines) if new_lines else "（本轮无新节点）"
+
+        return {
+            "conversation": conversation,
+            "new_nodes": new_nodes_text,
             "current_nodes": current_nodes_text,
             "current_edges": current_edges_text,
             "neighbor_info": neighbor_text,
@@ -318,11 +396,6 @@ class MemoryDBA:
         snippet = conversation[-500:]
         resp = self.triage_chain.invoke({"conversation": snippet})
         return "NEEDED" in resp.content.upper()
-
-    def _call_llm(self, context: Dict) -> str:
-        """调用 LLM 获取维护操作"""
-        response = self.chain.invoke(context)
-        return response.content
 
     # ---- 响应解析 ----
 

@@ -6,10 +6,10 @@ DBA MCP Server
 
 Usage:
     # 本地 stdio 模式（Agent 直接调用）
-    python -m src.mcp_server --yaml your_memory_graph.yaml
+    python -m dba_pipeline.mcp_server --yaml your_memory_graph.yaml
 
     # SSE 网络模式（远程 Agent 调用）
-    python -m src.mcp_server --yaml your_memory_graph.yaml --sse --port 8765
+    python -m dba_pipeline.mcp_server --yaml your_memory_graph.yaml --sse --port 8766
 
 依赖:
     pip install mcp
@@ -24,7 +24,9 @@ import argparse
 import json
 import logging
 import sys
+import tempfile
 import threading
+import yaml
 from pathlib import Path
 from typing import Optional
 
@@ -62,6 +64,9 @@ except ImportError:
 NODE_TYPES = {t.value.upper(): t for t in NodeType}
 REL_TYPES = {t.value: t for t in RelationType}
 
+# 单次对话输入的最大字符数（防止异常输入打爆 LLM token / 缓冲内存）
+MAX_CONVERSATION_LENGTH = 20000
+
 
 class DBAServer:
     """DBA 核心逻辑，与 MCP 协议层解耦"""
@@ -82,13 +87,23 @@ class DBAServer:
     # ---- 序列化 ----
 
     def _save(self):
+        """原子写回 YAML：先写临时文件再替换，避免崩溃损坏主文件"""
         if not self.yaml_path:
             return
         with self._lock:
-            import yaml
             data = self.graph.to_dict()
-            with open(self.yaml_path, "w", encoding="utf-8") as f:
-                yaml.dump(data, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+            dir_name = os.path.dirname(self.yaml_path) or "."
+            fd, tmp_path = tempfile.mkstemp(dir=dir_name, suffix=".tmp")
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    yaml.dump(data, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+                os.replace(tmp_path, self.yaml_path)
+            except Exception:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
 
     def _compute_next_id(self) -> int:
         max_id = 0
@@ -105,6 +120,8 @@ class DBAServer:
 
     def add_conversation(self, conversation: str) -> dict:
         """追加对话文本，若 DBA 管线已接入则维护图谱"""
+        if not conversation or len(conversation) > MAX_CONVERSATION_LENGTH:
+            return {"error": f"conversation 长度必须在 1~{MAX_CONVERSATION_LENGTH} 字符之间"}
         # P0: 优先走调度器批量累积（多轮合并为一次 LLM 维护），降低 token
         if self.scheduler:
             self.scheduler.on_conversation(conversation)
@@ -239,6 +256,8 @@ class DBAServer:
                 if not nt:
                     return {"error": f"无效的节点类型: {params.get('node_type')}"}
                 content = params.get("content", "")
+                # 动态计算 ID，避免与 DBA 维护新建节点冲突导致静默覆盖
+                self._next_node_id = self._compute_next_id()
                 nid = f"n{self._next_node_id}"
                 self._next_node_id += 1
                 self.graph.graph.add_node(
@@ -266,13 +285,15 @@ class DBAServer:
                     return {"error": f"节点不存在: {nid}"}
                 node = self.graph.graph.nodes[nid]
                 if "content" in params:
+                    old_content = node.get("content", "")
                     node["content"] = params["content"]
-                    # 同步向量（与 GraphBuilder 一致）
+                    # 同步向量（失败时回滚内容并向调用方报错，与 GraphBuilder 一致）
                     if self.vector_store is not None:
                         try:
                             self.vector_store.update_memories([nid], [params["content"]])
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            node["content"] = old_content
+                            return {"error": f"向量更新失败，内容已回滚: {e}", "action": action}
                 if "node_type" in params:
                     nt = NODE_TYPES.get(params["node_type"].upper())
                     if not nt:
@@ -288,6 +309,12 @@ class DBAServer:
                 if nid not in self.graph.graph.nodes:
                     return {"error": f"节点不存在: {nid}"}
                 self.graph.graph.remove_node(nid)
+                # 同步清理向量库，避免残留向量继续占用检索槽位
+                if self.vector_store is not None:
+                    try:
+                        self.vector_store.remove_memories([nid])
+                    except Exception as e:
+                        return {"error": f"向量清理失败: {e}", "action": action}
                 result["deleted"] = nid
                 self._save()
 
@@ -347,9 +374,8 @@ class DBAServer:
                 scheduler_state = None
                 if self.scheduler:
                     sched_path = Path(target) / "scheduler_state.json"
-                    import json as _json
                     with open(sched_path, "w", encoding="utf-8") as f:
-                        _json.dump(self.scheduler.save_state(), f, ensure_ascii=False, indent=2)
+                        json.dump(self.scheduler.save_state(), f, ensure_ascii=False, indent=2)
                     scheduler_state = "saved"
                 return {
                     "save_dir": target,
@@ -363,7 +389,6 @@ class DBAServer:
                 return {"error": str(e), "save_dir": target}
 
         # 回退：仅保存 YAML
-        import yaml
         target = save_dir or (str(Path(self.yaml_path).parent) if self.yaml_path else "snapshots/latest")
         Path(target).mkdir(parents=True, exist_ok=True)
         out_path = Path(target) / "memory_graph.yaml"
@@ -746,7 +771,11 @@ def main():
             # GraphBuilder
             builder = GraphBuilder(graph=graph, vector_store=vector_store, lock=graph_lock)
 
-            # LLM
+            # LLM：远程 API 必须显式配置 key；本地模型（自定义 base_url）才用占位符
+            if not args.llm_api_key and not args.llm_base_url:
+                print("错误: 需要配置 LLM API Key（--llm-api-key 或环境变量 OPENAI_API_KEY）"
+                      "或指定 --llm-base-url（本地模型）", file=sys.stderr)
+                sys.exit(1)
             llm = ChatOpenAI(
                 model=args.llm_model,
                 api_key=args.llm_api_key or "not-needed",
@@ -803,6 +832,8 @@ def main():
                   f"检索={'P链路' if retriever_instance else '未启用'}", file=sys.stderr)
         except Exception as e:
             print(f"[DBA MCP] DBA 管线初始化失败: {e}", file=sys.stderr)
+            print("错误: DBA 管线是核心功能，初始化失败将退出（避免带病启动）", file=sys.stderr)
+            sys.exit(1)
 
     dba_server = DBAServer(graph, yaml_path=args.yaml,
                            dba=dba_instance, scheduler=scheduler_instance,
@@ -816,10 +847,23 @@ def main():
             if scheduler_instance:
                 sched_path = os.path.join(args.restore_dir, "scheduler_state.json")
                 if os.path.exists(sched_path):
-                    import json as _json
                     with open(sched_path, encoding="utf-8") as f:
-                        scheduler_instance.load_state(_json.load(f))
+                        scheduler_instance.load_state(json.load(f))
             dba_server._next_node_id = dba_server._compute_next_id()
+            # 同步向量库：若 checkpoint 未含向量索引，以恢复后的图谱为准重建
+            if vector_store is not None and not os.path.exists(
+                os.path.join(args.restore_dir, "faiss_index")
+            ):
+                mem_ids = [
+                    nid for nid in graph.graph.nodes()
+                    if graph.graph.nodes[nid].get("content")
+                ]
+                if mem_ids:
+                    vector_store.clear_vectors()
+                    vector_store.add_memories(
+                        mem_ids,
+                        [graph.graph.nodes[nid].get("content") for nid in mem_ids],
+                    )
             print(f"[DBA MCP] 已从 checkpoint 恢复: {args.restore_dir}", file=sys.stderr)
         except Exception as e:
             print(f"[DBA MCP] checkpoint 恢复失败: {e}", file=sys.stderr)
@@ -835,14 +879,19 @@ def main():
     _print_status(graph=graph, dba=dba_instance, retriever=retriever_instance,
                   vector_ready=vector_ready, args=args)
 
-    if args.sse:
-        import asyncio
-        print(f"[DBA MCP] SSE 模式: http://{args.host}:{args.port}/sse", file=sys.stderr)
-        asyncio.run(run_sse(server, args.host, args.port))
-    else:
-        import asyncio
-        print("[DBA MCP] stdio 模式", file=sys.stderr)
-        asyncio.run(run_stdio(server))
+    try:
+        if args.sse:
+            import asyncio
+            print(f"[DBA MCP] SSE 模式: http://{args.host}:{args.port}/sse", file=sys.stderr)
+            asyncio.run(run_sse(server, args.host, args.port))
+        else:
+            import asyncio
+            print("[DBA MCP] stdio 模式", file=sys.stderr)
+            asyncio.run(run_stdio(server))
+    finally:
+        # 优雅退出：flush 调度器缓冲中的对话，避免退出时丢失记忆
+        if scheduler_instance:
+            scheduler_instance.stop()
 
 
 if __name__ == "__main__":

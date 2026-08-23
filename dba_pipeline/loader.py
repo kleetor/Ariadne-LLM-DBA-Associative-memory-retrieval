@@ -5,9 +5,12 @@ YAML 数据加载器
 替代 data/sample_data.py 的硬编码方式。
 """
 
+import logging
 import os
 import yaml
 from typing import Dict, List, Tuple
+
+logger = logging.getLogger(__name__)
 
 from dba_pipeline.graph.memory_graph import MemoryGraph
 from dba_pipeline.core.jump_axis import NodeType, RelationType
@@ -109,7 +112,7 @@ def load_multi_graph(
 
     for path in yaml_paths:
         g = load_graph(path)
-        # 合并节点和边到同一个 graph（networkx 自动去重）
+        # 合并节点和边到同一个 graph（networkx 自动去重，保留节点标志）
         for nid in g.graph.nodes():
             if nid not in graph.graph:
                 node_data = g.get_node(nid)
@@ -117,10 +120,18 @@ def load_multi_graph(
                     memory_id=nid,
                     content=node_data["content"],
                     node_type=node_data["node_type"],
+                    deprecated=node_data.get("deprecated", False),
+                    forgotten=node_data.get("forgotten", False),
                 )
         for u, v, edge_data in g.graph.edges(data=True):
             if not graph.graph.has_edge(u, v):
                 graph.add_edge(u, v, edge_data["rel_type"])
+            else:
+                existing = graph.graph.edges[u, v].get("rel_type")
+                if existing != edge_data["rel_type"]:
+                    logger.warning(
+                        f"边 {u}-->{v} 已存在（{existing}），跳过类型不同的边 {edge_data['rel_type']}"
+                    )
 
         qs = load_queries(path)
         all_queries.update(qs)

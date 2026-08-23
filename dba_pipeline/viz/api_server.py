@@ -23,7 +23,7 @@ import yaml
 
 from dba_pipeline.graph.memory_graph import MemoryGraph
 from dba_pipeline.loader import load_graph
-from dba_pipeline.core.jump_axis import NodeType, RelationType
+from dba_pipeline.core.jump_axis import NodeType, RelationType, get_jump_weight
 
 
 NODE_TYPES = {t.value.upper(): t for t in NodeType}
@@ -151,10 +151,19 @@ class MemoryGraphAPI:
         if not rt:
             raise ValueError(f"无效的边类型: {rel_type}")
 
+        # 跳转轴权重校验：权重为 0 的方向不允许建边（与 MCP/GraphBuilder 对齐）
+        src_type = self.graph.get_node_type(source)
+        if src_type and get_jump_weight(src_type, rt, is_reverse=False) <= 0:
+            raise ValueError(f"边 {source}--[{rt.value}]-->{target} 在该节点类型上权重为 0，不允许创建")
+
         if self.graph.graph.has_edge(source, target):
             raise ValueError(f"边已存在: {source} -> {target}")
 
         self.graph.graph.add_edge(source, target, rel_type=rt)
+        # 双向类型自动补反向边
+        if rt in (RelationType.SCENARIO, RelationType.SOCIAL, RelationType.ATTRIBUTE):
+            if not self.graph.graph.has_edge(target, source):
+                self.graph.graph.add_edge(target, source, rel_type=rt)
         self._save()
         return {
             "source": source,

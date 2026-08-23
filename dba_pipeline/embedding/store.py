@@ -129,6 +129,13 @@ class VectorStore:
         metadatas: Optional[List[dict]] = None,
     ):
         """批量添加记忆到向量存储（预缓存向量 + 增量写入，不重复 embedding）"""
+        # 无 embedding 配置时降级：仅维护内容映射，不构建向量索引
+        if self.embeddings is None:
+            for mid, content in zip(memory_ids, contents):
+                self._contents[mid] = content
+            logger.warning("embeddings 未配置，跳过向量写入（节点仅存在于图谱）")
+            return
+
         # 预计算并缓存所有新节点的向量
         new_ids = [mid for mid in memory_ids if mid not in self._content_vectors]
         if new_ids:
@@ -189,12 +196,38 @@ class VectorStore:
         if not memory_ids:
             return
 
+        # 无 embedding 配置时降级：仅更新内容映射
+        if self.embeddings is None:
+            for mid, content in zip(memory_ids, contents):
+                self._contents[mid] = content
+            logger.warning("embeddings 未配置，跳过向量更新")
+            return
+
         vectors = self.embed_batch(contents)
         for mid, content, vec in zip(memory_ids, contents, vectors):
             self._content_vectors[mid] = vec
             self._contents[mid] = content
 
         self._rebuild_index()
+
+    def remove_memories(self, memory_ids: List[str]):
+        """从向量库移除节点（更新缓存后全量重建索引）"""
+        changed = False
+        for mid in memory_ids:
+            if mid in self._content_vectors:
+                del self._content_vectors[mid]
+                changed = True
+            if mid in self._contents:
+                del self._contents[mid]
+                changed = True
+        if changed:
+            self._rebuild_index()
+
+    def clear_vectors(self):
+        """清空向量缓存与索引（用于以图谱为权威全量重建）"""
+        self._content_vectors.clear()
+        self._contents.clear()
+        self.store = None
 
     def _rebuild_index(self):
         """从权威映射（_content_vectors + _contents）全量重建 FAISS 索引"""
@@ -271,6 +304,8 @@ class VectorStore:
         """向量维度"""
         if self._content_vectors:
             return len(list(self._content_vectors.values())[0])
+        if self.embeddings is None:
+            return 0
         test_vec = self._embed("test")
         return len(test_vec)
 

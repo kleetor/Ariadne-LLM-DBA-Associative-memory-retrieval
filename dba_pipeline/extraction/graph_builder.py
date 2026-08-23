@@ -374,21 +374,33 @@ class GraphBuilder:
                 self.stats["ops_skipped"] += 1
                 return
 
-        # 边去重
+        # 边去重：同类型边跳过；不同类型边为避免静默改写，记录并跳过
         if self.graph.graph.has_edge(from_id, to_id):
             existing = self.graph.graph.edges[from_id, to_id]
             if existing.get("rel_type") == rel_type:
                 logger.debug(f"边 {from_id}--[{rel_type_str}]-->{to_id} 已存在，跳过")
                 return
+            logger.warning(
+                f"边 {from_id}-->{to_id} 已存在（{existing.get('rel_type')}），"
+                f"跳过不同 rel_type 的创建指令 {rel_type_str}"
+            )
+            return
 
         # 创建
         self.graph.add_edge(from_id, to_id, rel_type)
         txn.track_create_edge(from_id, to_id)
 
-        # 双向边自动补全
+        # 双向边自动补全（反向边已存在时保留原类型，不覆盖）
         if rel_type in (RelationType.SCENARIO, RelationType.SOCIAL, RelationType.ATTRIBUTE):
-            self.graph.add_edge(to_id, from_id, rel_type)
-            txn.track_create_edge(to_id, from_id)
+            if self.graph.graph.has_edge(to_id, from_id):
+                rev_existing = self.graph.graph.edges[to_id, from_id].get("rel_type")
+                if rev_existing != rel_type:
+                    logger.warning(
+                        f"反向边 {to_id}-->{from_id} 已存在（{rev_existing}），跳过补边"
+                    )
+            else:
+                self.graph.add_edge(to_id, from_id, rel_type)
+                txn.track_create_edge(to_id, from_id)
 
         self.stats["edges_created"] += 1
         logger.info(f"创建边: {from_id} --[{rel_type_str}]--> {to_id}")

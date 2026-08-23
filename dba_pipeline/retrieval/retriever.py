@@ -145,7 +145,8 @@ class PurposeDrivenRetriever:
         hop_history: List[Dict] = [{
             "hop": 0,
             "candidates": [
-                {"id": mid, "content": content, "purpose_score": float(s)}
+                {"id": mid, "content": content, "purpose_score": float(s),
+                 "combined_score": float(s) * self.purpose_weight_coef}
                 for mid, content, s in zip(seed_ids, seed_contents, seed_scores)
             ],
             "mean_score": mu_0,

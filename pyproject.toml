@@ -21,6 +21,7 @@ dependencies = [
     "langchain-openai>=0.1",
     "langchain-community>=0.2",
     "faiss-cpu>=1.7",
+    "requests>=2.31",
     "mcp>=2.0",
     "uvicorn>=0.30",
     "starlette>=0.37",

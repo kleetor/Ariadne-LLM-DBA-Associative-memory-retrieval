@@ -46,7 +46,7 @@ The core thesis is that the value of memory lies not in storing more, but in bei
 | Feature | Description |
 |---------|-------------|
 | 🧠 Typed knowledge graph | 6 node roles × 8 relation types, with directed, weighted edges |
-| 🔧 Automated DBA maintenance | conversation → extraction → correction → deprecation, batched async scheduling to cut tokens |
+| 🔧 Automated DBA maintenance | node extraction and edge linking as two separate steps, correction/deprecation + batched async scheduling to cut tokens |
 | 🎯 Purpose-driven retrieval | Jump Axis + Purpose Regression + Peak Finding, replacing fixed top-K |
 | 📖 StoryRank narrativization | causal chains → story fragments, avoiding context pollution for the chat LLM |
 | 🔌 MCP integration | 6 tools over stdio / SSE transports |
@@ -211,9 +211,18 @@ EMBEDDING_LOCAL=true
 
 > With `EMBEDDING_LOCAL=true`, install local dependencies first (`pip install -e ".[local]"`); otherwise startup errors out.
 
+### Extra startup flags
+
+| Flag | Description |
+|------|-------------|
+| `--vector-index` | path to a FAISS index file (optional), to restore an existing vector index |
+| `--restore-dir` | fully restore from a checkpoint directory (graph + vectors + builder + scheduler state) |
+
+> Pairs with `dba_checkpoint`: save at runtime with `dba_checkpoint`, restore at startup with `--restore-dir`.
+
 ### Run mode
 
-Only the **full DBA mode** is currently supported: an LLM must be configured (`--llm-model` or `OPENAI_MODEL`). On startup, `dba_add_conversation` invokes the internal LLM to extract nodes/edges, correct errors, and deprecate old memories; missing LLM / DBA dependencies cause an immediate error exit (no stub-mode fallback).
+Only the **full DBA mode** is currently supported: an LLM must be configured (`--llm-model` or `OPENAI_MODEL`). On startup, `dba_add_conversation` invokes the internal LLM for memory maintenance: **node extraction (Step 1) and edge linking (Step 2) are two separate LLM calls** — nodes are extracted and applied first, then edges are linked using all of this round's new nodes plus related old nodes / one-hop neighbors / existing edges, avoiding the visibility limits of a single-pass output (see the [0822 extraction evaluation report](Plan/0822——DBA抽取环节评测报告.md)). Missing LLM / DBA dependencies cause an immediate error exit (no stub-mode fallback).
 
 > The agent's LLM and Ariadne's internal maintenance LLM are **two separate models**: the agent's LLM understands intent and calls tools, while Ariadne's LLM turns conversations into graph facts. They share memory through the graph, not the context window.
 
@@ -241,7 +250,7 @@ ariadne-mcp --yaml data.yaml --llm-model gpt-4o-mini --llm-api-key sk-xxx \
 
 | Tool | Description |
 |------|-------------|
-| `dba_add_conversation` | append a conversation, triggering batched DBA maintenance |
+| `dba_add_conversation` | append a conversation; queued in the scheduler first and maintained asynchronously once a threshold is reached |
 | `dba_query_memory` | purpose-driven associative retrieval (P pipeline: Jump Axis + Purpose Regression + Peak Finding) |
 | `dba_inspect_graph` | expand a node's 1-hop neighbors |
 | `dba_intervene` | manually CRUD nodes and edges |
@@ -383,6 +392,7 @@ edges:
 ## References
 
 - [Ariadne — LLM DBA Management & Purpose-Driven Associative Memory Retrieval System](Ariadne——LLM%20DBA管理与目的驱动的联想记忆检索系统%20理论部分.md) *(theory paper, in Chinese)*
+- [Ariadne — Evaluation Report (0818-0822)](Ariadne——LLM%20DBA管理与目的驱动的联想记忆检索系统%20评测部分（0818-0822报告整合）.md) *(evaluation report, in Chinese)*
 
 ## License
 

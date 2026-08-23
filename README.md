@@ -48,7 +48,7 @@ Ariadne 将 LLM 对话中的事实抽取、纠错、去重、废弃等数据库�
 | 特性               | 说明                              |
 | ---------------- | ------------------------------- |
 | 🧠 类型化知识图谱       | 6 种节点角色 × 8 种关系类型，边带方向与权重       |
-| 🔧 DBA 自动维护      | 对话 → 抽取 → 纠错 → 废弃，批量异步调度降 token |
+| 🔧 DBA 自动维护      | 节点抽取与边连接两步分离，纠错/废弃 + 批量异步调度降 token |
 | 🎯 目的驱动检索        | 跳转轴 + 目的回归 + 寻峰终止，替代固定 top-K    |
 | 📖 StoryRank 故事化 | 因果链路 → 故事片段，避免污染聊天上下文           |
 | 🔌 MCP 集成        | 6 个工具，支持 stdio / SSE 两种传输       |
@@ -212,9 +212,36 @@ EMBEDDING_LOCAL=true
 
 > 设置 `EMBEDDING_LOCAL=true` 需先安装本地依赖 `pip install -e ".[local]"`，否则启动时报错退出。
 
+### 启动参数补充
+
+| 参数                  | 说明 |
+| --------------------- | ---- |
+| `--vector-index`      | FAISS 索引文件路径（可选），用于恢复已有向量索引 |
+| `--restore-dir`       | 从 checkpoint 目录完整恢复（图谱 + 向量 + 构建器 + 调度器状态） |
+
+> 与 `dba_checkpoint` 配合使用：运行期用 `dba_checkpoint` 落盘，启动时用 `--restore-dir` 恢复。
+
+### 启动参数补充
+
+| 参数                  | 说明 |
+| --------------------- | ---- |
+| `--vector-index`      | FAISS 索引文件路径（可选），用于恢复已有向量索引 |
+| `--restore-dir`       | 从 checkpoint 目录完整恢复（图谱 + 向量 + 构建器 + 调度器状态） |
+
+> 与 `dba_checkpoint` 配合使用：运行期用 `dba_checkpoint` 落盘，启动时用 `--restore-dir` 恢复。
+
+### 启动参数补充
+
+| 参数                  | 说明 |
+| --------------------- | ---- |
+| `--vector-index`      | FAISS 索引文件路径（可选），用于恢复已有向量索引 |
+| `--restore-dir`       | 从 checkpoint 目录完整恢复（图谱 + 向量 + 构建器 + 调度器状态） |
+
+> 与 `dba_checkpoint` 配合使用：运行期用 `dba_checkpoint` 落盘，启动时用 `--restore-dir` 恢复。
+
 ### 运行模式
 
-当前仅保留**完整 DBA 模式**：需配置 LLM（`--llm-model` 或 `OPENAI_MODEL`）。启动后 `dba_add_conversation` 会调用内部 LLM 抽取节点/边、纠错、废弃旧记忆；缺少 LLM / DBA 依赖时直接报错退出（不再降级为存根模式）。
+当前仅保留**完整 DBA 模式**：需配置 LLM（`--llm-model` 或 `OPENAI_MODEL`）。启动后 `dba_add_conversation` 会调用内部 LLM 完成记忆维护：**节点抽取（Step 1）与边连接（Step 2）是两次独立的 LLM 调用**——先抽节点并落地，再基于「本轮全部新节点 + 相关旧节点/一跳邻居/已有边」连边，避免单次输出受可见节点集合限制（详见 [0822 DBA 抽取环节评测报告](Plan/0822——DBA抽取环节评测报告.md)）。缺少 LLM / DBA 依赖时直接报错退出（不再降级为存根模式）。
 
 > Agent 客户端的 LLM 与 Ariadne 内部的维护 LLM 是**两个独立模型**：Agent 的 LLM 负责理解意图、调用工具；Ariadne 的 LLM 负责把对话变成图谱事实。两者通过图谱（而非上下文窗口）共享记忆。
 
@@ -242,7 +269,7 @@ ariadne-mcp --yaml data.yaml --llm-model gpt-4o-mini --llm-api-key sk-xxx \
 
 | Tool                   | 说明                             |
 | ---------------------- | ------------------------------ |
-| `dba_add_conversation` | 追加对话，触发 DBA 批量维护               |
+| `dba_add_conversation` | 追加对话，优先进入调度器批量累积，达阈值后异步维护 |
 | `dba_query_memory`     | 目的驱动联想检索（P 链路：跳转轴 + 目的回归 + 寻峰） |
 | `dba_inspect_graph`    | 展开节点 1-hop 邻居                  |
 | `dba_intervene`        | 人工 CRUD 节点和边                   |
@@ -384,6 +411,7 @@ edges:
 ## 参考与论文
 
 - [Ariadne——LLM DBA 管理与目的驱动的联想记忆检索系统（理论部分）](Ariadne——LLM%20DBA管理与目的驱动的联想记忆检索系统%20理论部分.md)
+- [Ariadne——LLM DBA 管理与目的驱动的联想记忆检索系统（评测部分）](Ariadne——LLM%20DBA管理与目的驱动的联想记忆检索系统%20评测部分（0818-0822报告整合）.md)
 
 ## 许可证
 

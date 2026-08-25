@@ -187,7 +187,7 @@ Baseline comparison:
 | **C** Jump Axis | directed expansion only | no purpose constraint |
 | **P** Full pipeline | directed + purpose + peak | divergence noise, output volume inflation |
 
-The core advantage is **recall depth**: at 216 nodes, P reaches R@all = 0.538 vs A = 0.159 (roughly **3.4×**), and the gap widens with scale.
+The core advantage is **associative recall breadth**: at 216 nodes, P reaches R@all = 0.538 vs A = 0.159 (roughly **3.4×**), and the gap widens with scale. Note that this R@all uses a **wide-output protocol** (P emits 6–27 items vs A fixed top-5), measuring breadth via "more output, more hits"; under a fixed top-N, P is actually weaker (P@5 = 0.160 vs A = 0.267 at 216). In the quota-aligned cross-system comparison (LiFEMem 322 nodes, candidate quota aligned at 38.3), pure vector (RAG/Mem0) achieves higher expected coverage (0.840) than P (0.765) — pure vector is better at focused semantic recall; P's unique value lies in the associative/divergence zone (pure-story comparison wins 25:5 / 26:4). The two metrics measure "associative breadth vs focused recall" — two facets of the same system (see evaluation report §4.8).
 
 ### StoryRank: narrativizing the retrieval chain
 

@@ -7,6 +7,7 @@ LLM DBA：记忆图谱的自主维护者
 
 import json
 import logging
+import re
 from typing import Dict, List, Optional, Tuple
 
 from langchain_openai import ChatOpenAI
@@ -155,6 +156,63 @@ EDGE_LINKING_USER_PROMPT = """── 对话上下文 ──
 ── 请输出边维护操作 ──"""
 
 
+# ---- 时序叙事（TEMPORAL）增强：仅在“时序叙事守卫”命中时叠加，避免常规语料过度拆分 ----
+
+NODE_TEMPORAL_EXTRA = """
+7. 时间节点单独抽取：对话中出现的明确时间/时段（如「上周一晚上」「周二」「周三凌晨」「这周」）要抽成独立的 THING 节点，content 就是该时间词本身；不要把时间写进事件 content。一个事件若发生在某个时间，需同时抽出「事件节点」和「时间节点」两个节点。"""
+
+EDGE_TEMPORAL_EXTRA = """
+8. 务必连 TEMPORAL 边（事件→时间，单向）：本轮新抽出的事件节点，若其发生时间也是一个已抽取的时间节点，用 TEMPORAL 单向连边（from=事件, to=时间）。事件之间的先后关系用 SEQUENCE（先→后），不要与「时间定位」（TEMPORAL）混为一谈：SEQUENCE 是事件 A 在事件 B 之前；TEMPORAL 是事件挂在某个时间锚点上。"""
+
+EDGE_TEMPORAL_EXAMPLE = """
+
+示例 3 —— TEMPORAL 事件→时间 + SEQUENCE 事件先后：
+
+对话：
+user(周一 20:30): 上周一晚上临时又甩过来一个紧急需求。
+user(周二 13:20): 这周二白天我一直在赶代码。
+user(周三 01:20): 周三凌晨上线，结果出了个 P0 故障。
+
+本轮新抽取的节点（事件节点与时间节点分开）：
+[e0 ACTION] 用户接到紧急需求
+[e1 ACTION] 用户加班赶代码
+[e2 STATUS] 项目上线出P0故障
+[t1 THING] 上周一晚上
+[t2 THING] 上周二白天
+[t3 THING] 上周三凌晨
+
+正确输出（事件→时间用 TEMPORAL；事件之间先后用 SEQUENCE；因果用 CAUSAL）：
+{{"edge_ops":[
+  {{"action":"create","from":"e0","to":"t1","rel_type":"TEMPORAL"}},
+  {{"action":"create","from":"e1","to":"t2","rel_type":"TEMPORAL"}},
+  {{"action":"create","from":"e2","to":"t3","rel_type":"TEMPORAL"}},
+  {{"action":"create","from":"e0","to":"e1","rel_type":"SEQUENCE"}},
+  {{"action":"create","from":"e1","to":"e2","rel_type":"SEQUENCE"}},
+  {{"action":"create","from":"e0","to":"e2","rel_type":"CAUSAL"}}
+]}}"""
+
+
+TIME_PERIOD_RE = re.compile(
+    r"昨天|明天|前天|上周|这周|本周|下周|周[一二三四五六日天]|"
+    r"\d{1,2}月(\d{1,2}[日号])?|\d{1,2}号|\d{1,2}日|"
+    r"去年|今年|明年|前年|寒假|暑假|开学|年底|年初|年初|"
+    r"春天|夏天|秋天|冬天|上半年|下半年"
+)
+
+
+def has_temporal_signal(text: str) -> bool:
+    """时序叙事守卫：仅当出现 >=2 个**不同的日期/时期词**（昨天/上周/周三/这周/去年等）时判定为时序叙事。
+
+    刻意排除「凌晨/中午/晚上/每天/近来/有时」这类日常时间副词，避免常规生活语料过度拆分；
+    也仅凭「高中/大学」等 era 词**不**触发——它们常出现在非时序的设定陈述里（如「大学时学的钢琴」），
+    单靠 era 会让大量常规语料误触发（0822 子集即如此）。真正的时序叙事靠「多个具体日期锚点」识别。
+    """
+    if not text:
+        return False
+    periods = set(m.group(0) for m in TIME_PERIOD_RE.finditer(text))
+    return len(periods) >= 2
+
+
 # ---- 维护判断（triage）Prompt ----
 
 DBA_TRIAGE_PROMPT = """判断对话是否包含值得长期记忆的用户新事实，只回答 NEEDED 或 SKIP。
@@ -208,6 +266,18 @@ class MemoryDBA:
         ])
         self.edge_chain = self.edge_prompt | self.llm
 
+        # 时序叙事增强链：仅当 has_temporal_signal(conversation) 命中才启用，
+        # 把时间节点抽取与 TEMPORAL 连边规则叠加到标准 prompt，避免常规语料过度拆分。
+        self.node_chain_temporal = ChatPromptTemplate.from_messages([
+            ("system", NODE_EXTRACTION_PROMPT.replace("\n## 输出", NODE_TEMPORAL_EXTRA + "\n\n## 输出")),
+            ("human", NODE_EXTRACTION_USER_PROMPT),
+        ]) | self.llm
+        self.edge_chain_temporal = ChatPromptTemplate.from_messages([
+            ("system", EDGE_LINKING_PROMPT.replace("\n## 输出", EDGE_TEMPORAL_EXTRA + "\n\n## 输出")),
+            ("human", EDGE_LINKING_FEWSHOT_EXAMPLE + EDGE_TEMPORAL_EXAMPLE),
+            ("human", EDGE_LINKING_USER_PROMPT),
+        ]) | self.llm
+
         # 维护判断前置（triage）：先用极小 prompt 判断是否值得维护
         self.triage_chain = ChatPromptTemplate.from_messages([
             ("system", DBA_TRIAGE_PROMPT),
@@ -241,15 +311,18 @@ class MemoryDBA:
                 "skipped": True,
             }
 
-        # Step 1：节点抽取（对话 + 相关旧节点 → node_ops → 执行）
+        # Step 1:节点抽取(对话 + 相关旧节点 → node_ops → 执行)。时序叙事守卫命中则叠加 TEMPORAL 时间节点规则。
+        temporal = has_temporal_signal(conversation)
         node_context = self._build_node_context(conversation)
-        node_ops = self._parse_response(self.node_chain.invoke(node_context).content).get("node_ops", [])
+        node_chain = self.node_chain_temporal if temporal else self.node_chain
+        node_ops = self._parse_response(node_chain.invoke(node_context).content).get("node_ops", [])
         result1 = self.builder.apply_ops(node_ops, [])
 
-        # Step 2：边连接（对话 + 本轮新节点 + 相关旧节点/一跳邻居/已有边 → edge_ops → 执行）
+        # Step 2:边连接(对话 + 本轮新节点 + 相关旧节点/一跳邻居/已有边 → edge_ops → 执行)。守卫同样驱动 TEMPORAL 连边规则与示例。
         new_ids = result1.get("created_ids", [])
         edge_context = self._build_edge_context(conversation, new_ids)
-        edge_ops = self._parse_response(self.edge_chain.invoke(edge_context).content).get("edge_ops", [])
+        edge_chain = self.edge_chain_temporal if temporal else self.edge_chain
+        edge_ops = self._parse_response(edge_chain.invoke(edge_context).content).get("edge_ops", [])
         result2 = self.builder.apply_ops([], edge_ops)
 
         logger.info(

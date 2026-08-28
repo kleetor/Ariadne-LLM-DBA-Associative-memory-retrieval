@@ -4,18 +4,29 @@
 论文第六章 Algorithm: Purpose-Driven Associative Retrieval
 """
 
+import re
 import numpy as np
 from typing import List, Tuple, Dict, Optional
 
 from langchain_openai import ChatOpenAI
 from langchain_core.embeddings import Embeddings
 
-from dba_pipeline.core.jump_axis import get_jump_weight
+from dba_pipeline.core.jump_axis import get_jump_weight, NodeType, RelationType
 from dba_pipeline.core.purpose import PurposeModel
 from dba_pipeline.core.peak_find import PeakFinder
 from dba_pipeline.graph.memory_graph import MemoryGraph
 from dba_pipeline.llm.inference import InferenceEngine
 from dba_pipeline.embedding.store import VectorStore
+
+
+# 独立时序工具 temporal_lookup 用的时间锚点判定：覆盖绝对时期 + 指示词 + 人生阶段。
+TOOL_TIME_ANCHOR_RE = re.compile(
+    r"^[这上本下前那]?周|昨天|今天|明天|前天|去年|今年|明年|前年|上个月|这个月|下个月|"
+    r"\d{1,4}年|\d{1,2}月|\d{1,2}号|\d{1,2}日|周[一二三四五六日天]|"
+    r"凌晨|早上|上午|中午|下午|晚上|那段时间|当时|近年来|"
+    r"高中|大学|大专|工作|毕业|入职|暑假|寒假|上学期|下学期|上半年|下半年|年底|年初|"
+    r"高三|高二|高一|大四|大三|大二|大一"
+)
 
 
 class PurposeDrivenRetriever:
@@ -65,6 +76,94 @@ class PurposeDrivenRetriever:
     def _embed(self, text: str) -> np.ndarray:
         return self.vector_store._embed(text)
 
+    def _is_active(self, node_id: str) -> bool:
+        """节点是否仍参与检索：必须存在，且未被废弃/遗忘。
+
+        检索链路需与 DBA 维护（deprecate/forget）保持一致，避免过期或孤立记忆进入结果。
+        """
+        node = self.graph.get_node(node_id)
+        if node is None:
+            return False
+        if node.get("deprecated") or node.get("forgotten"):
+            return False
+        return True
+
+    # ---- 独立单跳时序工具 temporal_lookup ----
+    # 定位：独立查询工具，不进入主检索流程。按"时间→事件"反向单跳取共时事实，返回多锚点供上层 LLM 挑选。
+
+    def _tool_is_time_node(self, memory_id: str) -> bool:
+        """工具判定时间锚点：th/T+数字 前缀（数据集约定），或 THING 且内容含时间/时期词。"""
+        if memory_id.startswith("th"):
+            return True
+        if len(memory_id) > 1 and memory_id[0] == "T" and memory_id[1:].isdigit():
+            return True
+        try:
+            if self.graph.get_node_type(memory_id) != NodeType.THING:
+                return False
+        except Exception:
+            return False
+        content = self.graph.graph.nodes[memory_id].get("content", "")
+        return bool(TOOL_TIME_ANCHOR_RE.search(content))
+
+    def _has_reverse_temporal(self, memory_id: str) -> bool:
+        """是否为"真时间锚点"：存在反向 TEMPORAL 邻居（有事件锚定到它）。"""
+        try:
+            for nb, rel_type, is_reverse in self.graph.get_neighbors(memory_id):
+                if rel_type == RelationType.TEMPORAL and is_reverse:
+                    return True
+        except Exception:
+            return False
+        return False
+
+    def temporal_lookup(
+        self,
+        query: str,
+        k_seed: int = 8,
+        max_facts: int = 8,
+        max_anchors: int = 3,
+    ) -> Dict:
+        """独立单跳时序工具——**仅做"时间→事件"反向**（主检索器反向权重为 0、做不到的部分）。
+
+        语义匹配到时间锚点，沿 TEMPORAL 边**反向**取共时事件。
+        · 不做正向（事件→时间，那是主检索器的活）、不链式扩展、不做目的打分挤占、不跨期漂移。
+        · 查询可能命中多个时间锚点（如"三年"可指大专三年/工作三年），**返回全部候选锚点的事实组，
+          交由上层 LLM 判断最相关的一个/多个**，而不是硬性消歧。
+        · 只返回"真锚点"（带反向 TEMPORAL 邻居）的事实组；无可用锚点时返回空 matches。
+
+        Returns:
+            {"query", "matches":[{"time_anchor":{"id","content"}, "facts":[{"id","content","from"}...]}...],
+             "count"}
+        """
+        try:
+            hits = self.vector_store.search(query, k=k_seed)  # [(id, score, meta)]
+        except Exception:
+            hits = []
+        matched = [(h[0], h[1]) if len(h) >= 2 else (h[0], 1.0) for h in hits]
+
+        # 只定位"时间锚点"（时间推事件型查询的锚必须是时间节点）；跳过废弃/遗忘节点
+        time_cands = [m for m in matched if self._is_active(m[0]) and self._tool_is_time_node(m[0])]
+        # 过滤真锚点：只有带反向 TEMPORAL 邻居的才是时间锚点（排除误判的"含时间词事件节点"）。
+        usable = [m for m in time_cands if self._has_reverse_temporal(m[0])]
+
+        matches: List[Dict] = []
+        for m in usable[:max_anchors]:
+            anchor_id = m[0]
+            anchor_content = self.graph.get_content(anchor_id) or ""
+            # 时间 → 共时事件（反向，单跳）
+            facts: List[Dict] = []
+            seen = set([anchor_id])
+            for nb, rel_type, is_reverse in self.graph.get_neighbors(anchor_id):
+                if rel_type == RelationType.TEMPORAL and is_reverse and nb not in seen:
+                    if not self._is_active(nb):
+                        continue
+                    seen.add(nb)
+                    facts.append({"id": nb, "content": self.graph.get_content(nb) or "", "from": anchor_id})
+            if max_facts:
+                facts = facts[:max_facts]
+            matches.append({"time_anchor": {"id": anchor_id, "content": anchor_content}, "facts": facts})
+
+        return {"query": query, "matches": matches, "count": len(matches)}
+
     # ---- 算法主流程 ----
 
     def retrieve(
@@ -108,22 +207,22 @@ class PurposeDrivenRetriever:
         text_seeds = self.vector_store.search(query, k=half_k)
         purpose_seeds = self.vector_store.search_by_vector(purpose_vec, k=seed_k - half_k)
 
-        # 合并去重，保持 text 种子优先顺序，purpose 种子补充
+        # 合并去重，保持 text 种子优先顺序，purpose 种子补充；跳过废弃/遗忘节点
         seen = set()
         seed_ids = []
         for r in text_seeds:
-            if r[0] not in seen:
+            if r[0] not in seen and self._is_active(r[0]):
                 seen.add(r[0])
                 seed_ids.append(r[0])
         for r in purpose_seeds:
-            if r[0] not in seen and len(seed_ids) < seed_k:
+            if r[0] not in seen and len(seed_ids) < seed_k and self._is_active(r[0]):
                 seen.add(r[0])
                 seed_ids.append(r[0])
         # 不足时用更多 text 种子补齐
         if len(seed_ids) < seed_k:
             extra = self.vector_store.search(query, k=seed_k * 2)
             for r in extra:
-                if r[0] not in seen and len(seed_ids) < seed_k:
+                if r[0] not in seen and len(seed_ids) < seed_k and self._is_active(r[0]):
                     seen.add(r[0])
                     seed_ids.append(r[0])
         # 计算种子轮目的关联度（使用预缓存向量，无 API 调用）
@@ -175,8 +274,8 @@ class PurposeDrivenRetriever:
                 result_ids = current_ids
                 break
 
-            # 目的过滤（使用预缓存向量，无 API 调用）
-            candidate_ids = list(expanded.keys())
+            # 目的过滤（使用预缓存向量，无 API 调用）；跳过废弃/遗忘节点
+            candidate_ids = [mid for mid in expanded.keys() if self._is_active(mid)]
             candidate_contents = self.graph.get_contents(candidate_ids)
             candidate_vectors = self.vector_store.get_content_vectors(candidate_ids)
             candidate_scores = self.purpose_model.compute_purpose_score_from_vectors(
@@ -188,15 +287,18 @@ class PurposeDrivenRetriever:
             hop_threshold = self._get_hop_threshold(hop)
             for i, mid in enumerate(candidate_ids):
                 ps = float(candidate_scores[i])
+                trace = expanded[mid]
+                rel_type = trace["rel_type"]
+                is_rev = trace["is_reverse"]
                 if ps < hop_threshold:
                     continue
-                trace = expanded[mid]
+                jw = trace["weight"]
                 filtered[mid] = {
                     "content": candidate_contents[i],
-                    "jump_weight": trace["weight"],
+                    "jump_weight": jw,
                     "from": trace["from"],
-                    "rel_type": trace["rel_type"],
-                    "is_reverse": trace["is_reverse"],
+                    "rel_type": rel_type,
+                    "is_reverse": is_rev,
                     "purpose_score": ps,
                 }
 
@@ -292,6 +394,8 @@ class PurposeDrivenRetriever:
 
         memories = []
         for mid in result_ids:
+            if not self._is_active(mid):
+                continue
             content = self.graph.get_content(mid)
             if content:
                 memories.append((mid, content))

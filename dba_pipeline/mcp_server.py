@@ -182,6 +182,25 @@ class DBAServer:
             logging.error(f"StoryRank 检索失败: {e}", exc_info=True)
             return {"error": str(e), "stories": [], "method": "story_rank_failed"}
 
+    def temporal_lookup(self, query: str, k_seed: int = 8, max_facts: int = 8,
+                        max_anchors: int = 3) -> dict:
+        """独立单跳时序工具（仅"时间→事件"反向）。
+
+        走检索链路自身的 temporal_lookup：语义匹配到时间锚点 → 沿 TEMPORAL 反向取共时事件。
+        不进入主检索/故事化流程，不挤占主检索候选集。
+        """
+        if self.retriever is None:
+            return {"error": "检索链路未初始化", "time_anchor": {"id": None, "content": ""}, "facts": []}
+        try:
+            res = self.retriever.temporal_lookup(query, k_seed=k_seed, max_facts=max_facts,
+                                                 max_anchors=max_anchors)
+            if isinstance(res, dict) and not res.get("matches"):
+                res["note"] = "未定位到可用时间锚点；这可能是‘事件→时间/因果联想’类问题，考虑改用 dba_query_memory。"
+            return res
+        except Exception as e:
+            logging.error(f"temporal_lookup 失败: {e}", exc_info=True)
+            return {"error": str(e), "time_anchor": {"id": None, "content": ""}, "facts": []}
+
     def inspect_graph(self, node_id: str = None) -> dict:
         """查看图谱：指定节点展开 1-hop 邻居"""
         if not node_id:
@@ -448,7 +467,11 @@ TOOL_SCHEMAS = [
         "name": "dba_query_memory",
         "description": (
             "在回答用户问题、给出建议或延续话题之前，先调用此工具检索与查询相关的"
-            "历史记忆，返回按因果链路整理好的故事片段，以便结合用户过去的上下文做出更贴合的回答。"
+            "历史记忆，返回按因果链路整理好的故事片段，以便结合用户过去的上下文做出更贴合的回答。\n"
+            "适用范围（除了下面 dba_temporal_lookup 明确的【在某个时间发生了什么】之外，都用这个）：\n"
+            "- 问原因/为什么（因果）、现状、整体看法、与谁/什么有关、偏爱、特性\n"
+            "- 问某个具体事件发生在什么时候（事件→时间）、跨多个时期的完整经历（从高中到工作…）\n"
+            "- 需要跨节点联想/推理/先后顺序的记忆检索"
         ),
         "inputSchema": {
             "type": "object",
@@ -460,6 +483,42 @@ TOOL_SCHEMAS = [
                 "rerank_k": {
                     "type": "integer",
                     "description": "最多返回的故事片段数（默认 20，0 表示不截断）",
+                },
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "dba_temporal_lookup",
+        "description": (
+            "【只在用户问“在某个具体时间点发生了哪些事/那个时间做了什么”时调用】——即“时间→事件”的共时查询。\n"
+            "典型信号：昨天/今天/上周/上个月/高中学期/大二上/高三下学期 等时间词 + 做了什么/发生了什么事/经历了什么。\n"
+            "它会定位到时间锚点，返回同一时间发生的几个事实节点（单跳，扁平列表），用于回答“那个时间我都干了啥”。\n"
+            "注意：查询可能命中多个时间锚点（如“三年”可指大专三年或工作三年），工具会**返回全部候选锚点的事实组**，"
+            "请你结合问题判断最相关的一个/多个。\n"
+            "【不要用于】以下场景——这些请改用 dba_query_memory：\n"
+            "- 问“什么时候做了某件事”（事件→时间，如‘什么时候开始学吉他’）\n"
+            "- 问“为什么/现状/整体经历/跨多个时期的完整历程”（需因果联想/多期跨越）\n"
+            "- 没有明确单一时间锚点的联想类问题"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "查询文本，用于定位时间锚点并取该时间发生的共时事实",
+                },
+                "k_seed": {
+                    "type": "integer",
+                    "description": "用于语义定位时间锚点的候选数（默认 8）",
+                },
+                "max_facts": {
+                    "type": "integer",
+                    "description": "每个锚点最多返回的共时事实数（默认 8，0 表示不截断）",
+                },
+                "max_anchors": {
+                    "type": "integer",
+                    "description": "最多返回的时间锚点候选数（默认 3，按相关性从高到低）",
                 },
             },
             "required": ["query"],
@@ -549,6 +608,8 @@ def create_mcp_server(dba: DBAServer) -> "Server":
             result = dba.add_conversation(**arguments)
         elif name == "dba_query_memory":
             result = dba.query_memory(**arguments)
+        elif name == "dba_temporal_lookup":
+            result = dba.temporal_lookup(**arguments)
         elif name == "dba_inspect_graph":
             result = dba.inspect_graph(**arguments)
         elif name == "dba_intervene":
@@ -677,8 +738,8 @@ def _print_status(graph, dba, retriever, vector_ready, args) -> None:
     print(f"  向量索引   : {'已就绪' if vector_ready else '未启用'}", file=sys.stderr)
     print(f"  传输模式   : {transport}", file=sys.stderr)
     print(f"  图谱规模   : {graph.node_count} 节点 / {graph.edge_count} 边", file=sys.stderr)
-    print(f"  工具        : dba_add_conversation / dba_query_memory / dba_inspect_graph / "
-          f"dba_intervene / dba_checkpoint / dba_get_stats", file=sys.stderr)
+    print(f"  工具        : dba_add_conversation / dba_query_memory / dba_temporal_lookup / "
+          f"dba_inspect_graph / dba_intervene / dba_checkpoint / dba_get_stats", file=sys.stderr)
     print("=" * 60, file=sys.stderr)
 
 

@@ -6,6 +6,7 @@ LangChain 向量存储封装
 
 from typing import List, Tuple, Optional
 import logging
+import threading
 
 import numpy as np
 import requests
@@ -113,6 +114,10 @@ class VectorStore:
         self._content_vectors: dict = {}
         # 内容缓存: {memory_id: content}，用于全量重建 FAISS 索引
         self._contents: dict = {}
+        # 串行化对内部状态（缓存字典 + FAISS store）的访问。
+        # 检索读线程与 DBA 维护写线程（maintenance_scheduler）共享同一实例，
+        # FAISS 为 C++ 原生实现，读写并发不受 GIL 保护，须加锁避免竞态/崩溃。
+        self._lock = threading.RLock()
 
     def _embed(self, text: str) -> np.ndarray:
         """获取文本的向量表示"""
@@ -131,57 +136,71 @@ class VectorStore:
         """批量添加记忆到向量存储（预缓存向量 + 增量写入，不重复 embedding）"""
         # 无 embedding 配置时降级：仅维护内容映射，不构建向量索引
         if self.embeddings is None:
-            for mid, content in zip(memory_ids, contents):
-                self._contents[mid] = content
+            with self._lock:
+                for mid, content in zip(memory_ids, contents):
+                    self._contents[mid] = content
             logger.warning("embeddings 未配置，跳过向量写入（节点仅存在于图谱）")
             return
 
-        # 预计算并缓存所有新节点的向量
-        new_ids = [mid for mid in memory_ids if mid not in self._content_vectors]
-        if new_ids:
-            new_contents = [c for mid, c in zip(memory_ids, contents) if mid in new_ids]
-            vectors = self.embed_batch(new_contents)
-            for mid, vec in zip(new_ids, vectors):
-                self._content_vectors[mid] = vec
-        # 同步内容映射（用于全量重建）
-        for mid, content in zip(memory_ids, contents):
-            self._contents[mid] = content
+        # 锁外批量嵌入（网络/CPU 开销大），避免阻塞并发检索线程
+        with self._lock:
+            new_ids = [mid for mid in memory_ids if mid not in self._content_vectors]
+        new_vectors = self.embed_batch(
+            [c for mid, c in zip(memory_ids, contents) if mid in new_ids]
+        ) if new_ids else []
+        vec_map = dict(zip(new_ids, new_vectors))
 
         # 用预缓存的向量直接写入 FAISS，避免 from_documents/add_documents 重复 embedding
         text_embeddings = []
+        embed_contents = []
         doc_metadatas = []
         for i, (mid, content) in enumerate(zip(memory_ids, contents)):
-            vec = self._content_vectors[mid]
+            vec = vec_map.get(mid)
+            if vec is None:
+                vec = self._content_vectors.get(mid)
+            if vec is None:
+                logger.warning(f"节点 {mid} 缺少向量，跳过写入")
+                continue
             text_embeddings.append((content, vec.tolist()))
+            embed_contents.append(content)
             doc_metadatas.append({
                 "memory_id": mid,
                 **(metadatas[i] if metadatas else {}),
             })
 
-        if self.store is None:
-            if self.backend == "faiss":
-                self.store = FAISS.from_embeddings(
-                    text_embeddings, self.embeddings, metadatas=doc_metadatas,
-                )
-            elif self.backend == "chroma":
-                if self.persist_dir is None:
-                    self.persist_dir = "./chroma_db"
-                documents = [
-                    Document(page_content=content, metadata=meta)
-                    for content, meta in zip(contents, doc_metadatas)
-                ]
-                self.store = Chroma.from_documents(
-                    documents, self.embeddings, persist_directory=self.persist_dir,
-                )
-        else:
-            if self.backend == "faiss":
-                self.store.add_embeddings(text_embeddings, metadatas=doc_metadatas)
-            elif self.backend == "chroma":
-                documents = [
-                    Document(page_content=content, metadata=meta)
-                    for content, meta in zip(contents, doc_metadatas)
-                ]
-                self.store.add_documents(documents)
+        with self._lock:
+            for mid, vec in vec_map.items():
+                self._content_vectors[mid] = vec
+            # 同步内容映射（用于全量重建）
+            for mid, content in zip(memory_ids, contents):
+                self._contents[mid] = content
+
+            if not text_embeddings:
+                return
+            if self.store is None:
+                if self.backend == "faiss":
+                    self.store = FAISS.from_embeddings(
+                        text_embeddings, self.embeddings, metadatas=doc_metadatas,
+                    )
+                elif self.backend == "chroma":
+                    if self.persist_dir is None:
+                        self.persist_dir = "./chroma_db"
+                    documents = [
+                        Document(page_content=content, metadata=meta)
+                        for content, meta in zip(embed_contents, doc_metadatas)
+                    ]
+                    self.store = Chroma.from_documents(
+                        documents, self.embeddings, persist_directory=self.persist_dir,
+                    )
+            else:
+                if self.backend == "faiss":
+                    self.store.add_embeddings(text_embeddings, metadatas=doc_metadatas)
+                elif self.backend == "chroma":
+                    documents = [
+                        Document(page_content=content, metadata=meta)
+                        for content, meta in zip(embed_contents, doc_metadatas)
+                    ]
+                    self.store.add_documents(documents)
 
     def update_memories(
         self,
@@ -204,49 +223,53 @@ class VectorStore:
             return
 
         vectors = self.embed_batch(contents)
-        for mid, content, vec in zip(memory_ids, contents, vectors):
-            self._content_vectors[mid] = vec
-            self._contents[mid] = content
+        with self._lock:
+            for mid, content, vec in zip(memory_ids, contents, vectors):
+                self._content_vectors[mid] = vec
+                self._contents[mid] = content
 
-        self._rebuild_index()
+            self._rebuild_index()
 
     def remove_memories(self, memory_ids: List[str]):
         """从向量库移除节点（更新缓存后全量重建索引）"""
-        changed = False
-        for mid in memory_ids:
-            if mid in self._content_vectors:
-                del self._content_vectors[mid]
-                changed = True
-            if mid in self._contents:
-                del self._contents[mid]
-                changed = True
-        if changed:
-            self._rebuild_index()
+        with self._lock:
+            changed = False
+            for mid in memory_ids:
+                if mid in self._content_vectors:
+                    del self._content_vectors[mid]
+                    changed = True
+                if mid in self._contents:
+                    del self._contents[mid]
+                    changed = True
+            if changed:
+                self._rebuild_index()
 
     def clear_vectors(self):
         """清空向量缓存与索引（用于以图谱为权威全量重建）"""
-        self._content_vectors.clear()
-        self._contents.clear()
-        self.store = None
+        with self._lock:
+            self._content_vectors.clear()
+            self._contents.clear()
+            self.store = None
 
     def _rebuild_index(self):
         """从权威映射（_content_vectors + _contents）全量重建 FAISS 索引"""
-        if self.backend != "faiss":
-            logger.warning("全量重建仅支持 FAISS 后端")
-            return
-        if not self._content_vectors:
-            self.store = None
-            return
-        text_embeddings = []
-        doc_metadatas = []
-        for mid, vec in self._content_vectors.items():
-            content = self._contents.get(mid, "")
-            text_embeddings.append((content, np.asarray(vec).tolist()))
-            doc_metadatas.append({"memory_id": mid})
-        self.store = FAISS.from_embeddings(
-            text_embeddings, self.embeddings, metadatas=doc_metadatas,
-        )
-        logger.info(f"FAISS 索引已重建: {len(text_embeddings)} 条向量")
+        with self._lock:
+            if self.backend != "faiss":
+                logger.warning("全量重建仅支持 FAISS 后端")
+                return
+            if not self._content_vectors:
+                self.store = None
+                return
+            text_embeddings = []
+            doc_metadatas = []
+            for mid, vec in self._content_vectors.items():
+                content = self._contents.get(mid, "")
+                text_embeddings.append((content, np.asarray(vec).tolist()))
+                doc_metadatas.append({"memory_id": mid})
+            self.store = FAISS.from_embeddings(
+                text_embeddings, self.embeddings, metadatas=doc_metadatas,
+            )
+            logger.info(f"FAISS 索引已重建: {len(text_embeddings)} 条向量")
 
     def search(
         self,
@@ -258,15 +281,16 @@ class VectorStore:
         Returns:
             [(memory_id, score, metadata), ...]
         """
-        if self.store is None:
-            return []
+        with self._lock:
+            if self.store is None:
+                return []
 
-        docs_with_scores = self.store.similarity_search_with_score(query, k=k)
-        results = []
-        for doc, score in docs_with_scores:
-            mid = doc.metadata.get("memory_id", "")
-            results.append((mid, float(score), doc.metadata))
-        return results
+            docs_with_scores = self.store.similarity_search_with_score(query, k=k)
+            results = []
+            for doc, score in docs_with_scores:
+                mid = doc.metadata.get("memory_id", "")
+                results.append((mid, float(score), doc.metadata))
+            return results
 
     def search_by_vector(
         self,
@@ -274,36 +298,38 @@ class VectorStore:
         k: int = 5,
     ) -> List[Tuple[str, float]]:
         """按向量检索（用于目的向量匹配）"""
-        if self.store is None:
-            return []
-        vec = vector.tolist() if hasattr(vector, 'tolist') else list(vector)
-        # 兼容不同版本的 FAISS API
-        try:
-            docs_with_scores = self.store.similarity_search_by_vector_with_relevance_scores(
-                vec, k=k
-            )
-            return [
-                (doc.metadata.get("memory_id", ""), float(score))
-                for doc, score in docs_with_scores
-            ]
-        except AttributeError:
-            # 降级：用不带分数的搜索，分数不可靠
-            import logging
-            logging.warning(
-                "FAISS 不支持 similarity_search_by_vector_with_relevance_scores，"
-                "搜索结果分数为占位值 1.0，可能影响排序准确性。"
-            )
-            docs = self.store.similarity_search_by_vector(vec, k=k)
-            return [
-                (doc.metadata.get("memory_id", ""), 1.0)
-                for doc in docs
-            ]
+        with self._lock:
+            if self.store is None:
+                return []
+            vec = vector.tolist() if hasattr(vector, 'tolist') else list(vector)
+            # 兼容不同版本的 FAISS API
+            try:
+                docs_with_scores = self.store.similarity_search_by_vector_with_relevance_scores(
+                    vec, k=k
+                )
+                return [
+                    (doc.metadata.get("memory_id", ""), float(score))
+                    for doc, score in docs_with_scores
+                ]
+            except AttributeError:
+                # 降级：用不带分数的搜索，分数不可靠
+                import logging
+                logging.warning(
+                    "FAISS 不支持 similarity_search_by_vector_with_relevance_scores，"
+                    "搜索结果分数为占位值 1.0，可能影响排序准确性。"
+                )
+                docs = self.store.similarity_search_by_vector(vec, k=k)
+                return [
+                    (doc.metadata.get("memory_id", ""), 1.0)
+                    for doc in docs
+                ]
 
     @property
     def embedding_dim(self) -> int:
         """向量维度"""
-        if self._content_vectors:
-            return len(list(self._content_vectors.values())[0])
+        with self._lock:
+            if self._content_vectors:
+                return len(list(self._content_vectors.values())[0])
         if self.embeddings is None:
             return 0
         test_vec = self._embed("test")
@@ -311,67 +337,71 @@ class VectorStore:
 
     def get_content_vectors(self, memory_ids: List[str]) -> List[np.ndarray]:
         """获取预缓存的节点向量（无 API 调用）"""
-        return [self._content_vectors.get(mid) for mid in memory_ids]
+        with self._lock:
+            return [self._content_vectors.get(mid) for mid in memory_ids]
 
     def has_vectors(self) -> bool:
         """是否已有向量缓存"""
-        return len(self._content_vectors) > 0
+        with self._lock:
+            return len(self._content_vectors) > 0
 
     # ---- P3b: 快照持久化 ----
 
     def save(self, path: str):
         """将 FAISS 索引和向量缓存保存到磁盘"""
-        if self.store is None or self.backend != "faiss":
-            logger.warning("无可保存的 FAISS 索引")
-            return
-        import os
-        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-        self.store.save_local(path)
-        # 保存 _content_vectors 缓存到 .npz（与 FAISS 索引同目录）
-        if self._content_vectors:
-            import numpy as np
-            vec_path = os.path.join(os.path.dirname(path) or ".", "content_vectors.npz")
-            ids = list(self._content_vectors.keys())
-            vectors = np.stack([self._content_vectors[k] for k in ids])
-            contents = np.array([self._contents.get(k, "") for k in ids])
-            np.savez_compressed(vec_path, ids=np.array(ids), vectors=vectors, contents=contents)
-            logger.info(f"向量缓存已保存: {len(ids)} 个向量")
-        logger.info(f"FAISS 索引已保存: {path} ({self.store.index.ntotal} 向量)")
+        with self._lock:
+            if self.store is None or self.backend != "faiss":
+                logger.warning("无可保存的 FAISS 索引")
+                return
+            import os
+            os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+            self.store.save_local(path)
+            # 保存 _content_vectors 缓存到 .npz（与 FAISS 索引同目录）
+            if self._content_vectors:
+                import numpy as np
+                vec_path = os.path.join(os.path.dirname(path) or ".", "content_vectors.npz")
+                ids = list(self._content_vectors.keys())
+                vectors = np.stack([self._content_vectors[k] for k in ids])
+                contents = np.array([self._contents.get(k, "") for k in ids])
+                np.savez_compressed(vec_path, ids=np.array(ids), vectors=vectors, contents=contents)
+                logger.info(f"向量缓存已保存: {len(ids)} 个向量")
+            logger.info(f"FAISS 索引已保存: {path} ({self.store.index.ntotal} 向量)")
 
     def load(self, path: str, embeddings: "Embeddings" = None):
         """从磁盘加载 FAISS 索引和向量缓存"""
-        if self.backend != "faiss":
-            raise ValueError("仅 FAISS 支持加载")
-        import os
-        if not os.path.exists(path):
-            raise FileNotFoundError(f"FAISS 索引文件不存在: {path}")
-        emb = embeddings or self.embeddings
-        # 注意：FAISS 索引基于 pickle 反序列化，仅应从可信的本地 checkpoint 加载
-        self.store = FAISS.load_local(
-            path, emb, allow_dangerous_deserialization=True,
-        )
-        # 恢复 _content_vectors 缓存
-        vec_path = os.path.join(os.path.dirname(path) or ".", "content_vectors.npz")
-        if os.path.exists(vec_path):
-            import numpy as np
-            # 缓存仅含常规 dtype 数组，禁用 pickle 以降低反序列化风险
-            data = np.load(vec_path, allow_pickle=False)
-            ids = data["ids"]
-            vectors = data["vectors"]
-            self._content_vectors = {str(k): v for k, v in zip(ids, vectors)}
-            # 恢复内容映射（兼容旧格式：无 contents 字段时尝试从 docstore 补全）
-            if "contents" in data:
-                contents = data["contents"]
-                self._contents = {str(k): str(v) for k, v in zip(ids, contents)}
-            else:
-                self._contents = {}
-                try:
-                    docstore = self.store.docstore
-                    for doc in docstore._dict.values():
-                        mid = doc.metadata.get("memory_id")
-                        if mid in self._content_vectors:
-                            self._contents[mid] = doc.page_content
-                except Exception:
-                    pass
+        with self._lock:
+            if self.backend != "faiss":
+                raise ValueError("仅 FAISS 支持加载")
+            import os
+            if not os.path.exists(path):
+                raise FileNotFoundError(f"FAISS 索引文件不存在: {path}")
+            emb = embeddings or self.embeddings
+            # 注意：FAISS 索引基于 pickle 反序列化，仅应从可信的本地 checkpoint 加载
+            self.store = FAISS.load_local(
+                path, emb, allow_dangerous_deserialization=True,
+            )
+            # 恢复 _content_vectors 缓存
+            vec_path = os.path.join(os.path.dirname(path) or ".", "content_vectors.npz")
+            if os.path.exists(vec_path):
+                import numpy as np
+                # 缓存仅含常规 dtype 数组，禁用 pickle 以降低反序列化风险
+                data = np.load(vec_path, allow_pickle=False)
+                ids = data["ids"]
+                vectors = data["vectors"]
+                self._content_vectors = {str(k): v for k, v in zip(ids, vectors)}
+                # 恢复内容映射（兼容旧格式：无 contents 字段时尝试从 docstore 补全）
+                if "contents" in data:
+                    contents = data["contents"]
+                    self._contents = {str(k): str(v) for k, v in zip(ids, contents)}
+                else:
+                    self._contents = {}
+                    try:
+                        docstore = self.store.docstore
+                        for doc in docstore._dict.values():
+                            mid = doc.metadata.get("memory_id")
+                            if mid in self._content_vectors:
+                                self._contents[mid] = doc.page_content
+                    except Exception:
+                        pass
             logger.info(f"向量缓存已恢复: {len(self._content_vectors)} 个向量")
         logger.info(f"FAISS 索引已加载: {path} ({self.store.index.ntotal} 向量)")

@@ -48,7 +48,7 @@ The ultimate goal is to let an Agent **recall an experience like a person rememb
 - [Architecture](#architecture)
 - [Installation](#installation)
 - [Quick Start](#quick-start)
-- [Retrieval Method: P Baseline](#retrieval-method-p-baseline)
+- [Retrieval Method: PAR Baseline](#retrieval-method-par-baseline)
 - [MCP Server](#mcp-server)
 - [Data Format](#data-format)
 - [Type System](#type-system)
@@ -60,7 +60,7 @@ The ultimate goal is to let an Agent **recall an experience like a person rememb
 
 ## Overview
 
-Ariadne applies **Database Administration (DBA)** concepts — fact extraction, error correction, deduplication, and deprecation — to LLM memory systems, modeling long-term memory as a **directed, typed knowledge graph**, on top of which it implements a **purpose-driven** associative memory retrieval pipeline (the "P" pipeline).
+Ariadne applies **Database Administration (DBA)** concepts — fact extraction, error correction, deduplication, and deprecation — to LLM memory systems, modeling long-term memory as a **directed, typed knowledge graph**, on top of which it implements a **purpose-driven** associative memory retrieval pipeline (the "PAR" pipeline).
 
 The core thesis is that the value of memory lies not in storing more, but in being recalled with the correct causal structure when needed. To that end, Ariadne provides:
 
@@ -88,7 +88,7 @@ The core thesis is that the value of memory lies not in storing more, but in bei
                         │              Ariadne Core Pipeline        │
                         └──────────────────────────────────────────┘
 
-Conversation ──► DBA Maintenance ──► MemoryGraph + VectorStore ──► P Retrieval ──► StoryRank ──► Reply
+Conversation ──► DBA Maintenance ──► MemoryGraph + VectorStore ──► PAR Retrieval ──► StoryRank ──► Reply
     │                │                        │
     │      MaintenanceScheduler               ├──► API Server (HTTP REST + 3D panel)
     │      (batched async)                    ├──► MCP Server (6 tools, stdio / SSE)
@@ -170,9 +170,9 @@ Generate a self-contained visualization page without a server:
 ariadne-render --yaml data/sample_graph.yaml -o output.html
 ```
 
-## Retrieval Method: P Baseline
+## Retrieval Method: PAR Baseline
 
-The proposed retrieval method **P (Proposed)** is the full pipeline, composed of three mechanisms:
+The proposed retrieval method **PAR (Proposed)** is the full pipeline, composed of three mechanisms:
 
 1. **Jump Axis**: edges are typed into 8 relation types and nodes classified into 6 roles; a 6×8 weight matrix drives directed expansion, with zero-weight directions blocked outright to avoid undirected diffusion.
 2. **Purpose Regression**: an LLM infers the query's implicit purpose and encodes it as a vector; each expansion step filters candidates that deviate from that purpose.
@@ -185,13 +185,13 @@ Baseline comparison:
 | **A** Pure vector | semantic embedding matching | no directionality, degrades fast on large graphs |
 | **B** Vector + graph hybrid | undirected graph expansion | undirected, no incrementality (A=B in practice) |
 | **C** Jump Axis | directed expansion only | no purpose constraint |
-| **P** Full pipeline | directed + purpose + peak | divergence noise, output volume inflation |
+| **PAR** Full pipeline | directed + purpose + peak | divergence noise, output volume inflation |
 
-The core advantage is **associative recall breadth**: at 216 nodes, P reaches R@all = 0.538 vs A = 0.159 (roughly **3.4×**), and the gap widens with scale. Note that this R@all uses a **wide-output protocol** (P emits 6–27 items vs A fixed top-5), measuring breadth via "more output, more hits"; under a fixed top-N, P is actually weaker (P@5 = 0.160 vs A = 0.267 at 216). In the quota-aligned cross-system comparison (LiFEMem 322 nodes, candidate quota aligned at 38.3), pure vector (RAG/Mem0) achieves higher expected coverage (0.840) than P (0.765) — pure vector is better at focused semantic recall; P's unique value lies in the associative/divergence zone (pure-story comparison wins 25:5 / 26:4). The two metrics measure "associative breadth vs focused recall" — two facets of the same system (see evaluation report §4.8).
+The core advantage is **associative recall breadth**: at 216 nodes, PAR reaches R@all = 0.538 vs A = 0.159 (roughly **3.4×**), and the gap widens with scale. Note that this R@all uses a **wide-output protocol** (PAR emits 6–27 items vs A fixed top-5), measuring breadth via "more output, more hits"; under a fixed top-N, PAR is actually weaker (P@5 = 0.160 vs A = 0.267 at 216). In the quota-aligned cross-system comparison (LiFEMem 322 nodes, candidate quota aligned at 38.3), pure vector (RAG/Mem0) achieves higher expected coverage (0.840) than PAR (0.765) — pure vector is better at focused semantic recall; PAR's unique value lies in the associative/divergence zone (pure-story comparison wins 25:5 / 26:4). The two metrics measure "associative breadth vs focused recall" — two facets of the same system (see evaluation report §4.8).
 
 ### StoryRank: narrativizing the retrieval chain
 
-P retrieval produces a **causal chain** of "nodes + relations" rather than a flat candidate list. Before sending it to reply generation, StoryRank understands and organizes this chain into **story-fragment documents**, serving three responsibilities:
+PAR retrieval produces a **causal chain** of "nodes + relations" rather than a flat candidate list. Before sending it to reply generation, StoryRank understands and organizes this chain into **story-fragment documents**, serving three responsibilities:
 
 1. **Preserve causality**: relation types (`CAUSAL` / `PREFERENCE` / `SCENARIO`, etc.) are naturally woven into story sentences.
 2. **Avoid polluting the chat context**: the chat model receives clean stories instead of raw `[id] content` node listings.
@@ -279,7 +279,7 @@ ariadne-mcp --yaml data.yaml --llm-model gpt-4o-mini --llm-api-key sk-xxx \
 | Tool | Description |
 |------|-------------|
 | `dba_add_conversation` | append a conversation; queued in the scheduler first and maintained asynchronously once a threshold is reached |
-| `dba_query_memory` | purpose-driven associative retrieval (P pipeline: Jump Axis + Purpose Regression + Peak Finding) |
+| `dba_query_memory` | purpose-driven associative retrieval (PAR pipeline: Jump Axis + Purpose Regression + Peak Finding) |
 | `dba_inspect_graph` | expand a node's 1-hop neighbors |
 | `dba_intervene` | manually CRUD nodes and edges |
 | `dba_checkpoint` | save a full checkpoint |
@@ -287,7 +287,7 @@ ariadne-mcp --yaml data.yaml --llm-model gpt-4o-mini --llm-api-key sk-xxx \
 
 ### Query notes (`dba_query_memory`)
 
-- Runs the full P pipeline: Jump Axis directed expansion + Purpose Regression filtering + Peak Finding termination.
+- Runs the full PAR pipeline: Jump Axis directed expansion + Purpose Regression filtering + Peak Finding termination.
 - `rerank_k` caps the number of returned items (rank-k, default 20); `total_matched` is the true candidate count and `returned` is the number actually returned. If `total_matched > returned`, raise `rerank_k` to retrieve the remaining memories.
 - Deprecated/forgotten nodes are filtered out and never appear in results.
 
@@ -407,7 +407,7 @@ edges:
     │   └── maintenance_scheduler.py
     ├── llm/                        # inference engine
     │   └── inference.py
-    ├── retrieval/                  # P retrieval + StoryRank
+    ├── retrieval/                  # PAR retrieval + StoryRank
     │   └── retriever.py
     ├── viz/                        # API server, 3D rendering, export
     │   ├── api_server.py

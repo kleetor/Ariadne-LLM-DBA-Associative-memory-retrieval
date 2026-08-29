@@ -50,7 +50,7 @@ Ariadne 的长期目标是回答一个问题：**Agent 应如何像人类一样�
 - [架构](#架构)
 - [安装](#安装)
 - [快速开始](#快速开始)
-- [检索方法：P 基线](#检索方法p-基线)
+- [检索方法：PAR 基线](#检索方法par-基线)
 - [MCP 服务详解](#mcp-服务详解)
 - [数据格式](#数据格式)
 - [类型体系](#类型体系)
@@ -62,7 +62,7 @@ Ariadne 的长期目标是回答一个问题：**Agent 应如何像人类一样�
 
 ## 项目简介
 
-Ariadne 将 LLM 对话中的事实抽取、纠错、去重、废弃等数据库管理（DBA, Database Administration）思想引入记忆系统，把长期记忆建模为一张有向类型化知识图谱，并在此基础上实现了一套目的驱动的联想记忆检索链路（P 链路）。
+Ariadne 将 LLM 对话中的事实抽取、纠错、去重、废弃等数据库管理（DBA, Database Administration）思想引入记忆系统，把长期记忆建模为一张有向类型化知识图谱，并在此基础上实现了一套目的驱动的联想记忆检索链路（PAR 链路）。
 
 系统的核心主张是：记忆的价值不在于"存得多"，而在于"在需要时以正确的因果结构被唤回"。为此，Ariadne 提供了：
 
@@ -90,7 +90,7 @@ Ariadne 将 LLM 对话中的事实抽取、纠错、去重、废弃等数据库�
                         │              Ariadne 核心链路             │
                         └──────────────────────────────────────────┘
 
-对话日志 ──► DBA 维护 ──► MemoryGraph + VectorStore ──► P 检索 ──► StoryRank ──► 回复
+对话日志 ──► DBA 维护 ──► MemoryGraph + VectorStore ──► PAR 检索 ──► StoryRank ──► 回复
    │            │                    │
    │    MaintenanceScheduler        ├──► API Server（HTTP REST + 3D 面板）
    │    （批量异步调度）              ├──► MCP Server（6 tools，stdio / SSE）
@@ -171,9 +171,9 @@ ariadne-mcp --yaml data/sample_graph.yaml \
 ariadne-render --yaml data/sample_graph.yaml -o output.html
 ```
 
-## 检索方法：P 基线
+## 检索方法：PAR 基线
 
-项目提出的检索方法 **P（Proposed）** 是完整链路，由三层机制组成：
+项目提出的检索方法 **PAR（Proposed）** 是完整链路，由三层机制组成：
 
 1. **跳转轴（Jump Axis）**：边按 8 种关系类型化、节点按 6 种角色分类，用 6×8 权重矩阵做有向扩展，权重为 0 的方向直接阻断，避免无方向扩散。
 2. **目的回归（Purpose Regression）**：LLM 推断查询隐含目的并编码为向量，每步扩展过滤偏离目的的候选。
@@ -186,13 +186,13 @@ ariadne-render --yaml data/sample_graph.yaml -o output.html
 | **A** 纯向量       | 语义 embedding 匹配 | 无方向感，大图退化快     |
 | **B** 向量 + 图谱混合 | 无向图谱扩展          | 无向、无增量（实测 A=B） |
 | **C** 跳转轴       | 仅有向扩展           | 无目的约束          |
-| **P** 完整链路      | 有向 + 目的 + 寻峰    | 发散噪声、输出量膨胀     |
+| **PAR** 完整链路      | 有向 + 目的 + 寻峰    | 发散噪声、输出量膨胀     |
 
-核心优势在**联想召回广度**：216 节点上 P 的 R@all = 0.538 vs A = 0.159（约 **3.4 倍**），且随规模放大。注意该 R@all 为**宽输出口径**（P 输出 6–27 条 vs A 固定 5 条），度量"多输出多命中"的联想广度；固定 top-N 下 P 反而更弱（P@5 = 0.160 vs A = 0.267@216）。在配额对齐的跨系统对比中（LiFEMem 322 节点，候选配额对齐 38.3），纯向量（RAG/Mem0）expected 覆盖 0.840 > P 0.765——聚焦语义召回纯向量更优；P 的独特价值在联想/发散区（纯故事对比 25:5 / 26:4 胜出），两口径对应"联想广度 vs 聚焦召回"两个切面（详见评测部分 §4.8）。
+核心优势在**联想召回广度**：216 节点上 PAR 的 R@all = 0.538 vs A = 0.159（约 **3.4 倍**），且随规模放大。注意该 R@all 为**宽输出口径**（PAR 输出 6–27 条 vs A 固定 5 条），度量"多输出多命中"的联想广度；固定 top-N 下 PAR 反而更弱（P@5 = 0.160 vs A = 0.267@216）。在配额对齐的跨系统对比中（LiFEMem 322 节点，候选配额对齐 38.3），纯向量（RAG/Mem0）expected 覆盖 0.840 > PAR 0.765——聚焦语义召回纯向量更优；PAR 的独特价值在联想/发散区（纯故事对比 25:5 / 26:4 胜出），两口径对应"联想广度 vs 聚焦召回"两个切面（详见评测部分 §4.8）。
 
 ### StoryRank：检索链路的故事化
 
-P 检索产出的是由「节点 + 关系」构成的**因果链路**，而非扁平候选列表。StoryRank 在送入回复生成前，把这条链路理解并整理成**故事片段文档**，承担三个职责：
+PAR 检索产出的是由「节点 + 关系」构成的**因果链路**，而非扁平候选列表。StoryRank 在送入回复生成前，把这条链路理解并整理成**故事片段文档**，承担三个职责：
 
 1. **保留因果关系**：关系类型（`CAUSAL` / `PREFERENCE` / `SCENARIO` 等）语义自然融入故事句子。
 2. **避免污染聊天上下文**：聊天模型只接收干净故事，而非 `[id] content` 节点列举。
@@ -298,7 +298,7 @@ ariadne-mcp --yaml data.yaml --llm-model gpt-4o-mini --llm-api-key sk-xxx \
 | Tool                   | 说明                             |
 | ---------------------- | ------------------------------ |
 | `dba_add_conversation` | 追加对话，优先进入调度器批量累积，达阈值后异步维护 |
-| `dba_query_memory`     | 目的驱动联想检索（P 链路：跳转轴 + 目的回归 + 寻峰） |
+| `dba_query_memory`     | 目的驱动联想检索（PAR 链路：跳转轴 + 目的回归 + 寻峰） |
 | `dba_inspect_graph`    | 展开节点 1-hop 邻居                  |
 | `dba_intervene`        | 人工 CRUD 节点和边                   |
 | `dba_checkpoint`       | 保存完整检查点                        |
@@ -306,7 +306,7 @@ ariadne-mcp --yaml data.yaml --llm-model gpt-4o-mini --llm-api-key sk-xxx \
 
 ### 检索说明（`dba_query_memory`）
 
-- 走完整 P 链路：跳转轴有向扩展 + 目的回归过滤 + 寻峰终止。
+- 走完整 PAR 链路：跳转轴有向扩展 + 目的回归过滤 + 寻峰终止。
 - `rerank_k` 控制返回条数上限（rank-k，默认 20）；`total_matched` 是真实候选总数，`returned` 是本次实际返回数。若 `total_matched > returned`，可调大 `rerank_k` 取回剩余记忆。
 - 已废弃/遗忘的节点会被过滤，不出现在结果中。
 
@@ -426,7 +426,7 @@ edges:
     │   └── maintenance_scheduler.py
     ├── llm/                        # 推理引擎
     │   └── inference.py
-    ├── retrieval/                  # P 检索 + StoryRank
+    ├── retrieval/                  # PAR 检索 + StoryRank
     │   └── retriever.py
     ├── viz/                        # API Server、3D 渲染、导出
     │   ├── api_server.py

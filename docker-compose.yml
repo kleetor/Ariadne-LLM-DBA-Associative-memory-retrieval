@@ -1,0 +1,71 @@
+# Ariadne MCP Server — Docker Compose 部署
+#
+# 【配置方式】所有配置都写在项目根目录的 .env 文件里（compose 通过 env_file 一次性注入容器），
+#   无需改本文件即可调整。没有 .env 时先复制模板并填入真实值：
+#     cp .env.example .env
+#
+# 用法：
+#   1) cp .env.example .env   # 填入真实 API Key 与 ARIADNE_VIZ_USER/ARIADNE_VIZ_PASS
+#   2) docker compose up -d --build
+#   3) 3D 面板（外部访问，带 Basic 鉴权）：http://<主机IP>:8765
+#      MCP（仅内部容器用）：同一网络内 http://ariadne-mcp:8766/sse
+#
+# 说明：
+#   - .env 里可配置：OPENAI_*（LLM）、EMBEDDING_*（embedding）、
+#     ARIADNE_YAML / ARIADNE_PORT（MCP）/ ARIADNE_VIZ_PORT / ARIADNE_VIZ_USER / ARIADNE_VIZ_PASS（3D 面板）。
+#   - EMBEDDING_LOCAL 同时决定镜像构建参数与运行时行为（默认 API 模式 false）：
+#     false → 使用 API embedding（需设置 EMBEDDING_API_KEY / EMBEDDING_API_BASE / EMBEDDING_MODEL，
+#              镜像更小、构建更快，推荐服务器/云主机部署）；
+#     true  → 镜像内安装本地 embedding（torch + sentence-transformers，镜像较大），
+#              使用 sentence-transformers，首次运行会下载模型。
+#   - ARIADNE_YAML 指向运行时图谱文件（默认 /app/data/memory_graph.yaml）。
+#   - 网络与鉴权：ariadne-mcp 不发布宿主端口，仅供同一网络内容器访问（无需防火墙）；
+#     ariadne-viz 对外 8765 并启用 HTTP Basic 鉴权（ARIADNE_VIZ_USER 与 ARIADNE_VIZ_PASS 均设置才生效）。
+#   - 挂载 ./data 持久化图谱 YAML；挂载 HF 缓存加速本地模型加载（仅本地 embedding 时用）。
+
+services:
+  ariadne-mcp:
+    build:
+      context: .
+      args:
+        EMBEDDING_LOCAL: "${EMBEDDING_LOCAL:-false}"
+    image: ariadne-mcp:latest
+    container_name: ariadne-mcp
+    restart: unless-stopped
+    # MCP 仅供同一 compose 网络内的容器访问（内部调用 http://ariadne-mcp:8766/sse），
+    # 不发布宿主端口，因此不涉及宿主防火墙/外部暴露。
+    # 若需从宿主机本机 IDE 访问，取消下面注释并绑定回环（无需开防火墙）：
+    # ports:
+    #   - "127.0.0.1:${ARIADNE_PORT:-8766}:8766"
+    # 注入 .env 中全部变量为容器环境变量
+    env_file:
+      - .env
+    environment:
+      # 以下为容器内始终生效的默认值（.env 未定义时回退到默认）
+      EMBEDDING_LOCAL: "${EMBEDDING_LOCAL:-false}"
+      ARIADNE_YAML: "${ARIADNE_YAML:-/app/data/memory_graph.yaml}"
+      ARIADNE_PORT: "${ARIADNE_PORT:-8766}"
+    volumes:
+      # 方式一：挂载整个目录（默认），宿主机 ./data/memory_graph.yaml 即为运行时图谱
+      - ./data:/app/data
+      # 方式二：挂载单个外部文件并指定路径，如 -e ARIADNE_YAML=/data/graph.yaml
+      # - /host/path/my_memory.yaml:/data/graph.yaml
+      - hf-cache:/root/.cache/huggingface
+
+  # 3D 可视化面板（ariadne-api）：只读 YAML，无需 LLM/embedding，独立端口（默认 8765）
+  ariadne-viz:
+    image: ariadne-mcp:latest
+    container_name: ariadne-viz
+    restart: unless-stopped
+    ports:
+      - "${ARIADNE_VIZ_PORT:-8765}:8765"
+    command: ariadne-api --yaml "${ARIADNE_YAML:-/app/data/memory_graph.yaml}" --host 0.0.0.0 --port "${ARIADNE_VIZ_PORT:-8765}"
+    environment:
+      # 3D 面板外部访问鉴权（HTTP Basic Auth；两者都设置才开启，否则仅限本地）
+      ARIADNE_VIZ_USER: "${ARIADNE_VIZ_USER:-admin}"
+      ARIADNE_VIZ_PASS: "${ARIADNE_VIZ_PASS:-}"
+    volumes:
+      - ./data:/app/data
+
+volumes:
+  hf-cache:

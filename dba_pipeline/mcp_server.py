@@ -37,6 +37,7 @@ from dba_pipeline.graph.memory_graph import MemoryGraph
 from dba_pipeline.loader import load_graph
 from dba_pipeline.core.jump_axis import NodeType, RelationType, get_jump_weight
 from dba_pipeline.core.path_tracker import PathTracker
+from dba_pipeline import oplog
 
 # ---- 可选 DBA 管线导入 ----
 try:
@@ -596,6 +597,8 @@ def _build_tool_list() -> list:
 def create_mcp_server(dba: DBAServer) -> "Server":
     """构建 MCP Server 实例 (MCP v2.0 API)"""
     server = Server("ariadne")
+    # 操作日志路径（与 MCP 图谱 YAML 同目录，便于追溯）
+    log_path = oplog.default_oplog_path(dba.yaml_path)
 
     async def handle_list_tools(ctx, params: PaginatedRequestParams):
         return ListToolsResult(tools=_build_tool_list())
@@ -603,24 +606,42 @@ def create_mcp_server(dba: DBAServer) -> "Server":
     async def handle_call_tool(ctx, params: CallToolRequestParams):
         name = params.name
         arguments = params.arguments or {}
+        # 记录本次 LLM 操作（source=llm）
+        session_id = getattr(ctx, "session_id", "") if ctx is not None else ""
+        actor = {
+            "type": "llm",
+            "model": os.environ.get("OPENAI_MODEL", ""),
+        }
+        if session_id:
+            actor["session_id"] = session_id
 
-        if name == "dba_add_conversation":
-            result = dba.add_conversation(**arguments)
-        elif name == "dba_query_memory":
-            result = dba.query_memory(**arguments)
-        elif name == "dba_temporal_lookup":
-            result = dba.temporal_lookup(**arguments)
-        elif name == "dba_inspect_graph":
-            result = dba.inspect_graph(**arguments)
-        elif name == "dba_intervene":
-            result = dba.intervene(**arguments)
-        elif name == "dba_checkpoint":
-            result = dba.checkpoint(**arguments)
-        elif name == "dba_get_stats":
-            result = dba.get_stats()
-        else:
-            result = {"error": f"Unknown tool: {name}"}
+        try:
+            if name == "dba_add_conversation":
+                result = dba.add_conversation(**arguments)
+            elif name == "dba_query_memory":
+                result = dba.query_memory(**arguments)
+            elif name == "dba_temporal_lookup":
+                result = dba.temporal_lookup(**arguments)
+            elif name == "dba_inspect_graph":
+                result = dba.inspect_graph(**arguments)
+            elif name == "dba_intervene":
+                result = dba.intervene(**arguments)
+            elif name == "dba_checkpoint":
+                result = dba.checkpoint(**arguments)
+            elif name == "dba_get_stats":
+                result = dba.get_stats()
+            else:
+                result = {"error": f"Unknown tool: {name}"}
+        except Exception as e:
+            oplog.log_operation("llm", op=name, request=arguments,
+                                result={"status": "error", "error": str(e)},
+                                actor=actor, tool=name, path=log_path)
+            return CallToolResult(
+                content=[TextContent(type="text", text=json.dumps({"error": str(e)}, ensure_ascii=False, indent=2))]
+            )
 
+        oplog.log_operation("llm", op=name, request=arguments, result=result,
+                            actor=actor, tool=name, path=log_path)
         return CallToolResult(
             content=[TextContent(type="text", text=json.dumps(result, ensure_ascii=False, indent=2))]
         )

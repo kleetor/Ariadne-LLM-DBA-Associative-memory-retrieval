@@ -40,7 +40,7 @@ class ScheduleConfig:
     """调度配置"""
 
     # 空闲触发器：用户停止对话超过此秒数后触发（0=关闭）
-    idle_timeout: float = 60.0
+    idle_timeout: float = 90.0
 
     # 最大合并轮数：单次维护最多合并多少轮对话
     max_batch_rounds: int = 10

@@ -1,0 +1,17 @@
+# 版本控制
+.git
+.gitignore
+
+# 本地虚拟环境（体积巨大，必须排除）
+.venv*
+**/__pycache__/
+*.pyc
+.pytest_cache/
+
+# 构建产物/私有文件
+.env
+Plan/
+package/
+tests/
+*.tar
+*.tar.gz

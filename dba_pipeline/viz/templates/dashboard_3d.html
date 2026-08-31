@@ -260,7 +260,7 @@ let FULL_DATA = FULL_DATA_STATIC;
 let allNodes = FULL_DATA.nodes, allLinks = FULL_DATA.links;
 
 // 页面加载后从 API 拉取最新数据（CRUD 操作后的修改通过 API 持久化到 YAML）
-(async function refreshFromAPI() {
+async function refreshFromAPI() {
   try {
     const res = await fetch('/api/graph');
     if (res.ok) {
@@ -280,7 +280,11 @@ let allNodes = FULL_DATA.nodes, allLinks = FULL_DATA.links;
   } catch(e) {
     // API 不可用时使用静态数据，静默降级
   }
-})();
+}
+// 首次加载
+refreshFromAPI();
+// 定时轮询：自动同步 MCP 对 YAML 的修改
+setInterval(refreshFromAPI, 15000);
 
 // ===== CONSTANTS =====
 const NODE_COLORS = { STATUS:'#5DADE2', REASON:'#E74C3C', ACTION:'#F39C12', THING:'#27AE60', PERSON:'#A569BD', EMOTION:'#E91E63' };
@@ -968,9 +972,8 @@ document.querySelectorAll('#panel-left label input[data-et]').forEach(cb => {
 });
 
 // ===== CRUD PANEL =====
-const API_BASE = (() => {
-  try { return 'http://127.0.0.1:8765'; } catch(e) { return null; }
-})();
+// 使用当前页面来源，适配本地/容器/远程部署（面板与 /api 同源）
+const API_BASE = window.location.origin;
 let crudEditingNode = null;    // currently editing node id
 let crudListFilter = '';       // search filter text
 const undoStack = [];

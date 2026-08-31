@@ -1,2 +1,34 @@
 # 本地环境变量（含真实密钥，切勿提交）
 .env
+
+# 测试依赖本地安装目录（pip install pytest --target=.test_deps 生成）
+.test_deps/
+
+# Python 生成物
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+build/
+dist/
+
+# 大体积打包/归档产物（超出 GitHub 100MB 限制，不入库）
+*.tar
+
+# LiFEMem 评测产物（2026-08-18 起不提交）
+.mem0_db/
+.mem0_dir/
+.venv_mem0/
+.venv_graphiti/
+eval/
+frameworks/
+build_lifemem.py
+dba_eval/
+LiFEMem*
+
+# 介绍网站产物（2026-08-25 起不提交，仅本地视频介绍用）
+website/
+website/scripts/bake_graph.py
+website/public/graph.json

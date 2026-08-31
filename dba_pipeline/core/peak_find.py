@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+
 """
 寻峰终止：基于目的关联度均值的斜率判断
 

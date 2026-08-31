@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+
 """
 跳转轴模型：有向边 + 类型权重 + 节点类型规则
 

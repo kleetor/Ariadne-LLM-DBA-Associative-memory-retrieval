@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+
 """
 知识图谱模块：有向带类型的记忆图谱
 

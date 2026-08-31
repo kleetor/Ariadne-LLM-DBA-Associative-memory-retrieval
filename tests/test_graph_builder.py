@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+
 """图谱构建器单元测试：CRUD / 去重 / 事务 / 孤立遗忘"""
 import numpy as np
 

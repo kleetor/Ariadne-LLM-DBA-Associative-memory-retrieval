@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+
 # -*- coding: utf-8 -*-
 """
 DBA 抽取侧时序规则（手术式守卫）的离线单元测试。

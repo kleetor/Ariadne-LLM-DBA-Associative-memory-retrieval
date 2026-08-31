@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+
 """路径追踪器双因子权重单元测试"""
 from dba_pipeline.core.path_tracker import PathTracker, PathTrackerConfig
 

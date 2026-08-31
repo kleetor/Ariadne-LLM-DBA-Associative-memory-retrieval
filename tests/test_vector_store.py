@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+
 """VectorStore 原地更新（update_memories）单元测试"""
 import numpy as np
 from langchain_core.embeddings import Embeddings

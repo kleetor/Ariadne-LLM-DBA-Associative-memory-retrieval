@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+
 """寻峰终止器单元测试"""
 from dba_pipeline.core.peak_find import PeakFinder
 

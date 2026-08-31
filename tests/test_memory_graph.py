@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+
 """记忆图谱序列化往返单元测试"""
 from dba_pipeline.graph.memory_graph import MemoryGraph
 from dba_pipeline.core.jump_axis import NodeType, RelationType

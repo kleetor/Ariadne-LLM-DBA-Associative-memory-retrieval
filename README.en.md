@@ -6,7 +6,7 @@ A full-pipeline system for LLM-driven memory graph construction, retrieval, and 
 
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue)](https://www.python.org/)
 [![MCP](https://img.shields.io/badge/MCP-Model_Context_Protocol-orange)](https://modelcontextprotocol.io/)
-[![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
+[![License](https://img.shields.io/badge/License-AGPLv3-blue)](LICENSE)
 ![Version](https://img.shields.io/badge/Version-0.1.0-lightgrey)
 
 > *"A thread through the labyrinth of memory."*
@@ -77,7 +77,7 @@ The core thesis is that the value of memory lies not in storing more, but in bei
 | 🔧 Automated DBA maintenance | node extraction and edge linking as two separate steps, correction/deprecation + batched async scheduling to cut tokens |
 | 🎯 Purpose-driven retrieval | Jump Axis + Purpose Regression + Peak Finding, replacing fixed top-K |
 | 📖 StoryRank narrativization | causal chains → story fragments, avoiding context pollution for the chat LLM |
-| 🔌 MCP integration | 6 tools over stdio / SSE transports |
+| 🔌 MCP integration | 7 tools over stdio / SSE transports |
 | 🖥️ 3D visualization | force-directed graph, layer filtering, focus mode, online CRUD |
 | 📄 Offline export | one-command, self-contained HTML, no server required |
 
@@ -91,7 +91,7 @@ The core thesis is that the value of memory lies not in storing more, but in bei
 Conversation ──► DBA Maintenance ──► MemoryGraph + VectorStore ──► PAR Retrieval ──► StoryRank ──► Reply
     │                │                        │
     │      MaintenanceScheduler               ├──► API Server (HTTP REST + 3D panel)
-    │      (batched async)                    ├──► MCP Server (6 tools, stdio / SSE)
+    │      (batched async)                    ├──► MCP Server (7 tools, stdio / SSE)
     │                                         └──► Offline HTML
     └──► Human intervention (CRUD panel + MCP dba_intervene)
 ```
@@ -199,7 +199,7 @@ PAR retrieval produces a **causal chain** of "nodes + relations" rather than a f
 
 The entry point is `retrieve_with_story` (a library method); its output includes `stories`, `story_nodes` (adopted nodes), and `discarded_nodes` (dropped nodes).
 
-> See also the theory paper: [Ariadne — LLM DBA Management & Purpose-Driven Associative Memory Retrieval System](Ariadne——LLM%20DBA管理与目的驱动的联想记忆检索系统%20理论部分.md) *(in Chinese)*.
+> See also the theory paper: [0828PAR检索理论文.md](0828PAR检索理论文.md) *(in Chinese)*.
 
 ## MCP Server
 
@@ -274,12 +274,13 @@ ariadne-mcp --yaml data.yaml --llm-model gpt-4o-mini --llm-api-key sk-xxx \
     --embedding-model BAAI/bge-large-zh-v1.5 --embedding-local
 ```
 
-### 6 tools
+### 7 tools
 
 | Tool | Description |
 |------|-------------|
 | `dba_add_conversation` | append a conversation; queued in the scheduler first and maintained asynchronously once a threshold is reached |
 | `dba_query_memory` | purpose-driven associative retrieval (PAR pipeline: Jump Axis + Purpose Regression + Peak Finding) |
+| `dba_temporal_lookup` | standalone single-hop temporal query (only "time → event", reverse direction) for "what happened at a given time" |
 | `dba_inspect_graph` | expand a node's 1-hop neighbors |
 | `dba_intervene` | manually CRUD nodes and edges |
 | `dba_checkpoint` | save a full checkpoint |
@@ -419,9 +420,12 @@ edges:
 
 ## References
 
-- [Ariadne — LLM DBA Management & Purpose-Driven Associative Memory Retrieval System](Ariadne——LLM%20DBA管理与目的驱动的联想记忆检索系统%20理论部分.md) *(theory paper, in Chinese)*
-- [Ariadne — Evaluation Report (0818-0822)](Ariadne——LLM%20DBA管理与目的驱动的联想记忆检索系统%20评测部分（0818-0822报告整合）.md) *(evaluation report, in Chinese)*
+- [0828前置数据管理与后处理.md](0828前置数据管理与后处理.md) *(data management / LLM DBA theory, in Chinese)*
+- [0828PAR检索理论文.md](0828PAR检索理论文.md) *(purpose-driven associative retrieval theory, in Chinese)*
+- [0828对比评测数据.md](0828对比评测数据.md) *(retrieval & story-quality multi-system comparison, in Chinese)*
 
 ## License
 
-This project is licensed under the [MIT](LICENSE) license.
+This project is licensed under the [GNU AGPLv3](LICENSE) (`AGPL-3.0-only`). Copyright © 2026 **kleetor**.
+
+> The AGPLv3 **network-use clause (Section 13)** applies: when providing the service remotely to third parties (e.g. MCP SSE / HTTP API / 3D panel), you must offer the complete source code to its users — the source is already public in this repository.

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+
 """MCP Server 单元测试：干预 CRUD、ID 冲突回归、checkpoint、dotenv"""
 import os
 import threading

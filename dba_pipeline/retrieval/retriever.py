@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+
 """
 完整检索入口：串联跳转轴 + 目的回归 + 寻峰终止
 

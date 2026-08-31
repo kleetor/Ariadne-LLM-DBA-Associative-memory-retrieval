@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+
 """
 图谱构建器：执行 LLM DBA 的操作指令，维护 MemoryGraph
 

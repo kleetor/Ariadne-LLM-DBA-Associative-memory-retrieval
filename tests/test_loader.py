@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+
 """YAML 加载器单元测试（含 P0-1 修复验证）"""
 from dba_pipeline.loader import load_graph
 

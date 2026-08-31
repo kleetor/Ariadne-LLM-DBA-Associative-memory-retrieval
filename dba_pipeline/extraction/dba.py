@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+
 """
 LLM DBA：记忆图谱的自主维护者
 

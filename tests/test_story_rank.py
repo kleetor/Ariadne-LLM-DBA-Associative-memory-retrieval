@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+
 """StoryRank 单元测试：轨迹记录、连通性筛选、故事化"""
 from langchain_core.language_models.fake_chat_models import FakeListChatModel
 

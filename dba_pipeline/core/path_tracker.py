@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+
 """
 路径固化追踪器（PathTracker）— 双因子动态权重
 

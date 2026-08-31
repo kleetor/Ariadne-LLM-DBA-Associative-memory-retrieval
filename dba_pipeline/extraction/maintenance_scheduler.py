@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+
 """
 异步维护调度器：限流器，阻止 LLM 逐条处理记忆。
 

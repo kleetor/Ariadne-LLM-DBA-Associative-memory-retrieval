@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+
 """检索过滤单元测试：deprecated/forgotten 节点不应进入检索结果"""
 from dba_pipeline.graph.memory_graph import MemoryGraph
 from dba_pipeline.core.jump_axis import NodeType

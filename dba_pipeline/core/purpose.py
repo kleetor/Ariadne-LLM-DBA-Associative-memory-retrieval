@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+
 """
 目的回归模型：保持检索方向不偏离出发动机
 

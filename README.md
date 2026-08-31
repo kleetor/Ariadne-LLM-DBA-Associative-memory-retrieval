@@ -6,7 +6,7 @@ LLM 驱动的记忆图谱构建、检索、可视化全链路管线。
 
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue)](https://www.python.org/)
 [![MCP](https://img.shields.io/badge/MCP-Model_Context_Protocol-orange)](https://modelcontextprotocol.io/)
-[![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
+[![License](https://img.shields.io/badge/License-AGPLv3-blue)](LICENSE)
 ![Version](https://img.shields.io/badge/Version-0.1.0-lightgrey)
 
 > *"A thread through the labyrinth of memory."*
@@ -79,7 +79,7 @@ Ariadne 将 LLM 对话中的事实抽取、纠错、去重、废弃等数据库�
 | 🔧 DBA 自动维护      | 节点抽取与边连接两步分离，纠错/废弃 + 批量异步调度降 token |
 | 🎯 目的驱动检索        | 跳转轴 + 目的回归 + 寻峰终止，替代固定 top-K    |
 | 📖 StoryRank 故事化 | 因果链路 → 故事片段，避免污染聊天上下文           |
-| 🔌 MCP 集成        | 6 个工具，支持 stdio / SSE 两种传输       |
+| 🔌 MCP 集成        | 7 个工具，支持 stdio / SSE 两种传输       |
 | 🖥️ 3D 可视化       | 力导向图、图层过滤、聚焦模式、在线 CRUD          |
 | 📄 离线导出          | 一键生成自包含 HTML，无需服务器              |
 
@@ -93,7 +93,7 @@ Ariadne 将 LLM 对话中的事实抽取、纠错、去重、废弃等数据库�
 对话日志 ──► DBA 维护 ──► MemoryGraph + VectorStore ──► PAR 检索 ──► StoryRank ──► 回复
    │            │                    │
    │    MaintenanceScheduler        ├──► API Server（HTTP REST + 3D 面板）
-   │    （批量异步调度）              ├──► MCP Server（6 tools，stdio / SSE）
+   │    （批量异步调度）              ├──► MCP Server（7 tools，stdio / SSE）
    │                                 └──► 离线 HTML
    └──► 人工干预（CRUD 面板 + MCP dba_intervene）
 ```
@@ -200,7 +200,7 @@ PAR 检索产出的是由「节点 + 关系」构成的**因果链路**，而非
 
 入口为 `retrieve_with_story`（库内方法），产物含 `stories`、`story_nodes`（采纳节点）、`discarded_nodes`（舍弃节点）。
 
-> 详见 [Ariadne——LLM DBA 管理与目的驱动的联想记忆检索系统（理论部分）](Ariadne——LLM%20DBA管理与目的驱动的联想记忆检索系统%20理论部分.md)
+> 详见 [0828PAR检索理论文.md](0828PAR检索理论文.md)
 
 ## MCP 服务详解
 
@@ -249,24 +249,6 @@ EMBEDDING_LOCAL=true
 
 > 与 `dba_checkpoint` 配合使用：运行期用 `dba_checkpoint` 落盘，启动时用 `--restore-dir` 恢复。
 
-### 启动参数补充
-
-| 参数                  | 说明 |
-| --------------------- | ---- |
-| `--vector-index`      | FAISS 索引文件路径（可选），用于恢复已有向量索引 |
-| `--restore-dir`       | 从 checkpoint 目录完整恢复（图谱 + 向量 + 构建器 + 调度器状态） |
-
-> 与 `dba_checkpoint` 配合使用：运行期用 `dba_checkpoint` 落盘，启动时用 `--restore-dir` 恢复。
-
-### 启动参数补充
-
-| 参数                  | 说明 |
-| --------------------- | ---- |
-| `--vector-index`      | FAISS 索引文件路径（可选），用于恢复已有向量索引 |
-| `--restore-dir`       | 从 checkpoint 目录完整恢复（图谱 + 向量 + 构建器 + 调度器状态） |
-
-> 与 `dba_checkpoint` 配合使用：运行期用 `dba_checkpoint` 落盘，启动时用 `--restore-dir` 恢复。
-
 ### 运行模式
 
 当前仅保留**完整 DBA 模式**：需配置 LLM（`--llm-model` 或 `OPENAI_MODEL`）。启动后 `dba_add_conversation` 会调用内部 LLM 完成记忆维护：**节点抽取（Step 1）与边连接（Step 2）是两次独立的 LLM 调用**——先抽节点并落地，再基于「本轮全部新节点 + 相关旧节点/一跳邻居/已有边」连边，避免单次输出受可见节点集合限制（详见 [0822 DBA 抽取环节评测报告](Plan/0822——DBA抽取环节评测报告.md)）。缺少 LLM / DBA 依赖时直接报错退出（不再降级为存根模式）。
@@ -293,12 +275,13 @@ ariadne-mcp --yaml data.yaml --llm-model gpt-4o-mini --llm-api-key sk-xxx \
     --embedding-model BAAI/bge-large-zh-v1.5 --embedding-local
 ```
 
-### 6 个 Tool
+### 7 个 Tool
 
 | Tool                   | 说明                             |
 | ---------------------- | ------------------------------ |
 | `dba_add_conversation` | 追加对话，优先进入调度器批量累积，达阈值后异步维护 |
 | `dba_query_memory`     | 目的驱动联想检索（PAR 链路：跳转轴 + 目的回归 + 寻峰） |
+| `dba_temporal_lookup`  | 独立单跳时序查询（仅"时间→事件"反向），用于定位某时间点发生的事 |
 | `dba_inspect_graph`    | 展开节点 1-hop 邻居                  |
 | `dba_intervene`        | 人工 CRUD 节点和边                   |
 | `dba_checkpoint`       | 保存完整检查点                        |
@@ -438,9 +421,12 @@ edges:
 
 ## 参考与论文
 
-- [Ariadne——LLM DBA 管理与目的驱动的联想记忆检索系统（理论部分）](Ariadne——LLM%20DBA管理与目的驱动的联想记忆检索系统%20理论部分.md)
-- [Ariadne——LLM DBA 管理与目的驱动的联想记忆检索系统（评测部分）](Ariadne——LLM%20DBA管理与目的驱动的联想记忆检索系统%20评测部分（0818-0822报告整合）.md)
+- [0828前置数据管理与后处理.md](0828前置数据管理与后处理.md)（前置数据管理 / LLM DBA 理论部分）
+- [0828PAR检索理论文.md](0828PAR检索理论文.md)（目的驱动联想记忆检索模型 / 检索理论部分）
+- [0828对比评测数据.md](0828对比评测数据.md)（检索层与故事质量层多系统对比测评）
 
 ## 许可证
 
-本项目采用 [MIT](LICENSE) 许可证。
+本项目采用 [GNU AGPLv3](LICENSE) 许可证（`AGPL-3.0-only`），版权归 **kleetor** 所有。
+
+> AGPLv3 的**网络使用条款（Section 13）**对本项目适用：当通过远程网络向第三方提供服务（如 MCP SSE / HTTP API / 3D 面板）时，须向服务使用者提供完整源码——本项目源码已在仓库公开。

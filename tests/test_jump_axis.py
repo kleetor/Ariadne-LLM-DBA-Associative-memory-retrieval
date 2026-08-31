@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+
 """跳转轴权重矩阵单元测试"""
 from dba_pipeline.core.jump_axis import (
     NodeType,

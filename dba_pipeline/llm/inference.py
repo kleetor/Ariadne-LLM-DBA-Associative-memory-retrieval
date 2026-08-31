@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+
 """
 LangChain LLM 封装：状态推断 + 目的推断 + 回复生成
 """

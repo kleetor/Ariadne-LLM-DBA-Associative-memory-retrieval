@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+
 """并发锁（共享 RLock）单元测试"""
 import threading
 

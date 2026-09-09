@@ -36,19 +36,32 @@ class OpenAIEmbeddings(Embeddings):
         self.api_base = api_base.rstrip("/")
         self.model = model
 
+    # bge 系列最大序列 512 token（本地 sentence-transformers 会自动截断，API 不会）。
+    # 为与本地行为一致并避免长输入 400，发送前先截断到保守字符预算；
+    # 若仍返回 400（数字/符号密集文本 token 偏多），渐进减半重试。
+    _MAX_CHARS = 2000
+
     def _call(self, input_texts: List[str]) -> List[List[float]]:
         url = f"{self.api_base}/embeddings"
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
-        payload = {
-            "model": self.model,
-            "input": input_texts,
-            "encoding_format": "float",
-        }
-        resp = requests.post(url, json=payload, headers=headers, timeout=30)
-        resp.raise_for_status()
+        texts, budget = [t[: self._MAX_CHARS] for t in input_texts], self._MAX_CHARS
+        while True:
+            payload = {
+                "model": self.model,
+                "input": texts,
+                "encoding_format": "float",
+            }
+            resp = requests.post(url, json=payload, headers=headers, timeout=30)
+            if resp.status_code == 200:
+                break
+            if resp.status_code == 400 and budget > 400:
+                budget //= 2
+                texts = [t[:budget] for t in texts]
+                continue
+            resp.raise_for_status()
         data = resp.json()
         items = sorted(data["data"], key=lambda x: x["index"])
         return [item["embedding"] for item in items]

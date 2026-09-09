@@ -10,8 +10,6 @@ LLM 驱动的记忆图谱构建、检索、可视化全链路管线。
 
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue)](https://www.python.org/)
 [![MCP](https://img.shields.io/badge/MCP-Model_Context_Protocol-orange)](https://modelcontextprotocol.io/)
-[![Python](https://img.shields.io/badge/Python-3.10%2B-blue)](https://www.python.org/)
-[![MCP](https://img.shields.io/badge/MCP-Model_Context_Protocol-orange)](https://modelcontextprotocol.io/)
 [![License](https://img.shields.io/badge/License-AGPLv3-blue)](LICENSE)
 ![Version](https://img.shields.io/badge/Version-0.1.0-lightgrey)
 

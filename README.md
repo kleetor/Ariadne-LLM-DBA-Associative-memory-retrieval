@@ -4,6 +4,12 @@
 
 LLM 驱动的记忆图谱构建、检索、可视化全链路管线。
 
+计划与报告等文档均在Plan/目录下,根目录的文档已经过整理，将其交由AI进行分析可快速掌握本系统的功能与实现价值。data/目录下包含一个空数据集sample供初次使用，以及一个预设数据集memory供快速体验系统效果。
+
+后续方向：针对检索算法部分进行深入研究，在不同的使用场景下，基础权重表与其他配合部分或可经过参数调整实现不同的检索效果（如开放分类学权重或可实现知识库查询功能）
+
+[![Python](https://img.shields.io/badge/Python-3.10%2B-blue)](https://www.python.org/)
+[![MCP](https://img.shields.io/badge/MCP-Model_Context_Protocol-orange)](https://modelcontextprotocol.io/)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue)](https://www.python.org/)
 [![MCP](https://img.shields.io/badge/MCP-Model_Context_Protocol-orange)](https://modelcontextprotocol.io/)
 [![License](https://img.shields.io/badge/License-AGPLv3-blue)](LICENSE)
@@ -12,6 +18,8 @@ LLM 驱动的记忆图谱构建、检索、可视化全链路管线。
 > *"A thread through the labyrinth of memory."*
 >
 > 记忆迷宫中的阿里阿德涅之线。
+
+**语言**：[中文](README.md) · [English](README.en.md)
 
 ***
 

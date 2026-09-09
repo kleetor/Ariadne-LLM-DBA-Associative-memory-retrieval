@@ -4,12 +4,18 @@
 
 A full-pipeline system for LLM-driven memory graph construction, retrieval, and visualization.
 
+All planning & report documents live in the `Plan/` directory; the root-level documents are curated so that handing them to an AI lets it quickly grasp this system's functionality and implementation value. The `data/` directory contains an empty `sample` dataset for first-time use and a pre-populated `memory` dataset for quickly experiencing the system.
+
+Future direction: further research on the retrieval algorithm — in different usage scenarios, the base weight table and other collaborating parts may be tuned via parameters to achieve different retrieval behaviors (e.g. opening up taxonomic weights could enable a knowledge-base-style query mode).
+
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue)](https://www.python.org/)
 [![MCP](https://img.shields.io/badge/MCP-Model_Context_Protocol-orange)](https://modelcontextprotocol.io/)
 [![License](https://img.shields.io/badge/License-AGPLv3-blue)](LICENSE)
 ![Version](https://img.shields.io/badge/Version-0.1.0-lightgrey)
 
 > *"A thread through the labyrinth of memory."*
+
+**Language**: [English](README.en.md) · [中文](README.md)
 
 ---
 

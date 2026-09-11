@@ -542,12 +542,20 @@ class PurposeDrivenRetriever:
         query: str,
         seed_k: int = 5,
         with_response: bool = True,
+        max_hops: Optional[int] = None,
+        expand_k: Optional[int] = None,
     ) -> Dict:
         """检索 → 连通性粗筛 → StoryRank 故事化 →（可选）生成回复
 
         把检索得到的记忆因果链路理解成故事片段，替代原 rerank 的扁平重排序。
+        max_hops / expand_k 为 None 时沿用 retrieve() 的默认值。
         """
-        result = self.retrieve(query, seed_k=seed_k)
+        retrieve_kwargs: Dict[str, Any] = {"seed_k": seed_k}
+        if max_hops is not None:
+            retrieve_kwargs["max_hops"] = max_hops
+        if expand_k is not None:
+            retrieve_kwargs["expand_k"] = expand_k
+        result = self.retrieve(query, **retrieve_kwargs)
         peak_memories = result.get("peak_memories", [])
         hop_history = result.get("hop_history", [])
         result_ids = [mid for mid, _ in peak_memories]

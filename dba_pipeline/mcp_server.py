@@ -460,7 +460,11 @@ TOOL_SCHEMAS = [
             "properties": {
                 "conversation": {
                     "type": "string",
-                    "description": "要记录的对话文本",
+                    "description": (
+                        "要记录的对话文本。多人对话请保留说话人标识"
+                        "（如「[阿哲] 我最近压力挺大」），否则无法区分事实归属；"
+                        "单人对话无需标识。"
+                    ),
                 }
             },
             "required": ["conversation"],

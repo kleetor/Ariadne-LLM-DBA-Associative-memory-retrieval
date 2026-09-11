@@ -1,0 +1,61 @@
+# Ariadne ALM — Agent Memory Leaderboard 接入部署
+#
+# 与 docker-compose.yml（MCP 服务）的区别：
+#   1. 入口是 ariadne-alm，暴露同步 Add / Search / Health；
+#   2. **必须发布宿主端口**——平台要从外部调用，MCP 那样仅内网可达是不行的；
+#   3. 挂载持久卷保存记忆（见下方「持久化」说明）；
+#   4. 默认走 API embedding（镜像小）。容器本就必须出网（Add / Search 被要求使用
+#      gpt-4o-mini），所以本地向量模型买不到离线收益，只多背 GB 级体积。
+#
+# 用法：
+#   1) 确认项目根目录 .env 已配置 OPENAI_*（Add/Search 的 LLM 按规则须为 gpt-4o-mini）
+#   2) docker compose -f docker-compose.alm.yml up -d --build
+#   3) 自测：python -m alm.smoke --base-url http://127.0.0.1:8770
+#
+# 持久化：容器内 /data 存放各 user_id 的记忆文件。**若平台按 user_id 重启容器，
+#   没有持久卷就会导致「Add 返回 200 → 重启 → Search 什么也找不到」**，
+#   因此这里用命名卷；挂载卷同时也是「评测环境是否保留磁盘」这一问题的兜底方案。
+#   若实测平台不重启容器，可去掉 volumes 换取更干净的每次全新启动。
+
+services:
+  ariadne-alm:
+    build:
+      context: .
+      dockerfile: Dockerfile.alm
+      args:
+        # 刻意用 ALM_EMBEDDING_LOCAL 而不是 EMBEDDING_LOCAL：compose 会用项目根的 .env
+        # 做变量插值，而 .env 里的 EMBEDDING_LOCAL=1 是给本地开发用的（本地模型），
+        # 直接透传会把 GB 级 torch + 向量模型拖进镜像。默认 false = API embedding。
+        # 改为 true 时，模型在构建期预下载进镜像，运行期只读缓存（HF_HUB_OFFLINE=1）。
+        EMBEDDING_LOCAL: "${ALM_EMBEDDING_LOCAL:-false}"
+        EMBEDDING_MODEL: "${ALM_EMBEDDING_MODEL:-BAAI/bge-large-zh-v1.5}"
+    image: ariadne-alm:latest
+    container_name: ariadne-alm
+    restart: unless-stopped
+
+    # 平台必须能从外部调用 Add / Search，故发布端口（可用 ALM_PORT 覆盖）
+    ports:
+      - "${ALM_PORT:-8770}:8770"
+
+    env_file:
+      - .env
+    environment:
+      # 容器内固定监听 0.0.0.0，否则宿主无法访问
+      ALM_HOST: "0.0.0.0"
+      ALM_PORT: "${ALM_PORT:-8770}"
+      ALM_DATA_DIR: "${ALM_DATA_DIR:-/data}"
+      # 鉴权：逗号分隔的可用 Key，支持 X-Api-Key 或 Authorization: Bearer/Token。
+      # 留空则不鉴权（仅适用于本地自测 / 公开 smoke；正式评测必须设置）。
+      ALM_API_KEYS: "${ALM_API_KEYS:-}"
+      # 显式覆盖 .env 的开发期取值（environment 优先级高于 env_file）：
+      # 不覆盖的话，.env 里的 EMBEDDING_LOCAL=1 会让容器去找镜像中并不存在的本地模型。
+      EMBEDDING_LOCAL: "${ALM_EMBEDDING_LOCAL:-false}"
+
+    volumes:
+      - alm-data:/data
+
+    # HEALTHCHECK 在镜像内定义（GET /health，无需鉴权）
+    # 平台若自行探活，地址为 http://<host>:<ALM_PORT>/health
+
+volumes:
+  alm-data:

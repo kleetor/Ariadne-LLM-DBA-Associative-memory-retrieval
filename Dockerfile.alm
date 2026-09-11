@@ -1,0 +1,87 @@
+# Ariadne ALM — Agent Memory Leaderboard 接入镜像
+#
+# 与 Dockerfile（MCP 服务）的区别：
+#   - 入口是 ariadne-alm（同步 Add / Search 服务），不是 ariadne-mcp
+#   - 必须发布端口：平台要从外部调用 /add、/search、/health
+#
+# 关于 embedding 模式：默认走 **API embedding**（镜像小、构建快）。
+#   之所以不做「本地模型 + 运行期离线」：Add / Search 按规则必须使用 gpt-4o-mini，
+#   容器本就必须具备出网能力，本地模型买不到任何离线收益，却要多背 GB 级体积
+#   （CPU torch + 中文向量模型）。embedding 也不是延迟瓶颈——Search 的耗时在
+#   目的推断与记忆整理两次 LLM 调用上，embedding 仅在空间冷启动重建索引时批量发生。
+#   如需本地模型（例如部署环境只放通 LLM 端点、不放通 embedding 端点），
+#   用 --build-arg EMBEDDING_LOCAL=true 构建；此时模型在**构建期**预下载进镜像，
+#   运行期配合 HF_HUB_OFFLINE=1 只读缓存，避免离线时卡在联网取模型。
+#
+# 构建：
+#   docker build -f Dockerfile.alm -t ariadne-alm .
+#   docker build -f Dockerfile.alm --build-arg EMBEDDING_LOCAL=true -t ariadne-alm .
+#
+# 运行（本地验证）：
+#   docker run --rm -p 8770:8770 \
+#     -e OPENAI_API_KEY=sk-xxx \
+#     -e OPENAI_API_BASE=https://api.openai.com/v1 \
+#     -e OPENAI_MODEL=gpt-4o-mini \
+#     -e EMBEDDING_LOCAL=0 \
+#     -e EMBEDDING_API_KEY=sk-xxx \
+#     -e EMBEDDING_API_BASE=https://<embedding-endpoint>/v1 \
+#     -e EMBEDDING_MODEL=<embedding-model-name> \
+#     -v alm-data:/data \
+#     ariadne-alm
+#
+# 注意：API embedding 需要 EMBEDDING_API_KEY / EMBEDDING_API_BASE / EMBEDDING_MODEL
+#   三项，且 EMBEDDING_MODEL 要填 **API 的模型名**，不是 HuggingFace 仓库 id
+#   （两者不可混用）。
+
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    # torch 与 FAISS 的 OpenMP 运行时冲突会导致进程 Aborted（包内也会设置，这里兜底）
+    KMP_DUPLICATE_LIB_OK=TRUE \
+    # 仅在 EMBEDDING_LOCAL=true 时起作用；API 模式下无向量模型，这两个开关是惰性的
+    HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1
+
+WORKDIR /app
+
+# curl 供 HEALTHCHECK 探活使用
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt ./
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel \
+    && pip install --no-cache-dir -r requirements.txt
+
+COPY pyproject.toml README.md LICENSE ./
+COPY dba_pipeline ./dba_pipeline
+COPY alm ./alm
+
+RUN pip install --no-cache-dir .
+
+# ---- 本地 embedding（可选，默认关闭）----
+# false（默认）→ API embedding：镜像小、构建快，运行期需能访问 embedding 端点。
+# true         → 构建期把模型下载进镜像缓存，运行期配合 HF_HUB_OFFLINE=1 只读缓存。
+ARG EMBEDDING_LOCAL=false
+ARG EMBEDDING_MODEL=BAAI/bge-large-zh-v1.5
+
+RUN if [ "$EMBEDDING_LOCAL" = "true" ]; then \
+      pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu \
+      && pip install --no-cache-dir "sentence-transformers>=2.2" \
+      && python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('${EMBEDDING_MODEL}')"; \
+    fi
+
+ENV EMBEDDING_LOCAL=${EMBEDDING_LOCAL} \
+    EMBEDDING_MODEL=${EMBEDDING_MODEL}
+
+# 记忆以本地文件形式落在该目录；评测环境若按 user_id 重启容器，需挂载持久卷
+VOLUME ["/data"]
+
+EXPOSE 8770
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=90s --retries=3 \
+    CMD curl -fsS "http://127.0.0.1:${ALM_PORT:-8770}/health" || exit 1
+
+# 启动命令由参赛方提供，端口与数据目录可用环境变量覆盖，无需重建镜像
+CMD ["sh", "-c", "ariadne-alm --host 0.0.0.0 --port \"${ALM_PORT:-8770}\" --data-dir \"${ALM_DATA_DIR:-/data}\""]

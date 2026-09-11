@@ -20,6 +20,18 @@ from dba_pipeline.graph.memory_graph import MemoryGraph
 from dba_pipeline.llm.inference import InferenceEngine
 from dba_pipeline.embedding.store import VectorStore
 
+# 显式日期/时期词——时序工具用于「字面校验」，避免查询指定日期而库中无该日期时漂移到邻近锚点
+_EXPLICIT_PERIOD_RE = re.compile(
+    r"\d{1,2}月\d{1,2}[日号]?|\d{1,2}[日号]|昨天|明天|前天|上周|这周|本周|下周|"
+    r"周[一二三四五六日天]|去年|今年|明年|前年|寒假|暑假|年底|年初|上半年|下半年"
+)
+
+
+def _explicit_periods(text: str) -> set:
+    """抽取文本中的显式日期/时期词，供时序命中的字面校验使用。"""
+    return set(m.group(0) for m in _EXPLICIT_PERIOD_RE.finditer(text or ""))
+
+
 
 # 独立时序工具 temporal_lookup 用的时间锚点判定：覆盖绝对时期 + 指示词 + 人生阶段。
 TOOL_TIME_ANCHOR_RE = re.compile(
@@ -147,6 +159,17 @@ class PurposeDrivenRetriever:
         # 过滤真锚点：只有带反向 TEMPORAL 邻居的才是时间锚点（排除误判的"含时间词事件节点"）。
         usable = [m for m in time_cands if self._has_reverse_temporal(m[0])]
 
+        # 拒答：查询含显式日期/时期词时，锚点必须字面命中其中之一。
+        # 否则（如查「8月30日」而最近邻只有「8月1日」）宁可返回空，也不跨期漂移。
+        rejected = False
+        q_periods = _explicit_periods(query)
+        if q_periods:
+            usable = [
+                m for m in usable
+                if q_periods & _explicit_periods(self.graph.get_content(m[0]) or "")
+            ]
+            rejected = not usable
+
         matches: List[Dict] = []
         for m in usable[:max_anchors]:
             anchor_id = m[0]
@@ -164,7 +187,14 @@ class PurposeDrivenRetriever:
                 facts = facts[:max_facts]
             matches.append({"time_anchor": {"id": anchor_id, "content": anchor_content}, "facts": facts})
 
-        return {"query": query, "matches": matches, "count": len(matches)}
+        result = {"query": query, "matches": matches, "count": len(matches)}
+        if rejected:
+            result["rejected"] = True
+            result["reason"] = (
+                f"查询含显式时间词 {sorted(q_periods)}，但库中无字面匹配的时间锚点；"
+                "为避免跨期漂移返回空"
+            )
+        return result
 
     # ---- 算法主流程 ----
 

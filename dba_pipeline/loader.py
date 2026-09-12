@@ -52,10 +52,16 @@ def load_graph(yaml_path: str) -> MemoryGraph:
 
     # 加载节点（补齐 deprecated / forgotten 状态，避免重启后丢失）
     for node in data["nodes"]:
+        # 未知类型只跳过并告警：直接下标会让整个 MCP 进程在启动时崩掉。
+        # 归一化大小写：映射表键是小写，但手写/外部 YAML 可能用枚举名（"STATUS"）。
+        node_type = _NODE_TYPE_MAP.get(str(node.get("type") or "").lower())
+        if node_type is None:
+            logger.warning(f"跳过未知节点类型 {node.get('type')!r}（节点 {node.get('id')}）")
+            continue
         g.add_memory(
             memory_id=node["id"],
             content=node["content"],
-            node_type=_NODE_TYPE_MAP[node["type"]],
+            node_type=node_type,
             deprecated=node.get("deprecated", False),
             forgotten=node.get("forgotten", False),
         )
@@ -66,7 +72,13 @@ def load_graph(yaml_path: str) -> MemoryGraph:
 
     # 加载边
     for edge in data.get("edges", []):
-        rel_type = _REL_TYPE_MAP[edge["type"]]
+        rel_type = _REL_TYPE_MAP.get(str(edge.get("type") or "").lower())
+        if rel_type is None:
+            logger.warning(
+                f"跳过未知边类型 {edge.get('type')!r}"
+                f"（{edge.get('from')} -> {edge.get('to')}）"
+            )
+            continue
         if edge.get("bidirectional"):
             g.add_edge_bidirectional(edge["from"], edge["to"], rel_type)
         else:

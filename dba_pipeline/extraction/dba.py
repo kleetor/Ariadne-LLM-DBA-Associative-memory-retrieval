@@ -556,7 +556,8 @@ class MemoryDBA:
         shown_ids = set()
         for mid, score, _ in results:
             node = self.graph.get_node(mid)
-            if node is None or node.get("deprecated"):
+            # 与 retriever._is_active 对齐：deprecated 与 forgotten 都不该再进上下文
+            if node is None or node.get("deprecated") or node.get("forgotten"):
                 continue
             type_val = node["node_type"].value if hasattr(node["node_type"], "value") else str(node["node_type"])
             content = node["content"][:100]
@@ -594,11 +595,12 @@ class MemoryDBA:
         neighbor_set = set()
         for mid, _, _ in results:
             node = self.graph.get_node(mid)
-            if node is None or node.get("deprecated"):
+            if node is None or node.get("deprecated") or node.get("forgotten"):
                 continue
             for neighbor_id, rel_type, is_reverse in self.graph.get_neighbors(mid):
                 neighbor_node = self.graph.get_node(neighbor_id)
-                if neighbor_node and not neighbor_node.get("deprecated"):
+                if (neighbor_node and not neighbor_node.get("deprecated")
+                        and not neighbor_node.get("forgotten")):
                     direction = "←" if is_reverse else "→"
                     rel_str = rel_type.value if hasattr(rel_type, "value") else str(rel_type)
                     neighbor_set.add(f"  {mid} --{direction}[{rel_str}]-- {neighbor_id}")

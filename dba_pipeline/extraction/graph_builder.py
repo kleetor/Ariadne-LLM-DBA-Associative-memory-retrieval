@@ -322,7 +322,6 @@ class GraphBuilder:
         old_content = node["content"]
         txn.track_update_node(target_id, old_content)
         self.graph.graph.nodes[target_id]["content"] = new_content
-        self.graph.graph.nodes[target_id]["previous_content"] = old_content
 
         # 更新向量库（失败时回滚 content）
         try:
@@ -373,7 +372,6 @@ class GraphBuilder:
 
         txn.track_deprecate_node(target_id, node.get("deprecated", False))
         self.graph.graph.nodes[target_id]["deprecated"] = True
-        self.graph.graph.nodes[target_id]["deprecate_reason"] = reason
 
         self.stats["nodes_deprecated"] += 1
         logger.info(f"Deprecate 节点 [{target_id}]: {reason}")

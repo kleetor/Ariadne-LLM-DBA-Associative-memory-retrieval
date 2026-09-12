@@ -132,19 +132,24 @@ def list_batches(source_dir, limit: int = 50) -> List[Dict]:
 
 
 def purge_expired(source_dir, ttl_days: int = DEFAULT_TTL_DAYS) -> int:
-    """删除超过 TTL 的批次文件，返回删除数量"""
+    """删除超过 TTL 的批次文件，返回删除数量
+
+    同时清理写盘中断残留的 `*.json.tmp`：`list_batches` 与下面的 `*.json` 都匹配不到它，
+    不主动清就会永久堆积。两者共用同一个 TTL 判定，正在写入的临时文件不会被误删。
+    """
     target_dir = Path(source_dir)
     if not target_dir.exists() or ttl_days <= 0:
         return 0
     deadline = time.time() - ttl_days * 86400
     removed = 0
-    for p in target_dir.glob("*.json"):
-        try:
-            if p.stat().st_mtime < deadline:
-                p.unlink()
-                removed += 1
-        except OSError:
-            continue
+    for pattern in ("*.json", "*.json.tmp"):
+        for p in target_dir.glob(pattern):
+            try:
+                if p.stat().st_mtime < deadline:
+                    p.unlink()
+                    removed += 1
+            except OSError:
+                continue
     return removed
 
 

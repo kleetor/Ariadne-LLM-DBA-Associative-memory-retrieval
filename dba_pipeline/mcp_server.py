@@ -288,7 +288,19 @@ class DBAServer:
 
         依赖 C1（原文按批次落盘，`ARIADNE_SOURCE_STORE=1`）。仅读取 `sources/` 目录，
         不写图谱；LLM 调用在锁外进行（持锁只做一次节点快照）。
+
+        与 review_graph 共用 `_review_running` 非阻塞互斥（该锁为 RLock：空闲巡检整轮
+        持锁后再调用本方法，同线程重入必须放行）。这样两次手动调用、以及手动与自动
+        巡检之间都不会并发跑 LLM。
         """
+        if not self._review_running.acquire(blocking=False):
+            return {"error": "已有一次巡检正在进行，请稍后再试", "running": True}
+        try:
+            return self._review_sources_impl(batch_id=batch_id, max_batches=max_batches)
+        finally:
+            self._review_running.release()
+
+    def _review_sources_impl(self, batch_id: str = None, max_batches: int = 3) -> dict:
         source_dir = getattr(self.dba, "source_dir", None)
         if not source_dir:
             return {
@@ -500,7 +512,9 @@ class DBAServer:
                 if not nt:
                     return {"error": f"无效的节点类型: {params.get('node_type')}"}
                 content = params.get("content", "")
-
+                # 空内容会建出脏节点（且会用空串做 embedding 污染向量库），在入口挡掉
+                if not isinstance(content, str) or not content.strip():
+                    return {"error": "content 不能为空", "action": action}
                 # 精确重复：直接拒绝（零误判）
                 for nid, nd in self.graph.graph.nodes(data=True):
                     if (nd.get("content") or "").strip() == content.strip():
@@ -588,13 +602,15 @@ class DBAServer:
                 nid = params["node_id"]
                 if nid not in self.graph.graph.nodes:
                     return {"error": f"节点不存在: {nid}"}
-                self.graph.graph.remove_node(nid)
-                # 同步清理向量库，避免残留向量继续占用检索槽位
+                # 先清向量、再删图节点：原先"先删图、后清向量"在向量清理失败时会留下
+                # 「内存图已删 / YAML 未删」的部分状态（且 return 跳过了 _save）。
+                # 现在失败即原地返回，图与向量保持一致。
                 if self.vector_store is not None:
                     try:
                         self.vector_store.remove_memories([nid])
                     except Exception as e:
-                        return {"error": f"向量清理失败: {e}", "action": action}
+                        return {"error": f"向量清理失败，节点未删除: {e}", "action": action}
+                self.graph.graph.remove_node(nid)
                 result["deleted"] = nid
                 self._save()
 

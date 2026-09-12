@@ -168,18 +168,31 @@ class MemorySpace:
         """同步写入一批消息：DBA 维护完成后才返回（对齐 ALM 契约）"""
         payload = messages[: self.config.max_messages_per_add]
         conversation = self._format_conversation(payload)
+        batch_ts = self._batch_timestamp(payload)
 
         with self._lock:
-            result = self.dba.maintain(conversation)
+            result = self.dba.maintain(conversation, timestamp=batch_ts)
             created = (result.get("result") or {}).get("created_ids") or []
             if self._should_fallback(result, created):
-                created = self._store_raw_fallback(payload)
+                created = self._store_raw_fallback(payload, batch_ts)
 
         logger.info(
             "空间 %s 写入完成: messages=%d nodes=%d",
             self._masked_id(), len(payload), len(created),
         )
         return {"messages": len(payload), "nodes": len(created)}
+
+    @staticmethod
+    def _batch_timestamp(messages: List[AddMessage]) -> Optional[int]:
+        """取本批消息的代表时间（最后一个携带的时间戳，Unix 毫秒）。
+
+        ALM 的 Add 以批次为单位，节点抽取不区分单条消息，因此时间戳按批次注入；
+        取最后一个非空时间戳，等价于「本批最新事件时间」，与时间序上升的会话一致。
+        """
+        for msg in reversed(messages):
+            if msg.timestamp is not None:
+                return msg.timestamp
+        return None
 
     def _should_fallback(self, result: Dict[str, Any], created: List[str]) -> bool:
         """是否需要兜底落库。
@@ -196,7 +209,9 @@ class MemorySpace:
         node_ops = (result.get("ops") or {}).get("node_ops") or []
         return not any(op.get("action") in ("update", "deprecate", "fix_type") for op in node_ops)
 
-    def _store_raw_fallback(self, messages: List[AddMessage]) -> List[str]:
+    def _store_raw_fallback(
+        self, messages: List[AddMessage], batch_ts: Optional[int] = None
+    ) -> List[str]:
         """兜底落库：把消息原文逐条存为可检索节点
 
         原文兜底必须绕过语义去重，否则与既有记忆语义相近的消息会被判为重复而整条
@@ -220,7 +235,7 @@ class MemorySpace:
         saved_threshold = self.builder.dedup_threshold
         self.builder.dedup_threshold = self.config.fallback_dedup_threshold
         try:
-            result = self.builder.apply_ops(ops, [])
+            result = self.builder.apply_ops(ops, [], batch_timestamp=batch_ts)
         finally:
             self.builder.dedup_threshold = saved_threshold
 

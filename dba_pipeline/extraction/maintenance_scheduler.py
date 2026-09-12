@@ -22,7 +22,7 @@
 import threading
 import time
 import logging
-from typing import Dict, List, Optional, Callable
+from typing import Dict, List, Optional, Callable, Tuple
 from dataclasses import dataclass
 from enum import Enum, auto
 
@@ -61,6 +61,20 @@ class ScheduleConfig:
     auto_skip_threshold: int = 5
 
 
+def _format_round(ts_ms: Optional[int], conversation: str) -> str:
+    """给单轮对话加上到达时间前缀。
+
+    调度器在入队时就知道每轮的到达时刻，批量合并时不该把它丢掉：时间前缀进入
+    抽取输入，LLM 才能区分"这一轮 vs 那一轮"（与 ALM 侧 `[role@ts] content`
+    的做法同类；方括号内是元信息，不会被写进节点内容）。
+    """
+    if not ts_ms:
+        return conversation
+    # 精确到秒：一批最多跨 idle_timeout（默认 90s），只到分钟会把同批各轮压成同一个串
+    stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts_ms / 1000))
+    return f"[{stamp}] {conversation}"
+
+
 class MaintenanceScheduler:
     """记忆图谱异步维护调度器
 
@@ -82,7 +96,7 @@ class MaintenanceScheduler:
         self.config = config or ScheduleConfig()
         self.on_maintenance_done = on_maintenance_done
 
-        self._buffer: List[str] = []
+        self._buffer: List[Tuple[Optional[int], str]] = []
         self._lock = threading.Lock()
 
         self._last_conversation_time: float = 0.0
@@ -110,9 +124,9 @@ class MaintenanceScheduler:
     # ---- 公共接口 ----
 
     def on_conversation(self, conversation: str):
-        """对话完成后调用。"""
+        """对话完成后调用。入队即记录到达时间（Unix 毫秒）。"""
         with self._lock:
-            self._buffer.append(conversation)
+            self._buffer.append((int(time.time() * 1000), conversation))
             self._last_conversation_time = time.time()
             self.stats["total_conversations"] += 1
             self._cancel_idle_timer()
@@ -164,15 +178,22 @@ class MaintenanceScheduler:
     def save_state(self) -> dict:
         """导出调度器运行时状态"""
         return {
-            "_buffer": list(self._buffer),
+            "_buffer": [[ts, text] for ts, text in self._buffer],
             "_meaningful_count": self._meaningful_count,
             "_consecutive_skips": self._consecutive_skips,
             "stats": dict(self.stats),
         }
 
     def load_state(self, state: dict):
-        """恢复调度器运行时状态"""
-        self._buffer = list(state.get("_buffer", []))
+        """恢复调度器运行时状态（兼容旧格式：纯文本列表，无到达时间）"""
+        buffer_: List[Tuple[Optional[int], str]] = []
+        for item in state.get("_buffer", []):
+            if isinstance(item, (list, tuple)) and len(item) == 2:
+                ts, text = item
+                buffer_.append((int(ts) if ts else None, str(text)))
+            else:
+                buffer_.append((None, str(item)))
+        self._buffer = buffer_
         self._meaningful_count = state.get("_meaningful_count", 0)
         self._consecutive_skips = state.get("_consecutive_skips", 0)
         if "stats" in state:
@@ -218,7 +239,7 @@ class MaintenanceScheduler:
         )
         self._worker_thread.start()
 
-    def _do_flush(self, conversations: List[str], reason: TriggerReason):
+    def _do_flush(self, conversations: List[Tuple[Optional[int], str]], reason: TriggerReason):
         batch_count = len(conversations)
         logger.info(
             f"[DBA 维护] {reason.name}, {batch_count} 轮, "
@@ -241,8 +262,13 @@ class MaintenanceScheduler:
                         )
                         return
 
-            merged = "\n\n".join(conversations)
-            result = self.dba.maintain(merged)
+            merged = "\n\n".join(_format_round(ts, text) for ts, text in conversations)
+            # 节点时间戳按批次注入（取本批最后一轮到达时间）：抽取不产出"节点↔轮次"
+            # 归属，逐轮回填无可靠依据；每轮的精确时间已通过上面的前缀进入抽取输入。
+            batch_ts = next((ts for ts, _ in reversed(conversations) if ts), None)
+            # 原文按轮次交给 DBA：开启原文落盘时保留每轮到达时间，便于溯源核对
+            source_rounds = [{"ts": ts, "text": text} for ts, text in conversations]
+            result = self.dba.maintain(merged, timestamp=batch_ts, source_rounds=source_rounds)
 
             ops = result.get("ops", {})
             node_ops = ops.get("node_ops", [])

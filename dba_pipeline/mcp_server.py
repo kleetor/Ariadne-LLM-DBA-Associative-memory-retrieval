@@ -28,6 +28,7 @@ import logging
 import sys
 import tempfile
 import threading
+import time
 import yaml
 from pathlib import Path
 from typing import Optional
@@ -36,9 +37,14 @@ from typing import Optional
 # Package installed via pip
 
 from dba_pipeline.graph.memory_graph import MemoryGraph
+from dba_pipeline.graph.review import find_duplicate_candidates
 from dba_pipeline.loader import load_graph
 from dba_pipeline.core.jump_axis import NodeType, RelationType, get_jump_weight
 from dba_pipeline.core.path_tracker import PathTracker
+from dba_pipeline.source_store import (
+    default_source_dir, list_batches, load_batch, render_batch_text, source_store_enabled,
+)
+from dba_pipeline.extraction.review_scheduler import IdleReviewScheduler, ReviewConfig
 from dba_pipeline import oplog
 
 # ---- 可选 DBA 管线导入 ----
@@ -85,6 +91,14 @@ class DBAServer:
         self.vector_store = vector_store  # 可选: VectorStore（人工干预时同步向量）
         # 可重入锁，与 GraphBuilder 共享，串行化 graph 修改与 YAML 写回
         self._lock = lock if lock is not None else threading.RLock()
+        # 巡检工具级互斥：避免两次巡检并发产出重复建议（非阻塞获取）。
+        # 用 RLock：空闲巡检会在**整个巡检期间**持锁，然后调用 review_graph()，
+        # 而 review_graph 自己也会获取这把锁——同一线程重入必须放行，否则体检结果
+        # 会被静默替换成"已有一次巡检正在进行"的错误字典。跨线程仍互斥。
+        self._review_running = threading.RLock()
+        # 活动追踪：空闲巡检据此判断"现在是不是没人用"，以及巡检中途要不要让路
+        self._last_activity = time.time()
+        self._activity_lock = threading.Lock()
         self._next_node_id = self._compute_next_id()
 
     # ---- 序列化 ----
@@ -107,6 +121,31 @@ class DBAServer:
                 except OSError:
                     pass
                 raise
+
+    def _semantic_duplicate_hint(self, content: str) -> Optional[dict]:
+        """语义疑似重复提示（仅提示，不阻断创建）。
+
+        人工路径原先直接 add_node，完全不走去重，实测产生过重复 person 节点
+        （txt 的 n25/n27）。这里复用 DBA 维护路径同一套 `_find_duplicate`
+        （FAISS top-3 + 余弦阈值），但**不据此拒绝**：日期锚点这类短内容在向量
+        空间里彼此高度相似，按余弦拒绝会挡住合法的新锚点。
+        """
+        builder = getattr(self.dba, "builder", None)
+        if builder is None:
+            return None
+        try:
+            dup_id = builder._find_duplicate(content)
+        except Exception as e:
+            logging.warning(f"人工建节点语义去重检查失败，按不重复处理: {e}")
+            return None
+        if not dup_id:
+            return None
+        return {
+            "duplicate_of": dup_id,
+            "existing_content": (self.graph.get_node(dup_id) or {}).get("content", ""),
+            "message": (f"该内容与已有节点 {dup_id} 语义高度相似，请确认是否应当改用 "
+                        "update_node 更新既有节点，而不是新建。"),
+        }
 
     def _compute_next_id(self) -> int:
         max_id = 0
@@ -135,9 +174,10 @@ class DBAServer:
             }
         if self.dba:
             try:
-                result = self.dba.maintain(conversation)
+                # 无外部时间戳来源，按「实际落库时刻」注入（Unix 毫秒）
+                result = self.dba.maintain(conversation, timestamp=int(time.time() * 1000))
                 self._save()
-                return {
+                out = {
                     "maintained": True,
                     "nodes_created": len(result.get("result", {}).get("created_ids", [])),
                     "stats": {
@@ -145,6 +185,13 @@ class DBAServer:
                         if isinstance(v, (int, float))
                     },
                 }
+                # evidence 产出情况（开启时才有）：用于区分"LLM 主动留空"与"被子串校验拦掉"
+                if result.get("evidence_stats") is not None:
+                    out["evidence_stats"] = result["evidence_stats"]
+                # 批次标识（开启原文存储时才有）：用于事后调 dba_review_sources 核对这一批
+                if result.get("batch_id"):
+                    out["batch_id"] = result["batch_id"]
+                return out
             except Exception as e:
                 return {
                     "maintained": False,
@@ -166,7 +213,11 @@ class DBAServer:
             if self.retriever.path_tracker is not None:
                 self.retriever.path_tracker.start_session()
             # StoryRank：检索 → 连通性粗筛 → 故事化（不生成回复，交由 Agent 处理）
-            result = self.retriever.retrieve_with_story(query, with_response=False)
+            # render_timestamps=True：把节点「记录于 <日期>」交给叙事整理，让上层 LLM
+            # 自己判断时间关系，而不依赖独立的时序锚点网络。
+            result = self.retriever.retrieve_with_story(
+                query, with_response=False, render_timestamps=True
+            )
             stories = result.get("stories", [])
             # rank-k：最多返回 rerank_k 个故事片段（0 表示不截断）
             if rerank_k > 0:
@@ -198,11 +249,178 @@ class DBAServer:
             res = self.retriever.temporal_lookup(query, k_seed=k_seed, max_facts=max_facts,
                                                  max_anchors=max_anchors)
             if isinstance(res, dict) and not res.get("matches"):
-                res["note"] = "未定位到可用时间锚点；这可能是‘事件→时间/因果联想’类问题，考虑改用 dba_query_memory。"
+                if res.get("rejected"):
+                    # 拒答 ≠ 检索失败：库里确实没有该时段的锚点。此处不能引导改走主检索，
+                    # 否则上层会反复换查询，而真实原因是"该时间没有记忆"。
+                    res["note"] = ("查询指定的时间在库中无对应锚点，已按拒答返回空（不是检索失败）。"
+                                   "若该时段确实有记忆，说明抽取未产出时间锚点，可让用户补充具体日期。")
+                else:
+                    res["note"] = ("未定位到可用时间锚点；这可能是‘事件→时间/因果联想’类问题，"
+                                   "考虑改用 dba_query_memory。")
             return res
         except Exception as e:
             logging.error(f"temporal_lookup 失败: {e}", exc_info=True)
             return {"error": str(e), "time_anchor": {"id": None, "content": ""}, "facts": []}
+
+    # ---- 活动追踪（供空闲巡检）----
+
+    def touch(self, source: str = ""):
+        """记一次活动。任何工具的调用都算——空闲巡检据此判断是否需要让路。
+
+        注意巡检工具自己也会 touch（它们在 dispatch 层统一记录），这让巡检天然
+        "自我节流"：刚跑完一次巡检，空闲计时重新开始，不会连轴转。
+        """
+        with self._activity_lock:
+            self._last_activity = time.time()
+
+    def last_activity(self) -> float:
+        with self._activity_lock:
+            return self._last_activity
+
+    def idle_seconds(self) -> float:
+        return time.time() - self.last_activity()
+
+    def is_idle(self, idle_seconds: float) -> bool:
+        return self.idle_seconds() >= idle_seconds
+
+    def review_sources(self, batch_id: str = None, max_batches: int = 3) -> dict:
+        """溯源巡检（C3）：把"该批原文 + 该批产出的节点"交给 LLM 核对，**只报不改**。
+
+        依赖 C1（原文按批次落盘，`ARIADNE_SOURCE_STORE=1`）。仅读取 `sources/` 目录，
+        不写图谱；LLM 调用在锁外进行（持锁只做一次节点快照）。
+        """
+        source_dir = getattr(self.dba, "source_dir", None)
+        if not source_dir:
+            return {
+                "error": "未开启原文存储，无法做溯源核对",
+                "hint": "设置环境变量 ARIADNE_SOURCE_STORE=1 后重启；"
+                        "注意这会落盘原始对话，请在确认隐私与体积可接受后再开。",
+            }
+        inference = getattr(self.retriever, "inference", None)
+        if inference is None:
+            return {"error": "检索链路未初始化，无法调用 LLM 做核对"}
+
+        if batch_id:
+            targets = [{"batch_id": batch_id}]
+        else:
+            targets = list_batches(source_dir, limit=max_batches)
+        if not targets:
+            return {"error": "没有可用的批次原文", "source_dir": str(source_dir)}
+
+        reports = []
+        for t in targets:
+            bid = t.get("batch_id")
+            batch = load_batch(source_dir, bid)
+            if not batch:
+                continue
+            nodes_text, node_ids = self._snapshot_batch_nodes(bid)
+            if not nodes_text:
+                reports.append({
+                    "batch_id": bid,
+                    "note": "该批产出的节点已不在图中（可能被合并、废弃或遗忘），跳过核对",
+                })
+                continue
+            verdict = inference.audit_source(render_batch_text(batch), nodes_text)
+            report = {
+                "batch_id": bid,
+                "rounds": len(batch.get("rounds") or []),
+                "audited_nodes": node_ids,
+            }
+            report.update(verdict)
+            reports.append(report)
+
+        total_unsupported = sum(len(r.get("unsupported") or []) for r in reports)
+        total_missing = sum(len(r.get("missing") or []) for r in reports)
+        return {
+            "batches": reports,
+            "summary": {
+                "batches_checked": len(reports),
+                "unsupported": total_unsupported,
+                "missing": total_missing,
+            },
+            "note": ("本报告只做核对，**未修改图谱**。确认后请用 dba_intervene 落盘："
+                     "无据节点用 deprecate（保留痕迹）或 delete_node（彻底删除），"
+                     "漏抽的事实用 create_node 补上（可带 evidence 与 timestamp）。"
+                     "注意：原文落盘时已做标识脱敏，个别片段可能带 ***。"),
+        }
+
+    def _snapshot_batch_nodes(self, batch_id: str):
+        """持锁取一次快照：source_ref == batch_id 的节点（只读，锁外做 LLM 调用）"""
+        with self._lock:
+            lines, ids = [], []
+            for nid, nd in self.graph.graph.nodes(data=True):
+                if nd.get("source_ref") != batch_id:
+                    continue
+                if nd.get("deprecated") or nd.get("forgotten"):
+                    continue
+                nt = nd.get("node_type")
+                nt_val = nt.value if hasattr(nt, "value") else str(nt)
+                ev = f'  evidence: {nd["evidence"]}' if nd.get("evidence") else ""
+                lines.append(f"[{nid}]（{nt_val}）{nd.get('content') or ''}{ev}")
+                ids.append(nid)
+        return "\n".join(lines), ids
+
+    def review_graph(self, threshold: float = 0.85, max_pairs: int = 50,
+                     include_isolated: bool = True) -> dict:
+        """图谱体检（**只读**）：找语义高度相似的节点对与孤立节点，不修改图谱。
+
+        设计取舍：
+        - **只发现候选，不下判断**——是否真的同一条事实、要不要合并，交给上层结合
+          上下文判断，确认后用 `dba_intervene`（update_node / delete_node）落盘。
+          因此本工具不调 LLM、不写图，也就不存在与检索的写冲突。
+        - 相似度计算是 O(n²)，**不能持锁跑**：只在开始时持锁取一次快照
+          （节点字段 + 向量缓存浅拷贝），随后放锁做纯计算。
+        """
+        if not self._review_running.acquire(blocking=False):
+            return {"error": "已有一次巡检正在进行，请稍后再试", "running": True}
+        try:
+            with self._lock:
+                active = []
+                for nid, nd in self.graph.graph.nodes(data=True):
+                    if nd.get("deprecated") or nd.get("forgotten"):
+                        continue
+                    active.append({
+                        "id": nid,
+                        "content": nd.get("content") or "",
+                        "node_type": nd.get("node_type"),
+                    })
+                # 浅拷贝：向量数组本身不被就地修改，替换只会换引用 → 天然构成快照
+                vectors = dict(self.vector_store._content_vectors) if self.vector_store else {}
+
+            pairs = find_duplicate_candidates(
+                active, vectors, threshold=threshold, max_pairs=max_pairs,
+            )
+            index = {n["id"]: n for n in active}
+            for p in pairs:
+                for side in ("a", "b"):
+                    nd = index.get(p[side]) or {}
+                    p[side] = {
+                        "id": p[side],
+                        "content": nd.get("content", ""),
+                        "node_type": (str(nd.get("node_type") or "").split(".")[-1].lower()),
+                    }
+
+            isolated = []
+            if include_isolated:
+                with self._lock:
+                    isolated = [
+                        {"id": nid, "content": (nd.get("content") or "")}
+                        for nid, nd in self.graph.graph.nodes(data=True)
+                        if not nd.get("deprecated") and not nd.get("forgotten")
+                        and self.graph.graph.in_degree(nid) + self.graph.graph.out_degree(nid) == 0
+                    ]
+
+            return {
+                "scanned": len(active),
+                "duplicate_candidates": pairs,
+                "isolated_nodes": isolated,
+                "threshold": threshold,
+                "note": ("本报告只做候选发现，**未修改图谱**。确认后请用 dba_intervene "
+                         "（update_node 合并内容 / delete_node 删除冗余）落盘；"
+                         "注意节点类型为 thing 的短内容（如日期锚点）已默认排除在比对之外。"),
+            }
+        finally:
+            self._review_running.release()
 
     def inspect_graph(self, node_id: str = None) -> dict:
         """查看图谱：指定节点展开 1-hop 邻居"""
@@ -218,13 +436,17 @@ class DBAServer:
 
         node = self.graph.graph.nodes[nid]
         nt = node.get("node_type")
-        nodes.append({
+        entry = {
             "id": nid,
             "content": node.get("content", ""),
             "node_type": nt.value if hasattr(nt, "value") else str(nt),
             "deprecated": node.get("deprecated", False),
             "forgotten": node.get("forgotten", False),
-        })
+        }
+        # 原文支撑片段（opt-in 抽取时才有）：用于核查这条节点凭什么存在
+        if node.get("evidence"):
+            entry["evidence"] = node["evidence"]
+        nodes.append(entry)
 
         # 出边
         for _, tgt, edata in self.graph.graph.out_edges(nid, data=True):
@@ -278,6 +500,28 @@ class DBAServer:
                 if not nt:
                     return {"error": f"无效的节点类型: {params.get('node_type')}"}
                 content = params.get("content", "")
+
+                # 精确重复：直接拒绝（零误判）
+                for nid, nd in self.graph.graph.nodes(data=True):
+                    if (nd.get("content") or "").strip() == content.strip():
+                        return {
+                            "action": action,
+                            "success": False,
+                            "duplicate_of": nid,
+                            "existing_content": nd.get("content", ""),
+                            "message": (f"内容与已有节点 {nid} 完全相同，已拒绝创建；"
+                                        "如需修改请改用 update_node。"),
+                        }
+
+                # 语义疑似重复：只提示、不阻断。短内容（如「2026年9月7日」这类日期锚点）
+                # 在向量空间里彼此高度相似，据余弦拒绝会挡住合法的日期锚点建设。
+                hint = self._semantic_duplicate_hint(content)
+
+                # 可选时间戳：与抽取路径一致，允许调用方给人工节点注入记录时间
+                ts = params.get("timestamp")
+                if ts is not None and (isinstance(ts, bool) or not isinstance(ts, int)):
+                    return {"error": "timestamp 必须为 Unix 毫秒整数，或省略", "action": action}
+
                 # 动态计算 ID，避免与 DBA 维护新建节点冲突导致静默覆盖
                 self._next_node_id = self._compute_next_id()
                 nid = f"n{self._next_node_id}"
@@ -290,6 +534,8 @@ class DBAServer:
                     deprecated=False,
                     forgotten=False,
                 )
+                if ts is not None:
+                    self.graph.graph.nodes[nid]["timestamp"] = ts
                 # 同步向量库，使人工创建的节点可被 P 链路检索
                 if self.vector_store is not None:
                     try:
@@ -299,6 +545,10 @@ class DBAServer:
                         raise
                 result["node"] = {"id": nid, "content": content,
                                   "node_type": params.get("node_type", "").upper()}
+                if ts is not None:
+                    result["node"]["timestamp"] = ts
+                if hint:
+                    result["duplicate_warning"] = hint
                 self._save()
 
             elif action == "update_node":
@@ -323,7 +573,15 @@ class DBAServer:
                     node["node_type"] = nt
                 if "deprecated" in params:
                     node["deprecated"] = bool(params["deprecated"])
-                result["node"] = {"id": nid, "content": node.get("content", "")}
+                if "timestamp" in params:
+                    # 允许给存量节点补时间戳（节点的创建时间无法由抽取侧回填，只能手工注入）
+                    ts = params["timestamp"]
+                    if ts is not None and (isinstance(ts, bool) or not isinstance(ts, int)):
+                        return {"error": "timestamp 必须为 Unix 毫秒整数，或 null 表示清空",
+                                "action": action}
+                    node["timestamp"] = ts
+                result["node"] = {"id": nid, "content": node.get("content", ""),
+                                  "timestamp": node.get("timestamp")}
                 self._save()
 
             elif action == "delete_node":
@@ -475,6 +733,8 @@ TOOL_SCHEMAS = [
         "description": (
             "在回答用户问题、给出建议或延续话题之前，先调用此工具检索与查询相关的"
             "历史记忆，返回按因果链路整理好的故事片段，以便结合用户过去的上下文做出更贴合的回答。\n"
+            "故事里若出现「记录于 YYYY-MM-DD」，那是这条记忆**被记下**的时间，"
+            "**不是事件发生时间**，不要据此断言事情发生在哪一天。\n"
             "适用范围（除了下面 dba_temporal_lookup 明确的【在某个时间发生了什么】之外，都用这个）：\n"
             "- 问原因/为什么（因果）、现状、整体看法、与谁/什么有关、偏爱、特性\n"
             "- 问某个具体事件发生在什么时候（事件→时间）、跨多个时期的完整经历（从高中到工作…）\n"
@@ -503,6 +763,18 @@ TOOL_SCHEMAS = [
             "它会定位到时间锚点，返回同一时间发生的几个事实节点（单跳，扁平列表），用于回答“那个时间我都干了啥”。\n"
             "注意：查询可能命中多个时间锚点（如“三年”可指大专三年或工作三年），工具会**返回全部候选锚点的事实组**，"
             "请你结合问题判断最相关的一个/多个。\n"
+            "返回值里的 match_type 标明本次命中的强度，请据此决定要不要采信：\n"
+            "- exact：查询里的显式日期（如“上周三”“9月7日”）字面命中了锚点，可放心使用；\n"
+            "- fuzzy：查询用的是模糊时间词（前几天/最近/那天/后来），锚点来自该类词允许的时间范围，"
+            "可用但精度较低，回答时不要把它说成精确日期；\n"
+            "- fallback：查询不含任何时间词，返回的只是**语义最近**的锚点，**不代表时间吻合**——"
+            "回答时不要断言具体日期，必要时向用户确认；\n"
+            "- rejected：库里没有该时间段的记忆，已主动拒答（不是检索失败），此时 matches 为空。\n"
+            "rejected 为 true 时会附 reason 说明判定依据。**此时应直接告诉用户“没有那个时段的记录”，"
+            "不要拿其他时段的事实顶替，也不要反复换查询**；\n"
+            "matches 为空但未拒答时另附 note，提示是否该改用 dba_query_memory。\n"
+            "每条事实另带 time_consistent：false 表示该事实自带的时期词与锚点时间不相交，"
+            "很可能是连边错配（时间上对不上），请勿据此断言；null 表示事实里没有时期词、无法判定。\n"
             "【不要用于】以下场景——这些请改用 dba_query_memory：\n"
             "- 问“什么时候做了某件事”（事件→时间，如‘什么时候开始学吉他’）\n"
             "- 问“为什么/现状/整体经历/跨多个时期的完整历程”（需因果联想/多期跨越）\n"
@@ -558,7 +830,18 @@ TOOL_SCHEMAS = [
                 },
                 "params": {
                     "type": "object",
-                    "description": "操作参数。create_node: {node_type, content}; update_node: {node_id, content?, node_type?, deprecated?}; delete_node: {node_id}; create_edge: {source, target, rel_type}; delete_edge: {source, target}",
+                    "description": (
+                        "操作参数。"
+                        "create_node: {node_type, content, timestamp?}；"
+                        "update_node: {node_id, content?, node_type?, deprecated?, timestamp?}"
+                        "（timestamp 为 Unix 毫秒整数，null 表示清空；给存量节点补记录时间用它）；"
+                        "delete_node: {node_id}；"
+                        "create_edge: {source, target, rel_type}；"
+                        "delete_edge: {source, target}。"
+                        "返回值提示：create_node 命中**完全相同**的内容时 success=false 并给出 duplicate_of；"
+                        "仅是语义高度相似时创建仍成功，但附 duplicate_warning"
+                        "（此时请判断是否应当改用 update_node，以免造出重复节点）。"
+                    ),
                 },
             },
             "required": ["action", "params"],
@@ -583,6 +866,63 @@ TOOL_SCHEMAS = [
         "inputSchema": {
             "type": "object",
             "properties": {},
+        },
+    },
+    {
+        "name": "dba_review_graph",
+        "description": (
+            "【图谱体检 · 只读】找出语义高度相似的节点对（疑似重复）与孤立节点，"
+            "返回报告但**不修改图谱**。适合在记忆攒了一段时间后人工触发一次。\n"
+            "- 不调用 LLM、不写图，因此不会与正在进行的检索/维护冲突。\n"
+            "- 语义去重只对「事实陈述」有意义：类型为 thing 的短内容（日期锚点这类）"
+            "默认排除——否则「2026年9月7日」与「2026年8月31日」会大量误报。\n"
+            "- 孤立节点会因连续多轮无人访问而被遗忘，报告里提前暴露，可按需连边或删除。\n"
+            "- 确认某对确实是同一条事实后，用 dba_intervene 落盘："
+            "update_node 把内容合并到保留的那条，delete_node 删掉冗余的那条。"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "threshold": {
+                    "type": "number",
+                    "description": "余弦相似度阈值，默认 0.85；调低会报出更多弱候选",
+                },
+                "max_pairs": {
+                    "type": "integer",
+                    "description": "最多返回多少对候选（默认 50，0 表示不截断）",
+                },
+                "include_isolated": {
+                    "type": "boolean",
+                    "description": "是否同时返回孤立节点列表（默认 true）",
+                },
+            },
+        },
+    },
+    {
+        "name": "dba_review_sources",
+        "description": (
+            "【溯源巡检 · 只读】用**原始对话**核对从它抽出来的节点，报三类问题且不修改图谱：\n"
+            "- unsupported：节点的内容在原文里找不到支撑（把推测写成了事实这类）；\n"
+            "- missing：原文里有、但没抽出来的关键事实，重点是「为什么做某个选择」"
+            "（被放弃的选项、取舍依据）；\n"
+            "- granularity：粒度不对（相对时间表述被独立成节点、多件事被合并成一条）。\n"
+            "需要服务端开启原文存储（环境变量 ARIADNE_SOURCE_STORE=1）才能用；"
+            "未开启时会返回提示。不传 batch_id 则核对最近几批。\n"
+            "报告只是建议：确认后用 dba_intervene 落盘（无据节点 deprecate/delete_node，"
+            "漏抽的用 create_node 补）。原文落盘时已做标识脱敏，个别片段可能带 ***。"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "batch_id": {
+                    "type": "string",
+                    "description": "指定要核对哪一批（形如 b20260911-143000-ab12）；不传则取最近几批",
+                },
+                "max_batches": {
+                    "type": "integer",
+                    "description": "不指定 batch_id 时，最多核对最近多少批（默认 3）",
+                },
+            },
         },
     },
 ]
@@ -612,6 +952,9 @@ def create_mcp_server(dba: DBAServer) -> "Server":
     async def handle_call_tool(ctx, params: CallToolRequestParams):
         name = params.name
         arguments = params.arguments or {}
+        # 统一记一次活动：空闲巡检据此判断"现在有人用"，从而不启动或中途让路。
+        # 放在 dispatch 层而不是各 handler 里，是为了不漏——新增工具自动被覆盖。
+        dba.touch(source=name)
         # 记录本次 LLM 操作（source=llm）
         session_id = getattr(ctx, "session_id", "") if ctx is not None else ""
         actor = {
@@ -636,6 +979,10 @@ def create_mcp_server(dba: DBAServer) -> "Server":
                 result = dba.checkpoint(**arguments)
             elif name == "dba_get_stats":
                 result = dba.get_stats()
+            elif name == "dba_review_graph":
+                result = dba.review_graph(**arguments)
+            elif name == "dba_review_sources":
+                result = dba.review_sources(**arguments)
             else:
                 result = {"error": f"Unknown tool: {name}"}
         except Exception as e:
@@ -766,7 +1113,8 @@ def _print_status(graph, dba, retriever, vector_ready, args) -> None:
     print(f"  传输模式   : {transport}", file=sys.stderr)
     print(f"  图谱规模   : {graph.node_count} 节点 / {graph.edge_count} 边", file=sys.stderr)
     print(f"  工具        : dba_add_conversation / dba_query_memory / dba_temporal_lookup / "
-          f"dba_inspect_graph / dba_intervene / dba_checkpoint / dba_get_stats", file=sys.stderr)
+          f"dba_inspect_graph / dba_intervene / dba_review_graph / dba_review_sources / "
+          f"dba_checkpoint / dba_get_stats", file=sys.stderr)
     print("=" * 60, file=sys.stderr)
 
 
@@ -877,6 +1225,16 @@ def main():
                 graph=graph,
                 vector_store=vector_store,
                 graph_builder=builder,
+                # 「决策与取舍」补充规则（把"被放弃的选项 / 选择依据"也抽成 REASON 节点）。
+                # 仅 MCP 侧开启；ALM 侧保持关闭，避免动到待提交的评测行为。
+                enable_choice_extraction=True,
+                # 每条节点附带 evidence（原文支撑片段），供核查与后续溯源巡检使用；
+                # 不进检索/叙事，仅在 inspect_graph 可见，且受子串校验兜底。
+                enable_evidence=True,
+                # 原文按批次落盘（溯源巡检的前提）。**默认关闭**：存的是原始对话，
+                # 需显式设 ARIADNE_SOURCE_STORE=1 才开；落盘时做标识脱敏 + 30 天 TTL。
+                enable_source_store=source_store_enabled(),
+                source_dir=default_source_dir(args.yaml) if source_store_enabled() else None,
             )
 
             # Scheduler（异步批量维护）
@@ -959,8 +1317,38 @@ def main():
 
     # P0: 启动调度器，维护完成后自动保存 YAML
     if scheduler_instance:
-        scheduler_instance.on_maintenance_done = lambda result: dba_server._save()
+        def _on_maintenance_done(result):
+            dba_server._save()
+            # 维护本身也是"系统活动"：让空闲巡检重新计时，避免巡检和维护撞在同一段空闲里
+            dba_server.touch(source="maintenance")
+
+        scheduler_instance.on_maintenance_done = _on_maintenance_done
         scheduler_instance.start()
+
+    # 空闲巡检：只在没人用的时段跑，一有人来就让路。默认关闭（见 review_scheduler 模块说明）。
+    review_scheduler = None
+    review_cfg = ReviewConfig.from_env(
+        maintenance_idle_timeout=scheduler_instance.config.idle_timeout
+        if scheduler_instance else None
+    )
+    if review_cfg and dba_instance is not None:
+        def _on_review(report):
+            if report.get("skipped") or report.get("aborted"):
+                return
+            summary = (report.get("graph") or {}).get("duplicate_candidates")
+            print(f"[DBA MCP] 空闲巡检完成: 候选重复对 {len(summary or [])} 组, "
+                  f"核对批次 {len(report.get('sources') or [])} 批; 报告见 {review_scheduler.review_dir}",
+                  file=sys.stderr)
+
+        review_scheduler = IdleReviewScheduler(
+            dba_server, review_cfg, yaml_path=args.yaml, on_report=_on_review)
+        review_scheduler.start()
+        print(f"[DBA MCP] 空闲巡检已启动: 空闲阈值 {review_cfg.idle_seconds:.0f}s, "
+              f"最小间隔 {review_cfg.min_interval:.0f}s, 每轮核对 {review_cfg.max_batches} 批原文",
+              file=sys.stderr)
+    else:
+        print("[DBA MCP] 空闲巡检未启动（设 ARIADNE_REVIEW_IDLE=<秒> 开启；"
+              "它会消耗 LLM 额度，故默认关闭）", file=sys.stderr)
 
     server = create_mcp_server(dba_server)
 
@@ -977,7 +1365,9 @@ def main():
             print("[DBA MCP] stdio 模式", file=sys.stderr)
             asyncio.run(run_stdio(server))
     finally:
-        # 优雅退出：flush 调度器缓冲中的对话，避免退出时丢失记忆
+        # 优雅退出：先停空闲巡检（它可能正在调 LLM），再 flush 调度器缓冲中的对话
+        if review_scheduler:
+            review_scheduler.stop()
         if scheduler_instance:
             scheduler_instance.stop()
 

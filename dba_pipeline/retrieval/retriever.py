@@ -20,11 +20,31 @@ from dba_pipeline.graph.memory_graph import MemoryGraph
 from dba_pipeline.llm.inference import InferenceEngine
 from dba_pipeline.embedding.store import VectorStore
 
-# 显式日期/时期词——时序工具用于「字面校验」，避免查询指定日期而库中无该日期时漂移到邻近锚点
-_EXPLICIT_PERIOD_RE = re.compile(
-    r"\d{1,2}月\d{1,2}[日号]?|\d{1,2}[日号]|昨天|明天|前天|上周|这周|本周|下周|"
-    r"周[一二三四五六日天]|去年|今年|明年|前年|寒假|暑假|年底|年初|上半年|下半年"
+# ── 时期词表（单一来源）──────────────────────────────────────────────────
+# 历史上「锚点白名单」(TOOL_TIME_ANCHOR_RE) 与「查询校验词表」是两份独立正则，
+# 结果出现一批"锚点能定位、查询却不校验"的词（今天 / 上个月 / 大二上学期 …），
+# 这些查询会静默走 fallback。这里把时期词集中定义成四类：
+#
+#   (1) 绝对时期词 → 查询出现时**字面硬校验**      _explicit_periods
+#   (2) 模糊时期词 → 查询出现时按**映射集合软校验** _fuzzy_periods
+#   (3) 人生阶段词 → 查询出现时按**同族阶段软校验** _era_periods
+#   (4) 仅锚点词   → 只用于识别锚点、**不做查询校验**（日常语境里太常见，
+#                    例如「晚上」「工作」，硬校验会把正常查询误判为拒答）
+#
+# 覆盖情况由 eval/test_timestamp_chain.py 的「时期词覆盖检查」兜底，防止再次漂移。
+
+# (1) 绝对时期词。注意「周X」必须排在裸「上周/这周」之前：否则「上周三」会被拆成
+#     「上周」，与库中的「上周五」锚点误判为同一时期（实测跨期漂移的来源之一）。
+_EXPLICIT_TOKENS = (
+    r"\d{1,2}月\d{1,2}[日号]?", r"\d{1,2}[日号]", r"\d{1,2}月",
+    r"[这上本下前那]?周[一二三四五六日天]",
+    "昨天", "明天", "前天", "今天",
+    "上周", "这周", "本周", "下周",
+    "上个月", "这个月", "下个月",
+    "去年", "今年", "明年", "前年",
+    "寒假", "暑假", "上学期", "下学期", "上半年", "下半年", "年底", "年初",
 )
+_EXPLICIT_PERIOD_RE = re.compile("|".join(_EXPLICIT_TOKENS))
 
 
 def _explicit_periods(text: str) -> set:
@@ -32,15 +52,145 @@ def _explicit_periods(text: str) -> set:
     return set(m.group(0) for m in _EXPLICIT_PERIOD_RE.finditer(text or ""))
 
 
+# (2) 模糊时期词——没有字面日期可校验，但可映射到「合理的锚点字面集合」做软校验。
+# 动机：查询「前几天」时，若库中根本没有任何近期锚点，旧逻辑会静默退回语义最近邻
+# （实测会捞出「这周二」这类仅语义相近的锚点），调用方拿不到任何"这是回退"的信号。
+# 映射策略：只放行语义上确实覆盖该模糊词的时间表述，其余一律拒答。
+# 边界按"该词的时间跨度"划线——「前几天」不含一周前的「上周三」，「这两天」不含上周；
+# 而「最近」「那天」本身跨度就大，允许覆盖到上周。
+_FUZZY_PERIOD_RULES = (
+    # 回溯性的"前几天"：仅 3~6 天前的范围，不含"上周"
+    (("前几天", "前两天", "前些天", "头几天"),
+     ("前天", "大前天", "前几天", "前两天", "前些天")),
+    # "这两天 / 这几天"：只覆盖当下前后一两天
+    (("这两天", "这几天"),
+     ("这两天", "这几天", "昨天", "今天", "前天")),
+    # 注：「最近 / 近来 / 这段时间」刻意**不做查询校验**——跨度过大且在日常查询里极常见，
+    # 一旦库中无该类锚点就会被判成"无该时段记录"，而实际上库里可能有大量普通节点，
+    # 这个提示是错的。它们仍可作锚点（见 _ANCHOR_ONLY_TOKENS），查询走 fallback 并带信号。
+    # "那天 / 当天 / 当时"：特指某个已被提及的过去时点，可能落在一周前
+    (("那会儿", "那时候", "那天", "当天", "当时"),
+     ("那天", "当天", "当时", "那天晚上", "上周", "这周")),
+    # "后来 / 之后"：承接一个紧接着的后续时点，库中通常需要显式"后来/第二天"
+    (("后来", "之后", "随后"),
+     ("后来", "之后", "随后", "第二天", "次日")),
+)
+
+_FUZZY_TOKENS = tuple(
+    w for words, _ in _FUZZY_PERIOD_RULES for w in words
+)
+
+
+def _fuzzy_periods(text: str):
+    """抽取查询中的模糊时期词，返回 [(命中的查询词, 可接受锚点子串元组), ...]"""
+    t = text or ""
+    out = []
+    for words, anchors in _FUZZY_PERIOD_RULES:
+        hit = [w for w in words if w in t]
+        if hit:
+            out.append((hit[0], anchors))
+    return out
+
+
+# (3) 人生阶段词——查询出现时，锚点须是**同族阶段词**（「高中」不匹配「大学」）。
+# 按学段分族：只用一张"全部阶段词"的平表会让「大二」匹配到「高一」（实测误配）。
+_ERA_FAMILY = {
+    "高中": ("高中", "高一", "高二", "高三"),
+    "高一": ("高中", "高一", "高二", "高三"),
+    "高二": ("高中", "高一", "高二", "高三"),
+    "高三": ("高中", "高一", "高二", "高三"),
+    "大学": ("大学", "大一", "大二", "大三", "大四"),
+    "大一": ("大学", "大一", "大二", "大三", "大四"),
+    "大二": ("大学", "大一", "大二", "大三", "大四"),
+    "大三": ("大学", "大一", "大二", "大三", "大四"),
+    "大四": ("大学", "大一", "大二", "大三", "大四"),
+    "大专": ("大专",),
+}
+_ERA_TOKENS = tuple(_ERA_FAMILY)
+
+
+def _era_periods(text: str):
+    """抽取查询中的人生阶段词，返回命中的词列表"""
+    t = text or ""
+    return [w for w in _ERA_TOKENS if w in t]
+
+
+def _era_acceptable(words) -> tuple:
+    """查询命中的阶段词 → 同族阶段词集合（用于软校验）"""
+    out = []
+    for w in words:
+        for a in _ERA_FAMILY.get(w, (w,)):
+            if a not in out:
+                out.append(a)
+    return tuple(out)
+
+
+def _period_literals(text: str) -> set:
+    """文本自带的时期字面集合（显式 + 模糊词 + 人生阶段词）"""
+    t = text or ""
+    lit = set(_explicit_periods(t))
+    lit |= {w for w, _ in _fuzzy_periods(t)}
+    lit |= set(_era_periods(t))
+    return lit
+
+
+def _time_consistency(anchor_acceptable, fact_content: str, fact_periods: set):
+    """判断事实自带的时期词与锚点是否相容。
+
+    Returns True（相容）/ False（显式冲突）/ None（无法判定）。
+
+    三层判断，顺序不能颠倒：
+    1. 事实的时期字面与锚点可接受集有交集 → 相容；
+    2. 锚点的可接受串**出现在事实文本里** → 相容（如锚点「那天」的可接受集含「上周」，
+       而事实写的是「上周三」——集合不交但字面包含，属同义）；
+    3. 事实自带时期词、且以上都不成立 → 显式冲突；
+    4. 事实没有时期词、锚点也无映射 → 无法判定。
+    """
+    if not anchor_acceptable:
+        return None
+    if fact_periods & anchor_acceptable:
+        return True
+    if any(a in fact_content for a in anchor_acceptable):
+        return True
+    if fact_periods:
+        return False
+    return None
+
+
+def _anchor_acceptable_periods(anchor_text: str):
+    """锚点可覆盖的时期字面集合；锚点本身不含时期词时返回 None（无法判定）。
+
+    用于兜底 TEMPORAL 边的错配：事实自带的时期词若与该集合完全不相交，说明它很可能
+    不属于这个时段。注意它**只能抓显式冲突**（如把「今天」挂到「上周三」上），
+    对"同区间内挂错事件"（如把别的「前天」事件挂到「前几天」上）无能为力——
+    那需要 source 层才能发现。
+    """
+    t = anchor_text or ""
+    lit = _period_literals(t)
+    for _, anchors in _fuzzy_periods(t):
+        lit |= set(anchors)
+    return lit or None
+
+
+# (4) 仅作锚点、不做查询校验的词
+_ANCHOR_ONLY_TOKENS = (
+    r"\d{1,4}年", r"\d{1,2}号", r"\d{1,2}日",
+    r"^[这上本下前那]?周",
+    "凌晨", "早上", "上午", "中午", "下午", "晚上",
+    "那段时间", "近年来", "工作", "毕业", "入职", "开学",
+    # 跨度过大、日常语境太常见，只作锚点、不做查询校验（见 _FUZZY_PERIOD_RULES 注释）
+    "最近", "近来", "这段时间",
+    # 模糊词的"承接型"锚点：可作为锚点被定位，但查询里出现时不单独触发校验
+    "第二天", "次日",
+)
+
 
 # 独立时序工具 temporal_lookup 用的时间锚点判定：覆盖绝对时期 + 指示词 + 人生阶段。
-TOOL_TIME_ANCHOR_RE = re.compile(
-    r"^[这上本下前那]?周|昨天|今天|明天|前天|去年|今年|明年|前年|上个月|这个月|下个月|"
-    r"\d{1,4}年|\d{1,2}月|\d{1,2}号|\d{1,2}日|周[一二三四五六日天]|"
-    r"凌晨|早上|上午|中午|下午|晚上|那段时间|当时|近年来|"
-    r"高中|大学|大专|工作|毕业|入职|暑假|寒假|上学期|下学期|上半年|下半年|年底|年初|"
-    r"高三|高二|高一|大四|大三|大二|大一"
-)
+# 模糊时期词同样要列入：LLM 会把「前几天/这两天/后来」抽成 THING 锚点节点，
+# 白名单缺了它们就会出现"锚点存在、却定位不到"（实测「前几天」节点被漏掉）。
+TOOL_TIME_ANCHOR_RE = re.compile("|".join(
+    _EXPLICIT_TOKENS + _FUZZY_TOKENS + _ERA_TOKENS + _ANCHOR_ONLY_TOKENS
+))
 
 
 class PurposeDrivenRetriever:
@@ -143,10 +293,21 @@ class PurposeDrivenRetriever:
         · 查询可能命中多个时间锚点（如"三年"可指大专三年/工作三年），**返回全部候选锚点的事实组，
           交由上层 LLM 判断最相关的一个/多个**，而不是硬性消歧。
         · 只返回"真锚点"（带反向 TEMPORAL 邻居）的事实组；无可用锚点时返回空 matches。
+        · 查询带时间词时做锚点校验：显式词（上周三）字面校验，模糊词（前几天）与
+          人生阶段词（高中/大二）按可接受集合软校验；不匹配即 rejected。
+          无时间词的查询不做校验，match_type=fallback。
 
         Returns:
-            {"query", "matches":[{"time_anchor":{"id","content"}, "facts":[{"id","content","from"}...]}...],
-             "count"}
+            {"query": str,
+             "matches": [{"time_anchor": {"id","content"},
+                          "facts": [{"id","content","from","time_consistent"}...]}...],
+             "count": int,
+             "match_type": "exact" | "fuzzy" | "fallback" | "rejected",
+             # 仅 rejected 时附加
+             "rejected": True, "reason": str}
+
+            facts[].time_consistent: True/False/None。None 表示事实里没有时期词、
+            无法判定；False 表示事实自带的时期词与锚点完全不相交（疑似 TEMPORAL 边错配）。
         """
         try:
             hits = self.vector_store.search(query, k=k_seed)  # [(id, score, meta)]
@@ -159,16 +320,56 @@ class PurposeDrivenRetriever:
         # 过滤真锚点：只有带反向 TEMPORAL 邻居的才是时间锚点（排除误判的"含时间词事件节点"）。
         usable = [m for m in time_cands if self._has_reverse_temporal(m[0])]
 
-        # 拒答：查询含显式日期/时期词时，锚点必须字面命中其中之一。
-        # 否则（如查「8月30日」而最近邻只有「8月1日」）宁可返回空，也不跨期漂移。
+        # 拒答与信号：
+        #  · 显式日期/时期词（「8月30日」「上周三」）→ 硬校验，锚点必须字面命中；
+        #  · 模糊时期词（「前几天」「后来」）→ 软校验，锚点须落在该词的合理时间集合内；
+        #  · 人生阶段词（「高中」「大二」）→ 软校验，锚点须为同族阶段词；
+        #  · 都没有 → 不校验，退语义最近邻（match_type=fallback）。
+        # match_type 显式告知调用方本次是 exact / fuzzy / fallback，避免把回退当成命中。
         rejected = False
+        match_type = "fallback"
+        reason = None
+
         q_periods = _explicit_periods(query)
+        q_fuzzy = _fuzzy_periods(query)
+        q_era = _era_periods(query)
         if q_periods:
             usable = [
                 m for m in usable
                 if q_periods & _explicit_periods(self.graph.get_content(m[0]) or "")
             ]
             rejected = not usable
+            match_type = "rejected" if rejected else "exact"
+            if rejected:
+                reason = (
+                    f"查询含显式时间词 {sorted(q_periods)}，但库中无字面匹配的时间锚点；"
+                    "为避免跨期漂移返回空"
+                )
+        elif q_fuzzy:
+            acceptable = tuple({a for _, anchors in q_fuzzy for a in anchors})
+            usable = [
+                m for m in usable
+                if any(a in (self.graph.get_content(m[0]) or "") for a in acceptable)
+            ]
+            rejected = not usable
+            match_type = "rejected" if rejected else "fuzzy"
+            if rejected:
+                reason = (
+                    f"查询含模糊时间词 {[q for q, _ in q_fuzzy]}，其可接受锚点为 "
+                    f"{list(acceptable)}，但库中无匹配；为避免漂移返回空"
+                )
+        elif q_era:
+            acceptable_era = _era_acceptable(q_era)
+            usable = [
+                m for m in usable
+                if any(a in (self.graph.get_content(m[0]) or "") for a in acceptable_era)
+            ]
+            rejected = not usable
+            match_type = "rejected" if rejected else "fuzzy"
+            if rejected:
+                reason = (
+                    f"查询含人生阶段词 {q_era}，但库中无同族阶段锚点；为避免漂移返回空"
+                )
 
         matches: List[Dict] = []
         for m in usable[:max_anchors]:
@@ -177,23 +378,30 @@ class PurposeDrivenRetriever:
             # 时间 → 共时事件（反向，单跳）
             facts: List[Dict] = []
             seen = set([anchor_id])
+            # 兜底 TEMPORAL 边错配：事实自带时期词且与锚点完全不相交时打标（不删除，
+            # 保留召回、把判断权交给上层）——同区间内挂错事件的情况它抓不到。
+            acceptable = _anchor_acceptable_periods(anchor_content)
             for nb, rel_type, is_reverse in self.graph.get_neighbors(anchor_id):
                 if rel_type == RelationType.TEMPORAL and is_reverse and nb not in seen:
                     if not self._is_active(nb):
                         continue
                     seen.add(nb)
-                    facts.append({"id": nb, "content": self.graph.get_content(nb) or "", "from": anchor_id})
+                    fact_content = self.graph.get_content(nb) or ""
+                    fact_periods = _period_literals(fact_content)
+                    consistent = _time_consistency(acceptable, fact_content, fact_periods)
+                    facts.append({
+                        "id": nb, "content": fact_content, "from": anchor_id,
+                        "time_consistent": consistent,
+                    })
             if max_facts:
                 facts = facts[:max_facts]
             matches.append({"time_anchor": {"id": anchor_id, "content": anchor_content}, "facts": facts})
 
-        result = {"query": query, "matches": matches, "count": len(matches)}
+        result = {"query": query, "matches": matches, "count": len(matches),
+                  "match_type": match_type}
         if rejected:
             result["rejected"] = True
-            result["reason"] = (
-                f"查询含显式时间词 {sorted(q_periods)}，但库中无字面匹配的时间锚点；"
-                "为避免跨期漂移返回空"
-            )
+            result["reason"] = reason
         return result
 
     # ---- 算法主流程 ----
@@ -550,6 +758,9 @@ class PurposeDrivenRetriever:
                 "id": nid,
                 "content": content.get(nid) or self.graph.get_content(nid) or "",
                 "node_type": nt_val,
+                # 记录时间（Unix 毫秒）。仅在调用方开启 render_timestamps 时进入 prompt，
+                # 默认不渲染，保证 ALM 侧的叙事文本与既有行为完全一致。
+                "timestamp": self.graph.graph.nodes[nid].get("timestamp"),
             })
 
         edges = []
@@ -574,11 +785,14 @@ class PurposeDrivenRetriever:
         with_response: bool = True,
         max_hops: Optional[int] = None,
         expand_k: Optional[int] = None,
+        render_timestamps: bool = False,
     ) -> Dict:
         """检索 → 连通性粗筛 → StoryRank 故事化 →（可选）生成回复
 
         把检索得到的记忆因果链路理解成故事片段，替代原 rerank 的扁平重排序。
         max_hops / expand_k 为 None 时沿用 retrieve() 的默认值。
+        render_timestamps 为 True 时把节点记录时间一并交给 StoryRank（MCP 侧使用），
+        默认 False 以保持 ALM 侧输出不变。
         """
         retrieve_kwargs: Dict[str, Any] = {"seed_k": seed_k}
         if max_hops is not None:
@@ -607,7 +821,7 @@ class PurposeDrivenRetriever:
         discarded_nodes = []
         if all_nodes:
             path = self._build_path(all_nodes, hop_history)
-            out = self.inference.story_rank(query, path)
+            out = self.inference.story_rank(query, path, render_timestamps=render_timestamps)
             story = out.get("story", "")
             adopted = out.get("adopted_ids", [])
             if story:

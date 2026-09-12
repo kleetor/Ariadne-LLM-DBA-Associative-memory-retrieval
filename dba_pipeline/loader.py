@@ -59,6 +59,10 @@ def load_graph(yaml_path: str) -> MemoryGraph:
             deprecated=node.get("deprecated", False),
             forgotten=node.get("forgotten", False),
         )
+        # 扩展字段回填（登记见 MemoryGraph.PERSISTED_NODE_FIELDS）
+        for field in MemoryGraph.PERSISTED_NODE_FIELDS:
+            if field in node:
+                g.graph.nodes[node["id"]][field] = node[field]
 
     # 加载边
     for edge in data.get("edges", []):
@@ -125,6 +129,10 @@ def load_multi_graph(
                     deprecated=node_data.get("deprecated", False),
                     forgotten=node_data.get("forgotten", False),
                 )
+                # 扩展字段回填（登记见 MemoryGraph.PERSISTED_NODE_FIELDS）
+                for field in MemoryGraph.PERSISTED_NODE_FIELDS:
+                    if field in node_data:
+                        graph.graph.nodes[nid][field] = node_data[field]
         for u, v, edge_data in g.graph.edges(data=True):
             if not graph.graph.has_edge(u, v):
                 graph.add_edge(u, v, edge_data["rel_type"])

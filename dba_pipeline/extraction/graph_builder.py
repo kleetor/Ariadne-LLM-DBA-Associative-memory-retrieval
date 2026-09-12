@@ -153,12 +153,29 @@ class GraphBuilder:
         self,
         node_ops: List[Dict],
         edge_ops: List[Dict],
+        batch_timestamp=None,
+        batch_id: str = None,
     ) -> Dict:
-        """执行 LLM DBA 输出的操作指令（带事务保护 + 锁保护）"""
-        if self._lock is None:
-            return self._apply_ops_impl(node_ops, edge_ops)
-        with self._lock:
-            return self._apply_ops_impl(node_ops, edge_ops)
+        """执行 LLM DBA 输出的操作指令（带事务保护 + 锁保护）
+
+        batch_timestamp: 本批对话的发生时间（Unix 毫秒）。非 None 时写入本批
+        新建节点的 timestamp 字段——时间戳不依赖 LLM 产出，由调用方按对话
+        元数据确定性注入，避免幻觉与门控遗漏。
+        batch_id: 本批对话的批次标识（opt-in，见 MemoryDBA.enable_source_store），
+        写入节点的 source_ref，供溯源巡检反查原文。
+        """
+        prev_ts = getattr(self, "_batch_timestamp", None)
+        prev_id = getattr(self, "_batch_id", None)
+        self._batch_timestamp = batch_timestamp
+        self._batch_id = batch_id
+        try:
+            if self._lock is None:
+                return self._apply_ops_impl(node_ops, edge_ops)
+            with self._lock:
+                return self._apply_ops_impl(node_ops, edge_ops)
+        finally:
+            self._batch_timestamp = prev_ts
+            self._batch_id = prev_id
 
     def _apply_ops_impl(
         self,
@@ -263,6 +280,21 @@ class GraphBuilder:
         node_id = self._next_node_id()
         self.graph.add_memory(node_id, content, node_type)
 
+        # 批次级时间戳注入（见 apply_ops 说明）；持久化由 PERSISTED_NODE_FIELDS 负责
+        batch_ts = getattr(self, "_batch_timestamp", None)
+        if batch_ts is not None:
+            self.graph.graph.nodes[node_id]["timestamp"] = batch_ts
+
+        # 原文支撑片段（opt-in，见 MemoryDBA.enable_evidence）；落盘同样由 PERSISTED_NODE_FIELDS 负责
+        evidence = op.get("evidence")
+        if evidence:
+            self.graph.graph.nodes[node_id]["evidence"] = evidence
+
+        # 溯源引用（opt-in，见 MemoryDBA.enable_source_store）：该节点出自哪个批次的对话
+        batch_id = getattr(self, "_batch_id", None)
+        if batch_id:
+            self.graph.graph.nodes[node_id]["source_ref"] = batch_id
+
         # 写入向量库（失败时回滚 graph）
         try:
             self.vector_store.add_memories([node_id], [content])
@@ -298,6 +330,16 @@ class GraphBuilder:
         except Exception:
             self.graph.graph.nodes[target_id]["content"] = old_content
             raise
+
+        # 原文支撑片段随内容一起刷新（写在向量更新成功之后，无需回滚）
+        evidence = op.get("evidence")
+        if evidence:
+            self.graph.graph.nodes[target_id]["evidence"] = evidence
+
+        # source_ref 跟着 evidence 走：两者必须同源，否则巡检会拿错批次的原文去核对
+        batch_id = getattr(self, "_batch_id", None)
+        if batch_id:
+            self.graph.graph.nodes[target_id]["source_ref"] = batch_id
 
         self.stats["nodes_updated"] += 1
         logger.info(f"更新节点 [{target_id}]: '{old_content[:40]}...' → '{new_content[:40]}...' ({reason})")

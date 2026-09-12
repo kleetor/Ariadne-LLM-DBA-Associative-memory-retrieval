@@ -219,6 +219,12 @@ class MemoryGraph:
 
     # ---- 序列化 ----
 
+    # 需要随节点持久化的扩展字段：新增节点字段时在此登记，
+    # to_dict / from_dict 会自动透传（不登记则落盘时静默丢失）。
+    # evidence：原文支撑片段（opt-in，见 MemoryDBA.enable_evidence）
+    # source_ref：该节点最近一次内容/证据来自哪个批次（opt-in，见 enable_source_store）
+    PERSISTED_NODE_FIELDS = ("speaker", "timestamp", "evidence", "source_ref")
+
     def to_dict(self) -> dict:
         """导出为可持久化的字典格式（兼容 YAML checkpoint）
 
@@ -230,13 +236,18 @@ class MemoryGraph:
         """
         nodes = []
         for nid, ndata in self.graph.nodes(data=True):
-            nodes.append({
+            node = {
                 "id": nid,
                 "content": ndata.get("content", ""),
                 "type": ndata["node_type"].value if hasattr(ndata["node_type"], "value") else str(ndata["node_type"]),
                 "deprecated": ndata.get("deprecated", False),
                 "forgotten": ndata.get("forgotten", False),
-            })
+            }
+            # 扩展字段透传（登记见 PERSISTED_NODE_FIELDS）
+            for field in self.PERSISTED_NODE_FIELDS:
+                if field in ndata:
+                    node[field] = ndata[field]
+            nodes.append(node)
 
         edges = []
         seen = set()
@@ -272,6 +283,10 @@ class MemoryGraph:
                 deprecated=nd.get("deprecated", False),
                 forgotten=nd.get("forgotten", False),
             )
+            # 扩展字段回填（登记见 PERSISTED_NODE_FIELDS）
+            for field in cls.PERSISTED_NODE_FIELDS:
+                if field in nd:
+                    g.graph.nodes[nd["id"]][field] = nd[field]
 
         for ed in data.get("edges", []):
             rt = RelationType(ed["type"]) if ed.get("type") else RelationType.CAUSAL

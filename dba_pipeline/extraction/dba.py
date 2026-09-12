@@ -18,11 +18,28 @@ from langchain_core.prompts import ChatPromptTemplate
 from dba_pipeline.graph.memory_graph import MemoryGraph
 from dba_pipeline.embedding.store import VectorStore
 from dba_pipeline.extraction.graph_builder import GraphBuilder
+from dba_pipeline.source_store import new_batch_id, save_batch
 
 logger = logging.getLogger(__name__)
 
 
 # ---- Step 1：节点抽取 Prompt（2026-08-22 起，节点抽取与边连接拆成两步）----
+
+# 输出形状（单一来源，便于按开关替换；注意 `{{` 是交给 ChatPromptTemplate 的转义）
+_NODE_OUTPUT_EXAMPLE = (
+    '严格输出 JSON：{{"node_ops":[{{"action":"create","content":"...","node_type":"ACTION"}},'
+    '{{"action":"update","target_id":"n3","content":"...","reason":"..."}},'
+    '{{"action":"fix_type","target_id":"n7","node_type":"STATUS","reason":"..."}},'
+    '{{"action":"deprecate","target_id":"n3","reason":"..."}}]}}'
+)
+
+# 开启 evidence 时的输出形状：每条 create/update 额外带 evidence（原文支撑片段）
+_NODE_OUTPUT_EXAMPLE_EVIDENCE = (
+    '严格输出 JSON：{{"node_ops":[{{"action":"create","content":"...","node_type":"ACTION","evidence":"..."}},'
+    '{{"action":"update","target_id":"n3","content":"...","evidence":"...","reason":"..."}},'
+    '{{"action":"fix_type","target_id":"n7","node_type":"STATUS","reason":"..."}},'
+    '{{"action":"deprecate","target_id":"n3","reason":"..."}}]}}'
+)
 
 NODE_EXTRACTION_PROMPT = """你是记忆图谱的「节点抽取器」：从对话中抽取独立事实——既包括关于「用户」的事实，也包括「助手」自身经历/行为的事实，只输出节点维护操作，不负责连边。
 
@@ -43,7 +60,7 @@ create(新事实) | update(事实变化) | fix_type(修正类型) | deprecate(�
 6. 每条独立可读
 
 ## 输出
-严格输出 JSON：{{"node_ops":[{{"action":"create","content":"...","node_type":"ACTION"}},{{"action":"update","target_id":"n3","content":"...","reason":"..."}},{{"action":"fix_type","target_id":"n7","node_type":"STATUS","reason":"..."}},{{"action":"deprecate","target_id":"n3","reason":"..."}}]}}
+""" + _NODE_OUTPUT_EXAMPLE + """
 无需抽取时返回空 node_ops。只输出 JSON。"""
 
 NODE_EXTRACTION_USER_PROMPT = """── 对话上下文 ──
@@ -163,8 +180,66 @@ EDGE_LINKING_USER_PROMPT = """── 对话上下文 ──
 NODE_TEMPORAL_EXTRA = """
 7. 时间节点单独抽取：对话中出现的明确时间/时段（如「上周一晚上」「周二」「周三凌晨」「这周」）要抽成独立的 THING 节点，content 就是该时间词本身；不要把时间写进事件 content。一个事件若发生在某个时间，需同时抽出「事件节点」和「时间节点」两个节点。"""
 
+NODE_CHOICE_EXTRA = """
+## 决策与取舍（补充规则）
+REASON 除「导致状态/行为的原因」外，**还包括「做出某个选择 / 取舍的依据」**。
+出现选择、取舍、权衡、最终决定这类表述时，除结果本身外还必须抽出：
+1. 被放弃的选项：对话里明确说过还考虑过什么、为什么没有选它；
+2. 选择依据：是什么条件决定了最终的取舍（成本、工期、偏好、外部约束等）。
+这两项各写成独立节点，node_type 用 REASON。内容允许带最小限度的上下文指代
+（如「当时考虑到成本，放弃了 B 方案」），不必强求单条脱离上下文也完全可读。
+边界：只能抽对话里**明确说过**的备选与依据，不得推断、补全或想象未说出口的动机。
+"""
+
 EDGE_TEMPORAL_EXTRA = """
 8. 务必连 TEMPORAL 边（事件→时间，单向）：本轮新抽出的事件节点，若其发生时间也是一个已抽取的时间节点，用 TEMPORAL 单向连边（from=事件, to=时间）。事件之间的先后关系用 SEQUENCE（先→后），不要与「时间定位」（TEMPORAL）混为一谈：SEQUENCE 是事件 A 在事件 B 之前；TEMPORAL 是事件挂在某个时间锚点上。"""
+
+# ---- evidence：给每条节点留一个可核查的原文依据（opt-in，见 enable_evidence）----
+
+NODE_EVIDENCE_EXTRA = """
+## evidence（补充字段）
+每条 create / update 的 node_op 额外给出 "evidence"：**对话原文中支撑这条节点的最短连续片段**。
+- 必须是原文原话：可以截取，但不得改写、概括或拼接不同位置的句子；
+- 只取支撑该节点所必需的那一句或半句，不要整段照抄；
+- 若这条节点是对原文的归纳或推断、原文里找不到直接支撑，evidence 留空字符串 ""。
+"""
+
+# 去标点/空白后做子串判定，避免 LLM 微调标点导致误判
+_EVIDENCE_STRIP_RE = re.compile(r"[\s，。、：:；;！!？?…—\-（）()「」『』\"'’‘“”·]+")
+EVIDENCE_MIN_CHARS = 4
+EVIDENCE_MAX_CHARS = 300
+
+
+def normalize_evidence_text(text: str) -> str:
+    """去掉标点与空白，用于 evidence「是否为原文子串」的判定"""
+    return _EVIDENCE_STRIP_RE.sub("", text or "")
+
+
+def sanitize_evidence(node_ops, conversation):
+    """校验 node_ops 里的 evidence：不是该批原文子串的一律丢弃。
+
+    程序化兜底——LLM 可能把 evidence 写成概括或改写，那种"证据"无法核查，留着反而
+    误导巡检。返回 (清理后的 node_ops, 保留数, 丢弃数)。
+    """
+    haystack = normalize_evidence_text(conversation)
+    kept = dropped = 0
+    cleaned = []
+    for op in node_ops:
+        if not isinstance(op, dict) or "evidence" not in op:
+            cleaned.append(op)
+            continue
+        op = dict(op)
+        ev_norm = normalize_evidence_text(str(op.get("evidence") or ""))
+        if (len(ev_norm) < EVIDENCE_MIN_CHARS
+                or len(ev_norm) > EVIDENCE_MAX_CHARS
+                or ev_norm not in haystack):
+            op.pop("evidence", None)
+            dropped += 1
+        else:
+            op["evidence"] = str(op["evidence"]).strip()[:EVIDENCE_MAX_CHARS]
+            kept += 1
+        cleaned.append(op)
+    return cleaned, kept, dropped
 
 EDGE_TEMPORAL_EXAMPLE = """
 
@@ -240,6 +315,10 @@ class MemoryDBA:
         vector_store: VectorStore,
         graph_builder: GraphBuilder,
         current_state_k: int = 15,
+        enable_choice_extraction: bool = False,
+        enable_evidence: bool = False,
+        enable_source_store: bool = False,
+        source_dir=None,
     ):
         """
         Args:
@@ -248,19 +327,45 @@ class MemoryDBA:
             vector_store: 向量存储
             graph_builder: GraphBuilder 实例
             current_state_k: 记忆上下文检索多少条相关节点
+            enable_choice_extraction: 是否启用「决策与取舍」补充规则（把"被放弃的选项 /
+                选择依据"也抽成 REASON 节点）。默认关闭以保持既有抽取行为不变；
+                记忆保真任务 A 效果验证通过后再考虑对 ALM 侧开启。
+            enable_evidence: 是否让抽取额外产出 evidence（原文支撑片段）并落盘。
+                默认关闭；evidence 属原文片段，有隐私与体积属性，且不进检索/叙事。
+            enable_source_store: 是否把本批**原文**落盘（供溯源巡检反查）。默认关闭——
+                存储的是原始对话，是隐私与体积的主要来源，需显式开启。
+            source_dir: 批次原文的落盘目录（由 `source_store.default_source_dir(yaml)` 得到）；
+                enable_source_store=True 时必填，否则跳过落盘。
         """
         self.llm = llm
         self.graph = graph
         self.vector_store = vector_store
         self.builder = graph_builder
         self.current_state_k = current_state_k
+        self.enable_choice_extraction = enable_choice_extraction
+        self.enable_evidence = enable_evidence
+        self.enable_source_store = enable_source_store
+        self.source_dir = source_dir
 
         # 组装 Prompt 链：节点抽取与边连接拆成两步（2026-08-22）
-        self.node_prompt = ChatPromptTemplate.from_messages([
-            ("system", NODE_EXTRACTION_PROMPT),
-            ("human", NODE_EXTRACTION_USER_PROMPT),
-        ])
-        self.node_chain = self.node_prompt | self.llm
+        def _node_chain(*extras):
+            """把增强规则插入到 `## 输出` 之前，组装节点抽取链。"""
+            parts = [e for e in extras if e]
+            if enable_evidence:
+                parts.append(NODE_EVIDENCE_EXTRA)
+            system = NODE_EXTRACTION_PROMPT
+            if parts:
+                system = system.replace("\n## 输出", "".join(parts) + "\n\n## 输出")
+            if enable_evidence:
+                # evidence 改变的是输出形状，替换示例而不是追加规则，避免两套 schema 打架
+                system = system.replace(_NODE_OUTPUT_EXAMPLE, _NODE_OUTPUT_EXAMPLE_EVIDENCE)
+            prompt = ChatPromptTemplate.from_messages([
+                ("system", system),
+                ("human", NODE_EXTRACTION_USER_PROMPT),
+            ])
+            return prompt | self.llm
+
+        self.node_chain = _node_chain()
         self.edge_prompt = ChatPromptTemplate.from_messages([
             ("system", EDGE_LINKING_PROMPT),
             ("human", EDGE_LINKING_FEWSHOT_EXAMPLE),
@@ -270,15 +375,16 @@ class MemoryDBA:
 
         # 时序叙事增强链：仅当 has_temporal_signal(conversation) 命中才启用，
         # 把时间节点抽取与 TEMPORAL 连边规则叠加到标准 prompt，避免常规语料过度拆分。
-        self.node_chain_temporal = ChatPromptTemplate.from_messages([
-            ("system", NODE_EXTRACTION_PROMPT.replace("\n## 输出", NODE_TEMPORAL_EXTRA + "\n\n## 输出")),
-            ("human", NODE_EXTRACTION_USER_PROMPT),
-        ]) | self.llm
+        self.node_chain_temporal = _node_chain(NODE_TEMPORAL_EXTRA)
         self.edge_chain_temporal = ChatPromptTemplate.from_messages([
             ("system", EDGE_LINKING_PROMPT.replace("\n## 输出", EDGE_TEMPORAL_EXTRA + "\n\n## 输出")),
             ("human", EDGE_LINKING_FEWSHOT_EXAMPLE + EDGE_TEMPORAL_EXAMPLE),
             ("human", EDGE_LINKING_USER_PROMPT),
         ]) | self.llm
+
+        # 决策与取舍增强链（opt-in，见 enable_choice_extraction）；关闭时不参与任何路径
+        self.node_chain_choice = _node_chain(NODE_CHOICE_EXTRA)
+        self.node_chain_choice_temporal = _node_chain(NODE_TEMPORAL_EXTRA, NODE_CHOICE_EXTRA)
 
         # 维护判断前置（triage）：先用极小 prompt 判断是否值得维护
         self.triage_chain = ChatPromptTemplate.from_messages([
@@ -290,11 +396,17 @@ class MemoryDBA:
     def maintain(
         self,
         conversation: str,
+        timestamp=None,
+        source_rounds=None,
     ) -> Dict:
         """对话完成后执行一次数据库维护（两步：节点抽取 → 边连接）
 
         Args:
             conversation: 本轮对话的完整文本（含角色和时间戳）
+            timestamp: 本批对话的发生时间（Unix 毫秒），写入本批新建节点。
+                缺省 None 则不写时间戳。
+            source_rounds: 本批各轮的 [{"ts", "text"}]，供原文落盘时保留轮次时间；
+                缺省则退化为"单轮 = 整段 conversation"。
 
         Returns:
             {
@@ -315,10 +427,25 @@ class MemoryDBA:
 
         # Step 1:节点抽取(对话 + 相关旧节点 → node_ops → 执行)。时序叙事守卫命中则叠加 TEMPORAL 时间节点规则。
         temporal = has_temporal_signal(conversation)
+        # 批次标识：一次 maintain 即一批；开启原文落盘时用它把节点与原文关联起来
+        batch_id = new_batch_id() if self.enable_source_store else None
+        if self.enable_choice_extraction:
+            node_chain = self.node_chain_choice_temporal if temporal else self.node_chain_choice
+        else:
+            node_chain = self.node_chain_temporal if temporal else self.node_chain
         node_context = self._build_node_context(conversation)
-        node_chain = self.node_chain_temporal if temporal else self.node_chain
         node_ops = self._parse_response(node_chain.invoke(node_context).content).get("node_ops", [])
-        result1 = self.builder.apply_ops(node_ops, [])
+        evidence_stats = None
+        if self.enable_evidence:
+            # 程序化校验：不是该批原文子串的 evidence 一律丢弃（LLM 可能写成概括/改写）
+            node_ops, ev_kept, ev_dropped = sanitize_evidence(node_ops, conversation)
+            evidence_stats = {"kept": ev_kept, "dropped": ev_dropped}
+            if ev_dropped:
+                logger.info(f"evidence 校验: 保留 {ev_kept} 条, 丢弃 {ev_dropped} 条非法片段")
+        result1 = self.builder.apply_ops(node_ops, [], batch_timestamp=timestamp, batch_id=batch_id)
+        # 原文落盘（opt-in）：只在本批确实产出了操作时存，避免把 triage 空转的对话堆到磁盘
+        if batch_id and node_ops:
+            self._persist_source(batch_id, source_rounds, conversation, timestamp)
 
         # Step 2:边连接(对话 + 本轮新节点 + 相关旧节点/一跳邻居/已有边 → edge_ops → 执行)。守卫同样驱动 TEMPORAL 连边规则与示例。
         new_ids = result1.get("created_ids", [])
@@ -332,7 +459,7 @@ class MemoryDBA:
             f"边创建/删除 {len(edge_ops)} (累计 {self.graph.node_count} 节点 / {self.graph.edge_count} 边)"
         )
 
-        return {
+        out = {
             "ops": {"node_ops": node_ops, "edge_ops": edge_ops},
             "result": {
                 "created_ids": result1.get("created_ids", []),
@@ -341,6 +468,22 @@ class MemoryDBA:
             },
             "context": {"node": node_context, "edge": edge_context},
         }
+        if evidence_stats is not None:
+            out["evidence_stats"] = evidence_stats
+        if batch_id:
+            out["batch_id"] = batch_id
+        return out
+
+    def _persist_source(self, batch_id, source_rounds, conversation, timestamp):
+        """把本批原文落盘（opt-in）。失败只记日志，绝不影响主流程。"""
+        if not self.source_dir:
+            logger.warning("enable_source_store=True 但未配置 source_dir，跳过原文落盘")
+            return
+        rounds = source_rounds or [{"ts": timestamp, "text": conversation}]
+        try:
+            save_batch(self.source_dir, batch_id, rounds)
+        except Exception as e:
+            logger.warning(f"原文落盘失败（批次 {batch_id}）: {e}")
 
     # ---- 上下文组装 ----
 

@@ -83,7 +83,7 @@ The core thesis is that the value of memory lies not in storing more, but in bei
 | 🔧 Automated DBA maintenance | node extraction and edge linking as two separate steps, correction/deprecation + batched async scheduling to cut tokens |
 | 🎯 Purpose-driven retrieval | Jump Axis + Purpose Regression + Peak Finding, replacing fixed top-K |
 | 📖 StoryRank narrativization | causal chains → story fragments, avoiding context pollution for the chat LLM |
-| 🔌 MCP integration | 7 tools over stdio / SSE transports |
+| 🔌 MCP integration | 9 tools over stdio / SSE transports |
 | 🖥️ 3D visualization | force-directed graph, layer filtering, focus mode, online CRUD |
 | 📄 Offline export | one-command, self-contained HTML, no server required |
 
@@ -97,7 +97,7 @@ The core thesis is that the value of memory lies not in storing more, but in bei
 Conversation ──► DBA Maintenance ──► MemoryGraph + VectorStore ──► PAR Retrieval ──► StoryRank ──► Reply
     │                │                        │
     │      MaintenanceScheduler               ├──► API Server (HTTP REST + 3D panel)
-    │      (batched async)                    ├──► MCP Server (7 tools, stdio / SSE)
+    │      (batched async)                    ├──► MCP Server (9 tools, stdio / SSE)
     │                                         └──► Offline HTML
     └──► Human intervention (CRUD panel + MCP dba_intervene)
 ```
@@ -127,7 +127,12 @@ pip install -e ".[dev]"
 
 ## Quick Start
 
-The repository ships with a sample graph `data/sample_graph.yaml` (10 nodes, 7 edges).
+The `data/` directory **is the graph library**: every `*.yaml` in it that parses as a graph shows up under *Settings → Graph library* in the panel, where you can switch, import, export and delete. The repository ships two:
+
+- `sample_graph.yaml` — the empty placeholder (0 nodes / 0 edges), the default landing spot on first start;
+- `memory_graph.yaml` — a preset dataset for trying the system out.
+
+**Which graph is in use is recorded in the shared pointer `<graph dir>/active_graph.json`**: once you pick one in the panel, both the panel and MCP return to it after a restart. That makes `--yaml` **optional** — it only acts as a hint for "which one to use the very first time", so day-to-day switching happens in the panel, with no config edit or restart.
 
 ### One-command start (recommended)
 
@@ -139,26 +144,30 @@ Run `start_all.py` from the project root to launch the 3D panel and MCP SSE toge
 cp .env.example .env
 
 # 2) One-command start (panel 8765 + MCP SSE 8766, ports auto-separated)
-python start_all.py --yaml data/sample_graph.yaml
+python start_all.py
 
 # Visualization panel  http://127.0.0.1:8765
 # MCP SSE              http://127.0.0.1:8766/sse
 ```
 
-> Override default ports/address with `--api-port` / `--mcp-port` / `--host`; `Ctrl+C` stops both services.
+> `--yaml` picks the graph used on first start (optional, e.g. `--yaml data/memory_graph.yaml`); `--graph-dir` sets the graph library directory. Override default ports/address with `--api-port` / `--mcp-port` / `--host`; `Ctrl+C` stops both services.
 
 ### Entry 1: 3D visualization WebUI
 
 View in the browser, perform manual CRUD, and inspect observability data:
 
 ```bash
-ariadne-api --yaml data/sample_graph.yaml --port 8765
+ariadne-api --port 8765          # uses the graph recorded in the shared pointer (empty placeholder on first run)
+# or pick one for first start: ariadne-api --yaml data/memory_graph.yaml --port 8765
 # open http://127.0.0.1:8765
 ```
 
 Features:
 
 - **Graph**: 3D force-directed graph (per-role shapes/colors, labels, highlight, focus, fuzzy search), layer filtering with presets, node/edge CRUD (auto-written back to YAML, with undo). Concurrent writes with MCP are serialized via a cross-process file lock (`<yaml>.lock`), so neither side overwrites the other; panel edits are reconciled into the vector index by MCP before retrieval (graph acts as the authority).
+- **Graph library** (*Settings → Graph library*): manage and switch between multiple graphs. The list only includes YAMLs in the graph directory that **parse as a graph** (sibling files such as evaluation datasets are not listed, so they cannot be deleted by accident); supports import-as-new / export / delete (the graph currently in use by the panel, and the one MCP is using, cannot be deleted).
+  - **Switch** affects the panel only, and records the choice in the shared pointer so restarts return to it;
+  - **Load into MCP** is a separate action: it writes a switch request that the MCP process applies on its own (within ~3s by default), **clearing and fully rebuilding the vector index**; the panel shows progress and the result. Without clicking it, MCP stays where it is — each side's "current graph" is independent.
 - **Observability**: metrics overview (graph size/orphans/requests/uptime), operation log viewer (LLM + DBA, filterable), runtime logs (in-process logging plus aggregated shared logs from MCP and other processes via `ARIADNE_LOG_FILE`), live log stream (SSE).
 - **Settings**: rendering/layout parameters (quality preset, forces, labels, background; persisted in the browser), filter preset management, read-only server config, graph YAML and oplog import/export.
 
@@ -167,7 +176,7 @@ Features:
 For LLM agents (full DBA mode; requires LLM + Embedding):
 
 ```bash
-ariadne-mcp --yaml data/sample_graph.yaml \
+ariadne-mcp \
     --llm-model gpt-4o-mini --llm-api-key sk-xxx --llm-base-url https://api.openai.com/v1 \
     --embedding-model text-embedding-3-small
 ```
@@ -219,8 +228,10 @@ Built on the open [Model Context Protocol (MCP)](https://modelcontextprotocol.io
 
 | Mode | Usage | Use case |
 |------|-------|----------|
-| **stdio** (default) | `ariadne-mcp --yaml xxx.yaml` | clients that spawn a local process, e.g. Claude Desktop |
-| **SSE** | `ariadne-mcp --yaml xxx.yaml --sse --port 8765` | clients connecting via a network URL, e.g. Cursor |
+| **stdio** (default) | `ariadne-mcp` | clients that spawn a local process, e.g. Claude Desktop |
+| **SSE** | `ariadne-mcp --sse --port 8766` | clients connecting via a network URL, e.g. Cursor |
+
+> `--yaml` / `--graph-dir` are both optional: which graph to use comes first from the shared pointer, falling back to `--yaml`, then to the empty placeholder `sample_graph.yaml` inside the graph directory.
 
 > ⚠️ The SSE default port `8765` clashes with `ariadne-api`; change it (e.g. `--port 8766`) when running both. The one-command start (`start_all.py`) auto-separates to 8766.
 
@@ -284,7 +295,7 @@ ariadne-mcp --yaml data.yaml --llm-model gpt-4o-mini --llm-api-key sk-xxx \
     --embedding-model BAAI/bge-large-zh-v1.5 --embedding-local
 ```
 
-### 7 tools
+### 9 tools
 
 | Tool | Description |
 |------|-------------|
@@ -295,6 +306,8 @@ ariadne-mcp --yaml data.yaml --llm-model gpt-4o-mini --llm-api-key sk-xxx \
 | `dba_intervene` | manually CRUD nodes and edges |
 | `dba_checkpoint` | save a full checkpoint |
 | `dba_get_stats` | graph statistics |
+| `dba_review_graph` | graph health check (read-only): reports likely duplicate pairs and isolated nodes, never edits the graph |
+| `dba_review_sources` | source tracing (read-only): checks extraction quality against the original conversations; requires `ARIADNE_SOURCE_STORE=1` |
 
 ### Query notes (`dba_query_memory`)
 
@@ -399,9 +412,10 @@ edges:
 ```
 .
 ├── start_all.py                    # one-command start (panel + MCP SSE)
-├── data/
-│   ├── sample_graph.yaml           # sample graph
-│   └── memory_graph.yaml           # live data
+├── data/                           # graph library directory (panel lists every graph in it)
+│   ├── sample_graph.yaml           # empty placeholder (0 nodes, default landing spot on first start)
+│   ├── memory_graph.yaml           # preset dataset
+│   └── active_graph.json           # shared pointer: each side's current graph (runtime-generated)
 └── dba_pipeline/
     ├── core/                       # retrieval core: Jump Axis, Purpose, Peak Finding
     │   ├── jump_axis.py
@@ -423,10 +437,13 @@ edges:
     ├── viz/                        # WebUI server, static frontend, log bus, export
     │   ├── api_server.py           # Starlette REST + SSE server
     │   ├── logbus.py               # app-log capture + oplog tail + SSE fan-out
+    │   ├── chain_runner.py         # reuses the MCP retrieval chain inside the panel
     │   ├── renderer.py             # offline self-contained HTML
     │   ├── exporter.py
     │   └── static/                 # WebUI frontend (index.html / css / js)
     ├── mcp_server.py               # MCP server entry point
+    ├── graphlib.py                 # graph library + shared pointer (panel & MCP)
+    ├── webauth.py                  # unified auth (session cookie / Basic / Bearer)
     └── loader.py                   # graph / query loading
 ```
 

@@ -10,8 +10,9 @@ Ariadne 一键启动脚本
 无需在命令行重复传入。
 
 用法：
-    python start_all.py --yaml data/sample_graph.yaml
-    python start_all.py --yaml data/sample_graph.yaml --api-port 9000 --mcp-port 9001
+    python start_all.py                                 # 用上次在面板里选的图谱（首次为空图谱占位）
+    python start_all.py --yaml data/memory_graph.yaml   # 指定首次启动用哪份图谱
+    python start_all.py --graph-dir data --api-port 9000 --mcp-port 9001
 """
 
 import argparse
@@ -53,22 +54,32 @@ def _stop(procs) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Ariadne 一键启动（面板 + MCP SSE）")
-    parser.add_argument("--yaml", required=True, help="YAML checkpoint 文件路径")
+    parser.add_argument("--yaml", default=None,
+                        help="初始图谱（可选；只在没有历史记录时作为首次启动的提示）")
+    parser.add_argument("--graph-dir", default=None,
+                        help="图谱库目录（可选；默认取 --yaml 所在目录，都没有则用 ./data）")
     parser.add_argument("--api-port", type=int, default=8765, help="可视化面板端口（默认 8765）")
     parser.add_argument("--mcp-port", type=int, default=8766, help="MCP SSE 端口（默认 8766）")
     parser.add_argument("--host", default="127.0.0.1", help="MCP 绑定地址（面板固定 127.0.0.1）")
     args = parser.parse_args()
 
-    yaml_path = Path(args.yaml).resolve()
-    if not yaml_path.is_file():
-        print(f"[ariadne] 错误: YAML 文件不存在: {yaml_path}", file=sys.stderr)
-        sys.exit(1)
+    # 两个参数都是可选的：不传时由子进程自己按「共享指针 → 空图谱占位」决定用哪份，
+    # 因此这里只在显式给出时才透传，避免把可选参数变成一个隐式必填项。
+    extra = []
+    if args.yaml:
+        yaml_path = Path(args.yaml).resolve()
+        if not yaml_path.is_file():
+            print(f"[ariadne] 错误: YAML 文件不存在: {yaml_path}", file=sys.stderr)
+            sys.exit(1)
+        extra += ["--yaml", str(yaml_path)]
+    if args.graph_dir:
+        extra += ["--graph-dir", str(Path(args.graph_dir).resolve())]
 
     commands = [
         [sys.executable, "-m", "dba_pipeline.viz.api_server",
-         "--yaml", str(yaml_path), "--port", str(args.api_port)],
+         "--port", str(args.api_port)] + extra,
         [sys.executable, "-m", "dba_pipeline.mcp_server",
-         "--yaml", str(yaml_path), "--sse", "--host", args.host, "--port", str(args.mcp_port)],
+         "--sse", "--host", args.host, "--port", str(args.mcp_port)] + extra,
     ]
 
     print(f"[ariadne] 可视化面板: http://127.0.0.1:{args.api_port}")

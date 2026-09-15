@@ -85,8 +85,9 @@ Ariadne 将 LLM 对话中的事实抽取、纠错、去重、废弃等数据库�
 | 🔧 DBA 自动维护      | 节点抽取与边连接两步分离，纠错/废弃 + 批量异步调度降 token |
 | 🎯 目的驱动检索        | 跳转轴 + 目的回归 + 寻峰终止，替代固定 top-K    |
 | 📖 StoryRank 故事化 | 因果链路 → 故事片段，避免污染聊天上下文           |
-| 🔌 MCP 集成        | 7 个工具，支持 stdio / SSE 两种传输       |
+| 🔌 MCP 集成        | 9 个工具，支持 stdio / SSE 两种传输       |
 | 🖥️ 3D 可视化       | 力导向图、图层过滤、聚焦模式、在线 CRUD          |
+| 🗂️ 图谱库          | 多图谱管理与切换，可一键载入 MCP（各自跨重启记住）  |
 | 📄 离线导出          | 一键生成自包含 HTML，无需服务器              |
 
 ## 架构
@@ -99,7 +100,7 @@ Ariadne 将 LLM 对话中的事实抽取、纠错、去重、废弃等数据库�
 对话日志 ──► DBA 维护 ──► MemoryGraph + VectorStore ──► PAR 检索 ──► StoryRank ──► 回复
    │            │                    │
    │    MaintenanceScheduler        ├──► API Server（HTTP REST + 3D 面板）
-   │    （批量异步调度）              ├──► MCP Server（7 tools，stdio / SSE）
+   │    （批量异步调度）              ├──► MCP Server（9 tools，stdio / SSE）
    │                                 └──► 离线 HTML
    └──► 人工干预（CRUD 面板 + MCP dba_intervene）
 ```
@@ -129,7 +130,12 @@ pip install -e ".[dev]"
 
 ## 快速开始
 
-仓库自带样例 `data/sample_graph.yaml`（10 个节点、7 条边）。
+`data/` 目录就是**图谱库**：目录下所有能被解析成图谱的 `*.yaml` 都会出现在面板的「设置 → 图谱库」中，可切换、导入、导出、删除。仓库自带两份：
+
+- `sample_graph.yaml` —— 空图谱占位（0 节点 / 0 边），首次启动的默认落点；
+- `memory_graph.yaml` —— 预设数据集，用于快速体验系统效果。
+
+**用哪份图谱由共享指针 `<图谱目录>/active_graph.json` 记录**：在面板里选过之后，面板与 MCP 重启都会回到那份。所以启动参数 `--yaml` 是**可选**的——它只在没有历史记录时作为「第一次用哪份」的提示，日常换图谱直接在面板里操作即可，不必改配置或重启。
 
 ### 一键启动（推荐）
 
@@ -140,28 +146,32 @@ pip install -e ".[dev]"
 cp .env.example .env
 
 # 2) 一键启动（面板 8765 + MCP SSE 8766，端口自动错开）
-python start_all.py --yaml data/sample_graph.yaml
+python start_all.py
 
 # 可视化面板  http://127.0.0.1:8765
 # MCP SSE      http://127.0.0.1:8766/sse
 ```
 
-> 可用 `--api-port` / `--mcp-port` / `--host` 覆盖默认端口与地址；`Ctrl+C` 同时停止两个服务。
+> 可用 `--yaml` 指定首次启动用哪份图谱（可选，如 `--yaml data/memory_graph.yaml`）；`--graph-dir` 可指定图谱库目录；`--api-port` / `--mcp-port` / `--host` 覆盖默认端口与地址；`Ctrl+C` 同时停止两个服务。
 
 ### 入口一：3D 可视化 WebUI
 
 浏览器查看 + 手动 CRUD + 可观测性：
 
 ```bash
-ariadne-api --yaml data/sample_graph.yaml --port 8765
+ariadne-api --port 8765          # 用共享指针里记录的图谱（首次为空图谱占位）
+# 或指定首次启动用哪份： ariadne-api --yaml data/memory_graph.yaml --port 8765
 # 浏览器打开 http://127.0.0.1:8765
 ```
 
 功能：
 
 - **图谱**：3D 力导向图（按角色形状/配色、标签、高亮、聚焦、模糊搜索）、图层过滤与过滤预设、节点/边 CRUD（操作自动写回 YAML，支持撤销）。与 MCP 并发写入通过跨进程文件锁（`<yaml>.lock`）串行化「读-改-写」，不会相互覆盖；面板对图谱的增删改会由 MCP 在检索前自动对账到向量索引（以图谱为权威）。
+- **图谱库**（设置 → 图谱库）：管理与切换多份图谱。列表只收录图谱目录下**能解析成图谱**的 YAML（评测数据这类同目录 YAML 不会被列出，也就不会被误删）；支持导入为新图谱 / 导出 / 删除（当前正在用的、以及 MCP 正在用的都不允许删）。
+  - **切换**只影响面板自身，并把选择记进共享指针，重启后仍回到这份；
+  - **载入 MCP**是独立动作：写入切换请求后由 MCP 进程自行应用（默认 3s 内生效），应用过程会**清空并全量重建向量索引**，面板会显示进度与回执。不点这个按钮，MCP 就不会跟着变——两端各自的「当前图谱」互不干扰。
 - **可观测**：指标概览（图规模/孤立/请求/运行时长）、操作日志查看器（LLM + DBA，可筛选）、运行日志（面板进程内 logging + MCP 等其它进程的共享日志聚合，见 `ARIADNE_LOG_FILE`）、实时日志流（SSE 推送）。
-- **设置**：渲染与布局参数（性能档位/力导向/标签/背景等，浏览器本地持久化）、过滤预设管理、服务端配置只读查看、图谱 YAML 与操作日志导入导出。
+- **设置**：渲染与布局参数（性能档位/力导向/标签/背景等，浏览器本地持久化）、过滤预设管理、服务端配置只读查看、图谱库、MCP 连接（端点/鉴权/探活/客户端接入片段）、调用测试（在面板内跑一次真实链路：意图识别 → PAR → StoryRank，PAR 经过的节点在 3D 图上以「激活」形式呈现）、图谱 YAML 与操作日志导入导出。
 
 #### 鉴权
 
@@ -187,10 +197,12 @@ ariadne / ariadne
 供 LLM Agent 调用（完整 DBA 模式，需 LLM + Embedding）：
 
 ```bash
-ariadne-mcp --yaml data/sample_graph.yaml \
+ariadne-mcp \
     --llm-model gpt-4o-mini --llm-api-key sk-xxx --llm-base-url https://api.openai.com/v1 \
     --embedding-model text-embedding-3-small
 ```
+
+> `--yaml` 可选：不传时用共享指针记录的图谱（首次为空图谱占位）。
 
 ### 入口三：离线 HTML
 
@@ -239,8 +251,10 @@ PAR 检索产出的是由「节点 + 关系」构成的**因果链路**，而非
 
 | 模式            | 用法                                              | 适用场景                       |
 | ------------- | ----------------------------------------------- | -------------------------- |
-| **stdio**（默认） | `ariadne-mcp --yaml xxx.yaml`                   | Claude Desktop 等本地拉起进程的客户端 |
-| **SSE**       | `ariadne-mcp --yaml xxx.yaml --sse --port 8765` | Cursor 等通过网络 URL 连接的客户端    |
+| **stdio**（默认） | `ariadne-mcp`                                   | Claude Desktop 等本地拉起进程的客户端 |
+| **SSE**       | `ariadne-mcp --sse --port 8766`                 | Cursor 等通过网络 URL 连接的客户端    |
+
+> `--yaml` / `--graph-dir` 均为可选：用哪份图谱优先取共享指针里记录的选择，没有记录时才回落到 `--yaml`，再回落到图谱目录内的空图谱占位 `sample_graph.yaml`。
 
 > ⚠️ SSE 默认端口 `8765` 与 `ariadne-api` 相同，同时运行需改端口（如 `--port 8766`）。一键启动（`start_all.py`）会自动错开为 8766。
 
@@ -273,10 +287,27 @@ EMBEDDING_LOCAL=true
 
 | 参数                  | 说明 |
 | --------------------- | ---- |
+| `--yaml`              | 初始图谱路径（**可选**）。只在共享指针没有记录时作为「第一次用哪份」的提示 |
+| `--graph-dir`         | 图谱库目录（可选）。默认取 `--yaml` 所在目录，都没有则用 `./data`；也可用 `ARIADNE_GRAPHS_DIR` 指定 |
 | `--vector-index`      | FAISS 索引文件路径（可选），用于恢复已有向量索引 |
 | `--restore-dir`       | 从 checkpoint 目录完整恢复（图谱 + 向量 + 构建器 + 调度器状态） |
 
 > 与 `dba_checkpoint` 配合使用：运行期用 `dba_checkpoint` 落盘，启动时用 `--restore-dir` 恢复。
+
+### 图谱切换（面板 ↔ MCP）
+
+面板与 MCP 是两个进程：面板的 SSE 服务只暴露 MCP 协议端点，MCP 也不暴露控制接口，因此二者通过**共享指针文件**协作：
+
+```text
+<图谱目录>/active_graph.json     # 请求与回执（panel_active / active / generation）
+<图谱目录>/active_graph.lock     # 跨进程读写锁
+```
+
+- 面板里点「切换」→ 只切面板自己，并记 `panel_active`；
+- 面板里点「载入 MCP」→ 递增 `generation` 登记请求，MCP 轮询到后自行切换并**全量重建向量索引**，结果写回同一文件供面板展示；
+- 两端启动时都优先读各自字段，因此都跨重启记住上次的选择；轮询间隔可用 `ARIADNE_GRAPH_POLL` 调整（默认 3 秒）。
+
+> 图谱库限制在**同一目录**内：`auth.json`、`.ariadne_secret`、`operations.log`、`ariadne.log`、`retrieval_params.yaml` 都按图谱目录存放，同目录切换因此不会影响登录态与运行时参数。
 
 ### 运行模式
 
@@ -304,7 +335,7 @@ ariadne-mcp --yaml data.yaml --llm-model gpt-4o-mini --llm-api-key sk-xxx \
     --embedding-model BAAI/bge-large-zh-v1.5 --embedding-local
 ```
 
-### 7 个 Tool
+### 9 个 Tool
 
 | Tool                   | 说明                             |
 | ---------------------- | ------------------------------ |
@@ -315,6 +346,8 @@ ariadne-mcp --yaml data.yaml --llm-model gpt-4o-mini --llm-api-key sk-xxx \
 | `dba_intervene`        | 人工 CRUD 节点和边                   |
 | `dba_checkpoint`       | 保存完整检查点                        |
 | `dba_get_stats`        | 图谱统计信息                         |
+| `dba_review_graph`     | 图谱体检（只读）：报出疑似重复节点对与孤立节点，不改图 |
+| `dba_review_sources`   | 溯源巡检（只读）：用原始对话核对抽取质量，需 `ARIADNE_SOURCE_STORE=1` |
 
 ### 检索说明（`dba_query_memory`）
 
@@ -419,9 +452,10 @@ edges:
 ```
 .
 ├── start_all.py                    # 一键启动（面板 + MCP SSE）
-├── data/
-│   ├── sample_graph.yaml           # 样例图谱
-│   └── memory_graph.yaml           # 实际数据
+├── data/                           # 图谱库目录（面板列出其中所有图谱供切换）
+│   ├── sample_graph.yaml           # 空图谱占位（0 节点，首次启动的默认落点）
+│   ├── memory_graph.yaml           # 预设数据集
+│   └── active_graph.json           # 共享指针：面板 / MCP 各自当前的图谱（运行期生成）
 └── dba_pipeline/
     ├── core/                       # 检索核心：跳转轴、目的回归、寻峰
     │   ├── jump_axis.py
@@ -443,10 +477,13 @@ edges:
     ├── viz/                        # WebUI 服务端、静态前端、日志总线、渲染、导出
     │   ├── api_server.py           # Starlette REST + SSE 服务
     │   ├── logbus.py               # 应用日志捕获 + 操作日志 tail + SSE 分发
+    │   ├── chain_runner.py         # 面板内复用 MCP 检索链路（调用测试）
     │   ├── renderer.py             # 离线自包含 HTML 生成
     │   ├── exporter.py
     │   └── static/                 # WebUI 前端（index.html / css / js）
     ├── mcp_server.py               # MCP Server 入口
+    ├── graphlib.py                 # 图谱库与共享指针（面板与 MCP 共用）
+    ├── webauth.py                  # 统一鉴权（会话 Cookie / Basic / Bearer）
     └── loader.py                   # 图 / 查询加载
 ```
 

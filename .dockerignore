@@ -15,3 +15,15 @@ package/
 tests/
 *.tar
 *.tar.gz
+
+# data/ 会被 COPY 进镜像，但其中的**运行期状态与凭据绝不能入库**：
+#   .ariadne_secret 是会话 Cookie 的签名密钥，泄漏即可伪造任意用户的登录态；
+#   auth.json 是账号密码散列（默认 docker run 不挂载时会直接沿用镜像里这份）；
+#   日志里可能含历史操作内容。
+# 图谱 YAML 本身要保留（镜像自带演示数据，裸跑也能起来）。
+data/auth.json
+data/.ariadne_secret
+data/active_graph.json
+data/active_graph.lock
+data/*.log
+data/*.lock

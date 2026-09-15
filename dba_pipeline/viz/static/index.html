@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#f4f7f7">
+<title>Ariadne · 记忆图谱控制台</title>
+<!-- 站点图标：根目录 icon.ico 按主题色（--te1）上色后的版本 -->
+<link rel="icon" type="image/png" href="/static/icon.png">
+<!-- 标题字体：与官网一致（Chakra Petch；离线/无网时回退系统中文字体栈） -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/css/app.css">
+<script>window.__ARIADNE_BOOT__ = /*__ARIADNE_BOOT__*/null;</script>
+</head>
+<body data-tab="graph">
+
+<header id="topbar">
+  <div class="brand">
+    <img class="logo" src="/static/icon.png" alt="Ariadne" width="26" height="26">
+    <div class="brand-text">
+      <div class="title">Ariadne</div>
+      <div class="subtitle">v0.1.0</div>
+    </div>
+  </div>
+
+  <nav id="nav">
+    <button data-tab="graph" class="active">图谱</button>
+    <button data-tab="observability">可观测</button>
+    <button data-tab="params">参数</button>
+    <button data-tab="settings">设置</button>
+  </nav>
+
+  <div class="topbar-right">
+    <span class="stat-chip">节点 <b id="topbar-nodes">-</b></span>
+    <span class="stat-chip">边 <b id="topbar-edges">-</b></span>
+    <button class="icon-btn" id="btn-undo" title="撤销（Ctrl+Z）">↩</button>
+    <button class="icon-btn" id="btn-autorotate" title="自动旋转">⟳</button>
+    <button class="icon-btn" id="btn-zoom-fit" title="全图适配（R）">⤢</button>
+    <button class="icon-btn" id="btn-search" title="搜索（/）" aria-label="搜索">
+      <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor"
+           stroke-width="1.7" stroke-linecap="round" aria-hidden="true">
+        <circle cx="6.9" cy="6.9" r="4.3"></circle>
+        <line x1="10.1" y1="10.1" x2="13.6" y2="13.6"></line>
+      </svg>
+    </button>
+    <button class="pill pill-btn" id="user-pill" title="当前登录用户（点击修改密码）" hidden></button>
+    <button class="icon-btn" id="btn-logout" title="登出" aria-label="登出" hidden>
+      <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor"
+           stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M6.5 2.5H3.5a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1h3"></path>
+        <path d="M10.5 11 13.5 8l-3-3"></path>
+        <path d="M13.5 8H6.5"></path>
+      </svg>
+    </button>
+    <button class="pill pill-btn" id="mcp-pill" title="MCP 连接（点击查看配置与状态）" aria-label="MCP 连接状态">MCP …</button>
+    <span class="pill" id="health-pill">连接中…</span>
+  </div>
+</header>
+
+<main id="stage">
+  <div id="graph-container"></div>
+
+  <div id="search-wrap">
+    <input id="search-input" type="text" placeholder="搜索记忆节点（内容 / ID）…" autocomplete="off">
+    <div id="search-dropdown"></div>
+  </div>
+
+  <section class="panel" id="panel-filters"></section>
+  <section class="panel right" id="panel-inspector"></section>
+
+  <div id="edge-banner"></div>
+  <div id="tooltip"></div>
+
+  <div id="camera-panel" class="float-panel">
+    <div class="float-title">相机</div>
+    <div class="camera-body">
+      <div class="v-slider-wrap">
+        <input id="camera-zoom" class="v-slider" type="range" min="0" max="1000" step="1"
+               value="500" title="拖动缩放（上近下远）" aria-label="相机缩放">
+      </div>
+      <div class="camera-readout">
+        <div class="cam-row"><span>距离</span><b id="cam-distance">-</b></div>
+        <div class="cam-row"><span>X</span><b id="cam-x">-</b></div>
+        <div class="cam-row"><span>Y</span><b id="cam-y">-</b></div>
+        <div class="cam-row"><span>Z</span><b id="cam-z">-</b></div>
+      </div>
+    </div>
+  </div>
+</main>
+
+<footer id="statusbar">
+  <span>节点 <b id="stat-nodes">-</b></span>
+  <span>边 <b id="stat-edges">-</b></span>
+  <span>废弃 <b id="stat-deprecated">-</b></span>
+  <span>遗忘 <b id="stat-forgotten">-</b></span>
+  <span>孤立 <b id="stat-orphans">-</b></span>
+  <span class="spacer"></span>
+  <span>可撤销 <b id="stat-undo">0</b></span>
+  <span>选中 <b id="stat-sel">-</b></span>
+  <span>FPS <b id="stat-fps">0</b></span>
+</footer>
+
+<aside id="drawer">
+  <div class="drawer-head">
+    <span id="drawer-title">可观测性</span>
+    <button id="drawer-close" title="关闭">×</button>
+  </div>
+  <div class="drawer-body">
+    <div class="view" data-view="observability" id="view-observability"></div>
+    <div class="view" data-view="params" id="view-params"></div>
+    <div class="view" data-view="settings" id="view-settings"></div>
+  </div>
+</aside>
+<div id="drawer-backdrop"></div>
+
+<div id="ctx-menu"></div>
+
+<script src="https://unpkg.com/three@0.148.0/build/three.min.js"></script>
+<script src="https://unpkg.com/3d-force-graph@1.71.3/dist/3d-force-graph.min.js"></script>
+<script src="/static/js/util.js"></script>
+<script src="/static/js/store.js"></script>
+<script src="/static/js/api.js"></script>
+<script src="/static/js/graph.js"></script>
+<script src="/static/js/panels.js"></script>
+<script src="/static/js/app.js"></script>
+</body>
+</html>

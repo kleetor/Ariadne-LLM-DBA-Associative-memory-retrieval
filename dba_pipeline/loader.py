@@ -87,6 +87,21 @@ def load_graph(yaml_path: str) -> MemoryGraph:
     return g
 
 
+def load_into(graph: MemoryGraph, yaml_path: str) -> MemoryGraph:
+    """把 YAML **就地**加载进已有的 MemoryGraph 实例。
+
+    与 :func:`load_graph` 的区别：复用同一个 MemoryGraph 实例及其底层 nx 图对象，
+    因此其它持有该实例引用的组件（GraphBuilder / Retriever / VectorStore 调用方等）
+    会同步看到新数据——这是 MCP 在跨进程写入前「重载外部改动」所必需的
+    （若是新建实例再赋值，别的组件仍指向旧对象，重载等于没做）。
+    """
+    fresh = load_graph(yaml_path)
+    graph.graph.clear()  # 保留同一 nx 图对象，仅替换其内容
+    graph.graph.add_nodes_from(fresh.graph.nodes(data=True))
+    graph.graph.add_edges_from(fresh.graph.edges(data=True))
+    return graph
+
+
 def load_queries(yaml_path: str) -> Dict[str, Dict]:
     """从 YAML 文件加载标注查询
 

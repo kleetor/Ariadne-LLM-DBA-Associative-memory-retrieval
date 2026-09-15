@@ -6,9 +6,10 @@
 论文第六章 Algorithm: Purpose-Driven Associative Retrieval
 """
 
+import logging
 import re
 import numpy as np
-from typing import List, Tuple, Dict, Optional
+from typing import Any, Callable, List, Tuple, Dict, Optional
 
 from langchain_openai import ChatOpenAI
 from langchain_core.embeddings import Embeddings
@@ -19,6 +20,44 @@ from dba_pipeline.core.peak_find import PeakFinder
 from dba_pipeline.graph.memory_graph import MemoryGraph
 from dba_pipeline.llm.inference import InferenceEngine
 from dba_pipeline.embedding.store import VectorStore
+
+# 阶段观测回调：on_stage(stage, info)，供面板「调用测试」把链路每一段展示出来。
+StageHook = Optional[Callable[[str, Dict[str, Any]], None]]
+
+
+def emit_stage(on_stage: StageHook, stage: str, **info) -> None:
+    """把阶段事件交给调用方。
+
+    观测是旁路：回调抛错只记 debug 日志，绝不打断检索本身。
+    """
+    if on_stage is None:
+        return
+    try:
+        on_stage(stage, info)
+    except Exception:
+        logging.getLogger(__name__).debug("阶段回调失败（忽略）", exc_info=True)
+
+
+def _rel_value(rel_type: Any) -> Any:
+    """关系类型可能是枚举，转成可序列化的值"""
+    return getattr(rel_type, "value", rel_type)
+
+
+def _hop_digest(combined: Dict[str, Dict], limit: int = 8) -> List[Dict[str, Any]]:
+    """每跳候选摘要（按组合得分降序取前 limit 条），供面板展示扩展轨迹"""
+    ordered = sorted(combined.values(), key=lambda x: x["combined_score"], reverse=True)
+    return [
+        {
+            "id": c["id"],
+            "from": c["from"],
+            "rel_type": _rel_value(c["rel_type"]),
+            "is_reverse": c["is_reverse"],
+            "combined_score": round(float(c["combined_score"]), 4),
+            "purpose_score": round(float(c["purpose_score"]), 4),
+            "jump_weight": round(float(c["jump_weight"]), 4),
+        }
+        for c in ordered[:limit]
+    ]
 
 # ── 时期词表（单一来源）──────────────────────────────────────────────────
 # 历史上「锚点白名单」(TOOL_TIME_ANCHOR_RE) 与「查询校验词表」是两份独立正则，
@@ -413,6 +452,7 @@ class PurposeDrivenRetriever:
         max_hops: int = 5,
         expand_k: int = None,
         purpose: Optional[List[str]] = None,
+        on_stage: StageHook = None,
     ) -> Dict:
         """执行完整的目的驱动联想检索
 
@@ -424,6 +464,8 @@ class PurposeDrivenRetriever:
             purpose: 可选，调用方（主聊天 LLM/agent）注入的目的列表。
                      提供时跳过独立的目的推断（infer_purpose），检索意图由主 LLM
                      在对话上下文理解中给出；None 时退化到系统内部推断。
+            on_stage: 可选，阶段观测回调 on_stage(stage, info)。面板「调用测试」靠它把
+                      意图识别 / 种子 / 每一跳 / 寻峰逐段展示；None 时零开销。
 
         Returns:
             {
@@ -435,11 +477,13 @@ class PurposeDrivenRetriever:
             }
         """
         # Step 1: 推断状态和目的（可注入：主 LLM 提供则跳过独立推断）
+        emit_stage(on_stage, "intent_start", injected=purpose is not None, query=query)
         if purpose is not None:
             purpose_info = {"status": "injected", "purposes": list(purpose)}
         else:
             purpose_info = self.inference.infer_purpose(query)
         purposes = purpose_info.get("purposes", [])
+        emit_stage(on_stage, "intent_done", purpose=purpose_info)
         purpose_vec = self.purpose_model.get_purpose_vector(purposes)
 
         # Step 2: 向量搜索种子记忆（混合 query text + 目的向量）
@@ -472,10 +516,14 @@ class PurposeDrivenRetriever:
         )
         # 种子轮没有跳转轴扩展（jw=0），使用与后续轮次一致的得分公式
         mu_0 = float(np.mean(seed_scores)) * self.purpose_weight_coef
+        emit_stage(on_stage, "seeds", ids=seed_ids, mean_score=round(mu_0, 4),
+                   text_hits=len(text_seeds), purpose_hits=len(purpose_seeds))
 
         self.peak_finder.reset()
         decision = self.peak_finder.add_round(mu_0)
         if decision == "peak_found":
+            emit_stage(on_stage, "peak_found", hop=0, mean_score=round(mu_0, 4),
+                       reason="种子轮即达峰值")
             return self._build_result(seed_ids, purpose_info, [])
 
         # Step 3-6: 循环扩展
@@ -511,6 +559,7 @@ class PurposeDrivenRetriever:
                             )
                             self.path_tracker.record_activation(pk)
             if not expanded:
+                emit_stage(on_stage, "hop", hop=hop, expanded=0, kept=0, stop="无可扩展邻居")
                 result_ids = current_ids
                 break
 
@@ -543,6 +592,8 @@ class PurposeDrivenRetriever:
                 }
 
             if not filtered:
+                emit_stage(on_stage, "hop", hop=hop, expanded=len(expanded), kept=0,
+                           stop="目的回归过滤后为空")
                 result_ids = current_ids
                 break
 
@@ -569,6 +620,9 @@ class PurposeDrivenRetriever:
 
             # 寻峰判断
             decision = self.peak_finder.add_round(mu_hop)
+            emit_stage(on_stage, "hop", hop=hop, expanded=len(expanded), kept=len(combined),
+                       mean_score=round(mu_hop, 4), decision=decision,
+                       top=_hop_digest(combined))
 
             hop_history.append({
                 "hop": hop,
@@ -581,6 +635,9 @@ class PurposeDrivenRetriever:
             })
 
             if decision == "peak_found":
+                emit_stage(on_stage, "peak_found", hop=hop, mean_score=round(mu_hop, 4),
+                           peak_index=self.peak_finder.peak_index,
+                           tolerance=self.peak_finder.peak_tolerance)
                 result_ids = self._collect_peak_tolerance(hop_history)
                 break
 
@@ -597,8 +654,10 @@ class PurposeDrivenRetriever:
 
         else:
             # 达到 max_hops 仍未找到峰值，用峰值容忍带
+            emit_stage(on_stage, "hop", hop=max_hops, stop="达到最大跳数")
             result_ids = self._collect_peak_tolerance(hop_history)
 
+        emit_stage(on_stage, "peak_collected", count=len(result_ids), ids=result_ids)
         return self._build_result(result_ids, purpose_info, hop_history)
 
     def _collect_peak_tolerance(self, hop_history: List[Dict]) -> List[str]:
@@ -786,6 +845,7 @@ class PurposeDrivenRetriever:
         max_hops: Optional[int] = None,
         expand_k: Optional[int] = None,
         render_timestamps: bool = False,
+        on_stage: StageHook = None,
     ) -> Dict:
         """检索 → 连通性粗筛 → StoryRank 故事化 →（可选）生成回复
 
@@ -793,8 +853,9 @@ class PurposeDrivenRetriever:
         max_hops / expand_k 为 None 时沿用 retrieve() 的默认值。
         render_timestamps 为 True 时把节点记录时间一并交给 StoryRank（MCP 侧使用），
         默认 False 以保持 ALM 侧输出不变。
+        on_stage: 可选阶段观测回调，透传给 retrieve() 并补充故事化两段（面板「调用测试」）。
         """
-        retrieve_kwargs: Dict[str, Any] = {"seed_k": seed_k}
+        retrieve_kwargs: Dict[str, Any] = {"seed_k": seed_k, "on_stage": on_stage}
         if max_hops is not None:
             retrieve_kwargs["max_hops"] = max_hops
         if expand_k is not None:
@@ -816,11 +877,15 @@ class PurposeDrivenRetriever:
                     seen.add(nid)
                     all_nodes.append(nid)
 
+        emit_stage(on_stage, "core_nodes", groups=len(core_groups), nodes=len(all_nodes))
+
         stories = []
         story_nodes = []
         discarded_nodes = []
         if all_nodes:
             path = self._build_path(all_nodes, hop_history)
+            emit_stage(on_stage, "storyrank_start", nodes=len(path.get("nodes", [])),
+                       edges=len(path.get("edges", [])))
             out = self.inference.story_rank(query, path, render_timestamps=render_timestamps)
             story = out.get("story", "")
             adopted = out.get("adopted_ids", [])
@@ -828,6 +893,9 @@ class PurposeDrivenRetriever:
                 stories.append(story)
             story_nodes = adopted
             discarded_nodes = [nid for nid in all_nodes if nid not in adopted]
+            emit_stage(on_stage, "storyrank_done", adopted=len(story_nodes),
+                       discarded=len(discarded_nodes), story=story,
+                       adopted_ids=list(story_nodes))
 
         result["stories"] = stories
         result["story_nodes"] = story_nodes

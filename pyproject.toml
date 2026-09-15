@@ -41,10 +41,15 @@ local = [
 ariadne-api = "dba_pipeline.viz.api_server:main"
 ariadne-mcp = "dba_pipeline.mcp_server:main"
 ariadne-render = "dba_pipeline.viz.renderer:main"
+ariadne-alm = "alm.server:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["dba_pipeline*"]
+include = ["dba_pipeline*", "alm*"]
 
 [tool.setuptools.package-data]
-dba_pipeline = ["viz/templates/*.html"]
+dba_pipeline = [
+    "viz/static/*.html",
+    "viz/static/css/*.css",
+    "viz/static/js/*.js",
+]

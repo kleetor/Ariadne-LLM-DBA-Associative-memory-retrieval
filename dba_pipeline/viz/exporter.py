@@ -67,7 +67,7 @@ def _export_nodes(graph: MemoryGraph) -> list:
             "id": nid,
             "label": (data.get("content") or "")[:50],
             "node_type": raw_type.upper(),
-            "content": data["content"],
+            "content": data.get("content", ""),
             "deprecated": data.get("deprecated", False),
             "forgotten": data.get("forgotten", False),
             "in_degree": meta.get("_in_degree", 0),

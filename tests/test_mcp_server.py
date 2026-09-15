@@ -6,7 +6,8 @@ import threading
 
 from dba_pipeline.graph.memory_graph import MemoryGraph
 from dba_pipeline.core.jump_axis import NodeType
-from dba_pipeline.mcp_server import DBAServer, _load_dotenv, MAX_CONVERSATION_LENGTH
+from dba_pipeline import envfile
+from dba_pipeline.mcp_server import DBAServer, MAX_CONVERSATION_LENGTH
 
 
 class FakeVectorStore:
@@ -96,6 +97,11 @@ def test_load_dotenv_prefers_existing_env(tmp_path, monkeypatch):
     env_file = tmp_path / ".env"
     env_file.write_text("FOO_BAR=from_file\n", encoding="utf-8")
     monkeypatch.delenv("FOO_BAR", raising=False)
-    monkeypatch.setattr("dba_pipeline.mcp_server._find_dotenv", lambda: env_file)
-    _load_dotenv()
+    monkeypatch.setattr(envfile, "find_dotenv", lambda: env_file)
+    envfile.load_dotenv()
     assert os.environ.get("FOO_BAR") == "from_file"
+
+    # 已存在的环境变量优先，不被文件里的值覆盖
+    monkeypatch.setenv("FOO_BAR", "from_env")
+    envfile.load_dotenv()
+    assert os.environ.get("FOO_BAR") == "from_env"

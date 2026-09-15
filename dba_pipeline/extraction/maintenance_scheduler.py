@@ -22,6 +22,7 @@
 import threading
 import time
 import logging
+from contextlib import nullcontext
 from typing import Dict, List, Optional, Callable, Tuple
 from dataclasses import dataclass
 from enum import Enum, auto
@@ -91,10 +92,14 @@ class MaintenanceScheduler:
         dba,
         config: ScheduleConfig = None,
         on_maintenance_done: Optional[Callable] = None,
+        maintain_context: Optional[Callable] = None,
     ):
         self.dba = dba
         self.config = config or ScheduleConfig()
         self.on_maintenance_done = on_maintenance_done
+        # 可选：返回上下文管理器的工厂，用于把「维护 + 落盘」整段放入跨进程写临界区
+        # （如 DBAServer.write_guard），避免与 WebUI 面板的写入相互覆盖。
+        self.maintain_context = maintain_context
 
         self._buffer: List[Tuple[Optional[int], str]] = []
         self._lock = threading.Lock()
@@ -240,6 +245,16 @@ class MaintenanceScheduler:
         self._worker_thread.start()
 
     def _do_flush(self, conversations: List[Tuple[Optional[int], str]], reason: TriggerReason):
+        """在跨进程写临界区内执行维护（若注入了 maintain_context）。
+
+        必须整段覆盖「重载外部改动 → LLM 维护改图 → 落盘」，否则维护期间面板写入
+        会被随后的 `_save()` 覆盖（丢失更新）。
+        """
+        guard = self.maintain_context() if self.maintain_context else nullcontext()
+        with guard:
+            self._do_flush_locked(conversations, reason)
+
+    def _do_flush_locked(self, conversations: List[Tuple[Optional[int], str]], reason: TriggerReason):
         batch_count = len(conversations)
         logger.info(
             f"[DBA 维护] {reason.name}, {batch_count} 轮, "

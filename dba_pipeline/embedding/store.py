@@ -6,7 +6,7 @@ LangChain 向量存储封装
 统一向量检索接口，底层可切换 FAISS / ChromaDB。
 """
 
-from typing import List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional
 import logging
 import threading
 
@@ -258,6 +258,51 @@ class VectorStore:
                     changed = True
             if changed:
                 self._rebuild_index()
+
+    def reconcile(self, desired: Dict[str, str]) -> dict:
+        """把向量库对齐到期望集合 ``{memory_id: content}``。
+
+        用于图谱被**其它进程**（如 WebUI 面板）修改后，把向量库补齐/更新/清理：
+        - 期望里有、库里没有 → 新增（批量嵌入）
+        - 两边都有但内容不同 → 更新向量
+        - 库里有、期望里没有 → 删除
+
+        与逐条 add/update/remove 的区别：一次完成，且**只重建一次**索引
+        （FAISS 不支持原地更新，重建是主要成本）。
+
+        Returns:
+            {"added": n, "updated": n, "removed": n}
+        """
+        # 无 embedding 配置时降级：仅维护内容映射
+        if self.embeddings is None:
+            with self._lock:
+                self._contents = dict(desired)
+            logger.warning("embeddings 未配置，仅同步内容映射（未构建向量索引）")
+            return {"added": 0, "updated": 0, "removed": 0, "degraded": True}
+
+        with self._lock:
+            known = set(self._content_vectors) | set(self._contents)
+            to_remove = [mid for mid in known if mid not in desired]
+            to_add = [mid for mid in desired if mid not in known]
+            to_update = [
+                mid for mid in desired
+                if mid in known and self._contents.get(mid) != desired[mid]
+            ]
+            need = to_add + to_update
+
+        # 锁外批量嵌入（网络/CPU 开销大），避免阻塞并发检索线程
+        vectors = self.embed_batch([desired[mid] for mid in need]) if need else []
+
+        with self._lock:
+            for mid in to_remove:
+                self._content_vectors.pop(mid, None)
+                self._contents.pop(mid, None)
+            for mid, vec in zip(need, vectors):
+                self._content_vectors[mid] = np.asarray(vec)
+                self._contents[mid] = desired[mid]
+            if to_remove or need:
+                self._rebuild_index()
+        return {"added": len(to_add), "updated": len(to_update), "removed": len(to_remove)}
 
     def clear_vectors(self):
         """清空向量缓存与索引（用于以图谱为权威全量重建）"""

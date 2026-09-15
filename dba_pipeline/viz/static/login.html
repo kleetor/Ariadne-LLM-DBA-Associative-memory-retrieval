@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#f4f7f7">
+<meta name="robots" content="noindex">
+<title>登录 · Ariadne 记忆图谱控制台</title>
+<link rel="icon" type="image/png" href="/static/icon.png">
+<!-- 本页需在未登录时可达，故样式内联，不依赖受保护的 /static/css -->
+<style>
+  :root {
+    --bg: #f4f7f7;
+    --line: rgba(15, 23, 42, 0.08);
+    --line-strong: rgba(15, 23, 42, 0.18);
+    --text: #1f2937;
+    --text-dim: #5b6b7a;
+    --te1: #0d9488;
+    --tv: #334155;
+    --rose: #be123c;
+    --font-display: "Chakra Petch", "PingFang SC", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+    --font-body: "PingFang SC", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html, body { height: 100%; }
+  body {
+    /* 与官网 .grid-bg 同款：56px 网格底纹 */
+    background-color: var(--bg);
+    background-image:
+      linear-gradient(rgba(15, 23, 42, 0.045) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(15, 23, 42, 0.045) 1px, transparent 1px);
+    background-size: 56px 56px;
+    color: var(--text); font-family: var(--font-body); font-size: 13px;
+    overflow: hidden;
+  }
+
+  /* ---------- 背景层：官网「3D 渲染页」同款（柔光 + 白膜球力导向图）---------- */
+  .backdrop { position: fixed; inset: 0; z-index: 0; pointer-events: none; }
+  .backdrop::before, .backdrop::after { content: ""; position: absolute; inset: 0; }
+  .backdrop::before {
+    background: radial-gradient(40rem 40rem at 15% 24%, rgba(15, 23, 42, 0.03), transparent 60%);
+  }
+  .backdrop::after {
+    background: radial-gradient(34rem 34rem at 84% 20%, rgba(13, 148, 136, 0.05), transparent 60%);
+  }
+  /* 3D 画布：库加载完成后淡入（与官网 hero 一致） */
+  #bg-3d { position: absolute; inset: 0; opacity: 0; transition: opacity 1.2s ease-out; }
+  #bg-3d.ready { opacity: 1; }
+  #bg-3d canvas { display: block; }
+
+  /* ---------- 卡牌：独立整屏容器居中，不受 body 其它元素影响 ---------- */
+  .stage {
+    position: fixed; inset: 0; z-index: 1;
+    display: grid; place-items: center; align-content: safe center;
+    padding: 24px; overflow-y: auto;
+  }
+  .card {
+    width: 360px; max-width: 92vw; padding: 32px 30px 26px;
+    /* 半透明：背后的节点云透出来；blur 压到 8px，否则点会被糊成一片看不出结构 */
+    background: rgba(255, 255, 255, 0.6);
+    backdrop-filter: blur(8px) saturate(1.08);
+    border: 1px solid rgba(255, 255, 255, 0.65);
+    border-radius: 16px;
+    box-shadow: 0 8px 30px rgba(15, 23, 42, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.7);
+  }
+  .brand { display: flex; align-items: center; gap: 12px; margin-bottom: 26px; }
+  .brand img { width: 40px; height: 40px; display: block; }
+  .brand .title {
+    font-family: var(--font-display); font-size: 19px; font-weight: 700;
+    letter-spacing: 0.08em; text-transform: uppercase;
+    background: linear-gradient(110deg, var(--tv), var(--te1));
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  .brand .subtitle { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
+  label { display: block; margin-bottom: 14px; }
+  label > span { display: block; font-size: 11px; color: var(--text-dim); margin-bottom: 6px; letter-spacing: 0.04em; }
+  input {
+    width: 100%; padding: 10px 12px; font-size: 13px; color: var(--text);
+    background: rgba(255, 255, 255, 0.55); outline: none;
+    border: 1px solid var(--line); border-radius: 10px;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+  }
+  input:focus { border-color: rgba(13, 148, 136, 0.5); box-shadow: 0 0 0 3px rgba(13, 148, 136, 0.1); }
+  input:disabled { color: var(--text-dim); background: rgba(15, 23, 42, 0.03); }
+  button {
+    width: 100%; margin-top: 6px; padding: 11px 12px; cursor: pointer;
+    font-family: var(--font-display); font-size: 13px; font-weight: 600; letter-spacing: 0.06em;
+    color: #fff; background: var(--te1); border: none; border-radius: 10px;
+    transition: background-color 0.2s ease, opacity 0.2s ease;
+  }
+  button:hover { background: #0f766e; }
+  button:disabled { opacity: 0.55; cursor: default; }
+  .msg { min-height: 18px; margin-top: 12px; font-size: 12px; color: var(--rose); }
+  .notice {
+    margin-bottom: 18px; padding: 9px 12px; font-size: 12px; line-height: 1.6;
+    color: #92400e; background: rgba(251, 191, 36, 0.14);
+    border: 1px solid rgba(180, 83, 9, 0.28); border-radius: 10px;
+  }
+  .foot { margin-top: 18px; font-size: 11px; color: var(--text-dim); line-height: 1.7; }
+  .foot a { color: var(--te1); text-decoration: none; }
+  .foot a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+<div class="backdrop" aria-hidden="true"><div id="bg-3d"></div></div>
+
+<main class="stage">
+  <form class="card" id="form-login" autocomplete="on" hidden>
+    <div class="brand">
+      <img src="/static/icon.png" alt="">
+      <div>
+        <div class="title">Ariadne</div>
+        <div class="subtitle">记忆图谱控制台</div>
+      </div>
+    </div>
+
+    <label>
+      <span>用户名</span>
+      <input id="user" name="username" type="text" autocomplete="username" autofocus required>
+    </label>
+    <label>
+      <span>密码</span>
+      <input id="password" name="password" type="password" autocomplete="current-password" required>
+    </label>
+
+    <button type="submit" id="submit">登 录</button>
+    <div class="msg" id="msg" role="alert"></div>
+
+    <div class="foot">凭据保存在服务端 <code>&lt;图谱目录&gt;/auth.json</code>（加盐散列）。<br>登录状态保留 7 天。</div>
+  </form>
+
+  <form class="card" id="form-change" autocomplete="on" hidden>
+    <div class="brand">
+      <img src="/static/icon.png" alt="">
+      <div>
+        <div class="title">Ariadne</div>
+        <div class="subtitle">修改密码</div>
+      </div>
+    </div>
+
+    <div class="notice" id="change-notice" hidden></div>
+
+    <label>
+      <span>用户名</span>
+      <input id="ch-user" type="text" autocomplete="username" required>
+    </label>
+    <label>
+      <span>当前密码</span>
+      <input id="ch-old" type="password" autocomplete="current-password" required>
+    </label>
+    <label>
+      <span>新密码（至少 8 位）</span>
+      <input id="ch-new" type="password" autocomplete="new-password" minlength="8" required>
+    </label>
+    <label>
+      <span>确认新密码</span>
+      <input id="ch-new2" type="password" autocomplete="new-password" minlength="8" required>
+    </label>
+
+    <button type="submit" id="ch-submit">修改密码</button>
+    <div class="msg" id="ch-msg" role="alert"></div>
+
+    <div class="foot"><a href="/" id="back-link">返回控制台</a>　·　忘记密码时可用 <code>.env</code> 中的 <code>ARIADNE_VIZ_USER</code> / <code>ARIADNE_VIZ_PASS</code> 登录后重设。</div>
+  </form>
+</main>
+
+<!-- 表单逻辑先挂上：不依赖任何外部库，CDN 挂了也能登录 -->
+<script>
+(function () {
+  var changing = new URLSearchParams(location.search).get('mode') === 'change';
+  var formLogin = document.getElementById('form-login');
+  var formChange = document.getElementById('form-change');
+
+  function nextTarget() {
+    var raw = new URLSearchParams(location.search).get('next') || '/';
+    // 只允许站内地址，避免被构造成开放重定向。
+    // 必须解析后比对 origin：`/\evil.com` 这种单个反斜杠能骗过「首字符是 /
+    // 且次字符不是 /」的判断，但浏览器会把 `\` 归一化成 `/`，等价于协议相对
+    // 地址（即跳到外站）。
+    try {
+      var target = new URL(raw, location.origin);
+      if (target.origin !== location.origin) return '/';
+      return target.pathname + target.search + target.hash;
+    } catch (e) {
+      return '/';
+    }
+  }
+
+  function changeUrl() {
+    return '/login?mode=change&next=' + encodeURIComponent(nextTarget());
+  }
+
+  // ---- 登录 ----
+  function initLogin() {
+    var msg = document.getElementById('msg');
+    var submit = document.getElementById('submit');
+    formLogin.hidden = false;
+
+    formLogin.addEventListener('submit', async function (e) {
+      e.preventDefault();
+      msg.textContent = '';
+      submit.disabled = true;
+      try {
+        var res = await fetch('/api/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            user: document.getElementById('user').value,
+            password: document.getElementById('password').value,
+          }),
+        });
+        var data = await res.json().catch(function () { return {}; });
+        if (res.ok) {
+          // 初始密码（或重置后门）登录后必须先改密
+          location.href = data.must_change ? changeUrl() : nextTarget();
+          return;
+        }
+        msg.textContent = data.error || ('登录失败（' + res.status + '）');
+      } catch (err) {
+        msg.textContent = '无法连接服务：' + err.message;
+      } finally {
+        submit.disabled = false;
+      }
+    });
+  }
+
+  // ---- 改密 ----
+  function initChange() {
+    var msg = document.getElementById('ch-msg');
+    var submit = document.getElementById('ch-submit');
+    var user = document.getElementById('ch-user');
+    var notice = document.getElementById('change-notice');
+    formChange.hidden = false;
+
+    // 需要登录态：拿配置顺便回填用户名
+    fetch('/api/config').then(function (res) {
+      if (!res.ok) { location.replace('/login'); return null; }
+      return res.json();
+    }).then(function (cfg) {
+      if (!cfg) return;
+      user.value = cfg.auth_user || '';
+      if (cfg.must_change) {
+        notice.textContent = '当前仍是初始密码，修改后才能使用控制台。';
+        notice.hidden = false;
+        // 强制改密期间回控制台也会被弹回来，索性不给入口
+        document.getElementById('back-link').hidden = true;
+      }
+    }).catch(function () {
+      msg.textContent = '无法读取服务端配置，请重新登录。';
+    });
+
+    formChange.addEventListener('submit', async function (e) {
+      e.preventDefault();
+      msg.textContent = '';
+      var fresh = document.getElementById('ch-new').value;
+      if (fresh !== document.getElementById('ch-new2').value) {
+        msg.textContent = '两次输入的新密码不一致';
+        return;
+      }
+      submit.disabled = true;
+      try {
+        var res = await fetch('/api/password', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            user: user.value.trim(),
+            old_password: document.getElementById('ch-old').value,
+            new_password: fresh,
+          }),
+        });
+        var data = await res.json().catch(function () { return {}; });
+        if (res.ok) { location.href = nextTarget(); return; }
+        msg.textContent = data.error || ('修改失败（' + res.status + '）');
+      } catch (err) {
+        msg.textContent = '无法连接服务：' + err.message;
+      } finally {
+        submit.disabled = false;
+      }
+    });
+  }
+
+  if (changing) { initChange(); } else { initLogin(); }
+})();
+</script>
+
+<script src="https://unpkg.com/three@0.148.0/build/three.min.js"></script>
+<script src="https://unpkg.com/3d-force-graph@1.71.3/dist/3d-force-graph.min.js"></script>
+<script>
+(function () {
+  // 与官网「3D 渲染页」同源：同一份图谱（data/LiFEMem.yaml 烘成的 graph.json，已去掉 content）
+  // + 同一套渲染参数与机位，所以观感和官网一致。
+  var host = document.getElementById('bg-3d');
+  if (!host || !window.THREE || !window.ForceGraph3D) return;   // CDN 不可用：只留 56px 网格底
+
+  // 走免除鉴权的静态路径：登录页拿不到 /api/graph，也不该把记忆正文暴露给未登录访客
+  fetch('/static/graph.json', { cache: 'no-cache' })
+    .then(function (res) { return res.ok ? res.json() : null; })
+    .then(function (data) {
+      if (data && data.nodes && data.nodes.length) start(data);
+    })
+    .catch(function () { /* 取不到就只留网格底，不影响登录 */ });
+
+  function start(data) {
+
+    // 注意：这个版本（与面板 index.html 同一份 3d-force-graph@1.71.3）必须用柯里化调用
+    // ForceGraph3D(config)(element)，直接 new ForceGraph3D(el, config) 拿到的是组件工厂，
+    // 不会创建 canvas（面板的 graph.js 也是这么调的）。
+    var Graph = window.ForceGraph3D({ controlType: 'orbit' })(host)
+      .graphData(data)
+      .backgroundColor('rgba(0,0,0,0)')
+      .nodeColor(function () { return '#cbd5e1'; })   // 统一灰白「白膜球」，同官网
+      .nodeVal(2.2)
+      .nodeOpacity(0.92)
+      .linkColor(function () { return 'rgba(0, 0, 0, 0.5)'; })
+      .linkWidth(0.6)
+      .linkOpacity(0.5)
+      .linkDirectionalParticles(1)
+      .linkDirectionalParticleSpeed(0.004)
+      .linkDirectionalParticleWidth(1.2)
+      .cooldownTicks(90)        // 同官网：让力模拟自己收敛出布局（90 tick / 1.5s），然后冻结
+      .cooldownTime(1500)
+      .enableNodeDrag(false)
+      .showNavInfo(false)
+      .width(host.clientWidth || window.innerWidth)
+      .height(host.clientHeight || window.innerHeight);
+
+    // 背景层已 pointer-events:none，这里再关一次交互仅作双保险
+    var controls = Graph.controls && Graph.controls();
+    if (controls) {
+      controls.autoRotate = false;
+      controls.enableZoom = false;
+      controls.enableRotate = false;
+      controls.enablePan = false;
+      controls.enableDamping = true;
+      controls.dampingFactor = 0.08;
+    }
+
+    // 机位同官网 hero：固定 R=240、倾角 0.4，绕原点倾斜环绕。
+    // 不是“把整团装进画面”——相机就落在节点云里，近处的球自然变大、连线横穿画面。
+    var RADIUS = 240;
+    var TILT = 0.4;
+    var angle = Math.random() * Math.PI * 2;   // 随机起始方位角：每次刷新视角不同
+    function place() {
+      var cam = Graph.camera();
+      cam.position.set(
+        RADIUS * Math.cos(angle),
+        RADIUS * Math.sin(angle) * Math.sin(TILT),
+        RADIUS * Math.sin(angle) * Math.cos(TILT)
+      );
+      cam.lookAt(0, 0, 0);
+    }
+
+    function resize() {
+      var w = host.clientWidth;
+      var h = host.clientHeight;
+      if (w > 0 && h > 0) Graph.width(w).height(h);
+    }
+    resize();
+    window.addEventListener('resize', resize);
+    place();
+
+    // 同官网：等力模拟冷却、节点就位后再淡入，避免看到初始的拉扯动画
+    Graph.onEngineStop(function () { host.classList.add('ready'); });
+
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    var last = 0;
+    (function tick(now) {
+      var dt = last ? (now - last) / 1000 : 0;
+      last = now;
+      angle += 0.1 * dt;                 // 同官网 hero：autoRotateSpeed 0.4 × 0.25
+      if (controls) controls.update();   // 同官网：先让控制器与当前相机同步，再摆相机
+      place();
+      requestAnimationFrame(tick);
+    })(performance.now());
+  }
+})();
+</script>
+</body>
+</html>

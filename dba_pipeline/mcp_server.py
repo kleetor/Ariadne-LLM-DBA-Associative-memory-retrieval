@@ -30,6 +30,7 @@ import tempfile
 import threading
 import time
 import yaml
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional
 
@@ -38,14 +39,17 @@ from typing import Optional
 
 from dba_pipeline.graph.memory_graph import MemoryGraph
 from dba_pipeline.graph.review import find_duplicate_candidates
-from dba_pipeline.loader import load_graph
+from dba_pipeline.loader import load_graph, load_into
 from dba_pipeline.core.jump_axis import NodeType, RelationType, get_jump_weight
 from dba_pipeline.core.path_tracker import PathTracker
 from dba_pipeline.source_store import (
     default_source_dir, list_batches, load_batch, render_batch_text, source_store_enabled,
 )
 from dba_pipeline.extraction.review_scheduler import IdleReviewScheduler, ReviewConfig
-from dba_pipeline import oplog
+from dba_pipeline import envfile, filelock, oplog
+from dba_pipeline import params as params_mod
+from dba_pipeline import webauth
+from dba_pipeline.viz import logbus
 
 # ---- 可选 DBA 管线导入 ----
 try:
@@ -82,7 +86,7 @@ class DBAServer:
 
     def __init__(self, graph: MemoryGraph, yaml_path: str = None,
                  dba=None, scheduler=None, retriever=None, vector_store=None,
-                 lock=None):
+                 lock=None, params_path: str = None):
         self.graph = graph
         self.yaml_path = yaml_path
         self.dba = dba          # 可选: MemoryDBA 实例
@@ -91,6 +95,14 @@ class DBAServer:
         self.vector_store = vector_store  # 可选: VectorStore（人工干预时同步向量）
         # 可重入锁，与 GraphBuilder 共享，串行化 graph 修改与 YAML 写回
         self._lock = lock if lock is not None else threading.RLock()
+        # 跨进程写锁：与 WebUI 面板共用同一把 <yaml>.lock，串行化「读-改-写」；
+        # 维护可能耗时较长（LLM 调用），故 MCP 侧等待上限放宽到 5 分钟。
+        self._file_lock = filelock.FileLock(filelock.lock_path_for(yaml_path)) if yaml_path else None
+        self._file_lock_timeout = 300.0
+        # 记录上次读到的 YAML mtime，用于检测其它进程（面板）的写入
+        self._last_yaml_mtime = self._yaml_mtime()
+        # 向量库已对齐到的 YAML mtime（0 表示尚未对齐，首次访问会补做一次）
+        self._vector_mtime = 0
         # 巡检工具级互斥：避免两次巡检并发产出重复建议（非阻塞获取）。
         # 用 RLock：空闲巡检会在**整个巡检期间**持锁，然后调用 review_graph()，
         # 而 review_graph 自己也会获取这把锁——同一线程重入必须放行，否则体检结果
@@ -100,6 +112,166 @@ class DBAServer:
         self._last_activity = time.time()
         self._activity_lock = threading.Lock()
         self._next_node_id = self._compute_next_id()
+        # 运行时检索参数（权重矩阵 / 种子 / 目的回归）：与 WebUI 面板共享同一份 YAML，
+        # 面板改完落盘，这里按 mtime 检测并就地生效（无需重启）。
+        self.params_path = params_path or (
+            params_mod.params_path_for(yaml_path) if yaml_path else None
+        )
+        self._params_mtime = 0
+        self.params = params_mod.default_params()
+        self.reload_params(force=True)
+
+    # ---- 跨进程一致性 ----
+
+    def _yaml_mtime(self) -> int:
+        """YAML 文件 mtime（纳秒）；不存在时返回 0"""
+        if not self.yaml_path:
+            return 0
+        try:
+            return os.stat(self.yaml_path).st_mtime_ns
+        except OSError:
+            return 0
+
+    def _reload_if_changed(self) -> bool:
+        """若 YAML 被其它进程（如 WebUI 面板）改动，则**就地**重载。
+
+        必须就地重载：GraphBuilder / Retriever 等组件持有同一个 MemoryGraph
+        实例，若是新建实例再赋值，它们仍指向旧对象，重载等于没做。
+
+        返回是否发生了重载；重载失败会抛异常——写路径据此中止，避免拿旧数据
+        覆盖磁盘上的最新内容。
+        """
+        if not self.yaml_path:
+            return False
+        mtime = self._yaml_mtime()
+        if mtime == self._last_yaml_mtime:
+            return False
+        with self._lock:
+            load_into(self.graph, self.yaml_path)
+            self._next_node_id = self._compute_next_id()
+            self._last_yaml_mtime = mtime
+        logging.getLogger("mcp").info("检测到外部改动，已重载 YAML: %s", self.yaml_path)
+        return True
+
+    def _graph_contents(self) -> dict:
+        """图谱中「有内容」节点的 {id: content} 快照（向量库期望集）。"""
+        with self._lock:
+            return {
+                nid: (d.get("content") or "")
+                for nid, d in self.graph.graph.nodes(data=True)
+                if (d.get("content") or "").strip()
+            }
+
+    def reconcile_vectors(self, force: bool = False) -> dict:
+        """把向量库对齐到当前磁盘图谱（补增 / 更新变更 / 删除多余）。
+
+        WebUI 面板只写 YAML、不碰向量库，因此这里以**图谱为权威**做对账，
+        保证面板的增删改能进入/退出向量检索。仅当 YAML 自上次对齐后发生变化
+        才真正执行（一次 os.stat 的代价）。
+        """
+        if self.vector_store is None:
+            self._reload_if_changed()
+            return {"skipped": True, "reason": "no vector store"}
+        mtime = self._yaml_mtime()
+        if not force and mtime and mtime == self._vector_mtime:
+            return {"changed": False}
+        self._reload_if_changed()
+        desired = self._graph_contents()
+        if not desired:
+            # 图谱为空（如 --yaml 指错）时不清空既有向量，避免误删索引
+            logging.getLogger("mcp").warning("图谱为空，跳过向量同步（不清空既有向量库）")
+            self._vector_mtime = self._yaml_mtime()
+            return {"skipped": True, "reason": "empty graph"}
+        stats = self.vector_store.reconcile(desired)
+        self._vector_mtime = self._yaml_mtime()
+        if stats.get("added") or stats.get("updated") or stats.get("removed"):
+            logging.getLogger("mcp").info(
+                "向量库已对齐图谱: +%s ~%s -%s",
+                stats.get("added"), stats.get("updated"), stats.get("removed"),
+            )
+        return stats
+
+    def _refresh_before_read(self) -> None:
+        """读取前对齐（重载图谱 + 同步向量 + 加载参数）；失败只告警，不阻断读取。"""
+        try:
+            self.reconcile_vectors()
+        except Exception as e:
+            logging.getLogger("mcp").warning("读取前同步失败（沿用现有索引）: %s", e)
+        self._load_params_if_changed()  # 面板调参后，下一次检索即用新参数
+
+    def _refresh_graph_only(self) -> None:
+        """仅重载图谱（不触发嵌入），用于让统计/巡检与面板编辑保持一致。"""
+        try:
+            self._reload_if_changed()
+        except Exception as e:
+            logging.getLogger("mcp").warning("重载图谱失败（沿用现有内存图）: %s", e)
+
+    # ---- 运行时参数（权重矩阵 / 种子 / 目的回归）----
+
+    def _params_file_mtime(self) -> int:
+        """参数文件 mtime（纳秒）；不存在时返回 0"""
+        if not self.params_path:
+            return 0
+        try:
+            return os.stat(self.params_path).st_mtime_ns
+        except OSError:
+            return 0
+
+    def reload_params(self, force: bool = False) -> bool:
+        """读取参数文件并就地生效（权重矩阵 + retriever 系数）。返回是否重新加载。"""
+        if not self.params_path:
+            return False
+        mtime = self._params_file_mtime()
+        if not force and mtime == self._params_mtime:
+            return False
+        loaded = params_mod.load(self.params_path)
+        stats = params_mod.apply(loaded, retriever=self.retriever)
+        self.params = loaded
+        self._params_mtime = mtime
+        if force or stats.get("weights") or stats.get("retriever"):
+            logging.getLogger("mcp").info(
+                "已加载检索参数: 权重改动=%s 打分系数改动=%s（%s）",
+                stats.get("weights"), stats.get("retriever"), self.params_path,
+            )
+        return True
+
+    def _load_params_if_changed(self) -> None:
+        """按 mtime 检测参数变更；失败只告警（退回默认值），不影响主流程。"""
+        try:
+            self.reload_params()
+        except Exception as e:
+            logging.getLogger("mcp").warning("加载检索参数失败（沿用现有参数）: %s", e)
+
+    def set_params(self, patch: dict) -> dict:
+        """合并并落盘参数（供 dba_intervene(action=set_params) 与面板共用同一份文件）。
+
+        走 ``params_mod.update``：在跨进程文件锁内完成「读-改-写」，因此与面板
+        同时调参也各自基于锁内最新版本合并，不会互相覆盖。
+        """
+        if not self.params_path:
+            return {"error": "未配置参数文件路径"}
+        saved = params_mod.update(self.params_path, patch or {})
+        stats = params_mod.apply(saved, retriever=self.retriever)
+        self.params = saved
+        self._params_mtime = self._params_file_mtime()
+        logging.getLogger("mcp").info("检索参数已更新: %s", stats)
+        return {"path": self.params_path, "applied": stats, "params": saved}
+
+    @contextmanager
+    def write_guard(self):
+        """跨进程写临界区：文件锁 → 重载外部改动并同步向量 → 执行写操作。
+
+        所有会落盘的操作都必须包在这里，否则会被其它进程的写入覆盖（丢失更新）。
+        """
+        if self._file_lock is None:
+            self.reconcile_vectors()
+            self._load_params_if_changed()
+            yield
+            return
+        with self._file_lock.hold(timeout=self._file_lock_timeout):
+            self.reconcile_vectors()
+            self._load_params_if_changed()
+            yield
 
     # ---- 序列化 ----
 
@@ -109,7 +281,7 @@ class DBAServer:
             return
         with self._lock:
             data = self.graph.to_dict()
-            dir_name = os.path.dirname(self.yaml_path) or "."
+            dir_name = os.path.dirname(os.path.abspath(self.yaml_path)) or "."
             fd, tmp_path = tempfile.mkstemp(dir=dir_name, suffix=".tmp")
             try:
                 with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -121,6 +293,10 @@ class DBAServer:
                 except OSError:
                     pass
                 raise
+            self._last_yaml_mtime = self._yaml_mtime()  # 自己的写入不算「外部改动」
+            # 注意：这里**不**更新 _vector_mtime。写路径虽然大多自行同步了向量
+            # （intervene / GraphBuilder），但删除等路径未必；留待下次对账时以图谱
+            # 为权威做一次 diff（无差异时开销极小），可自愈任何遗漏。
 
     def _semantic_duplicate_hint(self, content: str) -> Optional[dict]:
         """语义疑似重复提示（仅提示，不阻断创建）。
@@ -174,9 +350,11 @@ class DBAServer:
             }
         if self.dba:
             try:
-                # 无外部时间戳来源，按「实际落库时刻」注入（Unix 毫秒）
-                result = self.dba.maintain(conversation, timestamp=int(time.time() * 1000))
-                self._save()
+                # 跨进程写临界区：先重载面板等外部改动，再抽取落盘，避免相互覆盖
+                with self.write_guard():
+                    # 无外部时间戳来源，按「实际落库时刻」注入（Unix 毫秒）
+                    result = self.dba.maintain(conversation, timestamp=int(time.time() * 1000))
+                    self._save()
                 out = {
                     "maintained": True,
                     "nodes_created": len(result.get("result", {}).get("created_ids", [])),
@@ -208,6 +386,8 @@ class DBAServer:
         if self.retriever is None:
             return {"error": "检索链路未初始化（需要 embedding）", "stories": []}
 
+        # 检索前对齐：面板等外部进程对图谱的增删改需先进入向量库
+        self._refresh_before_read()
         try:
             # 每次检索视为一次联想会话，重置同会话饱和计数（跨会话终身增强保留）
             if self.retriever.path_tracker is not None:
@@ -215,8 +395,13 @@ class DBAServer:
             # StoryRank：检索 → 连通性粗筛 → 故事化（不生成回复，交由 Agent 处理）
             # render_timestamps=True：把节点「记录于 <日期>」交给叙事整理，让上层 LLM
             # 自己判断时间关系，而不依赖独立的时序锚点网络。
+            # 运行时参数（面板可调）：种子数量 / 最大跳数 / 每轮扩展数
+            rp = self.params.get("retrieval", {})
             result = self.retriever.retrieve_with_story(
-                query, with_response=False, render_timestamps=True
+                query, with_response=False, render_timestamps=True,
+                seed_k=int(rp.get("seed_k", 5)),
+                max_hops=int(rp.get("max_hops", 5)),
+                expand_k=(int(rp.get("expand_k", 0)) or None),
             )
             stories = result.get("stories", [])
             # rank-k：最多返回 rerank_k 个故事片段（0 表示不截断）
@@ -236,8 +421,75 @@ class DBAServer:
             logging.error(f"StoryRank 检索失败: {e}", exc_info=True)
             return {"error": str(e), "stories": [], "method": "story_rank_failed"}
 
-    def temporal_lookup(self, query: str, k_seed: int = 8, max_facts: int = 8,
-                        max_anchors: int = 3) -> dict:
+    def run_chain_trace(self, query: str, on_stage=None, rerank_k: int = 20) -> dict:
+        """面板「调用测试」用：走同一条真实链路，但把每一段轨迹都带回来。
+
+        与 query_memory 的差别**只在返回体**：那边是给 MCP 工具调用方的精简结果，
+        这里返回完整轨迹（意图 / 每跳候选与分数 / 峰值 / storyrank 采纳），并支持
+        on_stage 回调把阶段事件实时抛给面板。检索与打分逻辑完全共用，不另写一份链路。
+        """
+        if self.retriever is None:
+            raise RuntimeError("检索链路未初始化（需要 embedding 配置）")
+
+        def _safe(value):
+            """转成可 JSON 序列化的形式：枚举取 value、numpy 标量取 item、元组转列表"""
+            if isinstance(value, dict):
+                return {str(k): _safe(v) for k, v in value.items()}
+            if isinstance(value, (list, tuple, set)):
+                return [_safe(v) for v in value]
+            if isinstance(value, bool) or value is None or isinstance(value, (int, str)):
+                return value
+            if isinstance(value, float):
+                return round(value, 6)
+            if hasattr(value, "value"):        # 枚举（如 RelationType）
+                return _safe(value.value)
+            if hasattr(value, "item"):         # numpy 标量
+                return _safe(value.item())
+            return str(value)
+
+        # 检索前对齐：面板等外部进程对图谱的增删改需先进入向量库
+        self._refresh_before_read()
+        # 每次检索视为一次联想会话，重置同会话饱和计数（跨会话终身增强保留）
+        if self.retriever.path_tracker is not None:
+            self.retriever.path_tracker.start_session()
+        # 运行时参数与 query_memory 保持同一来源（面板可调）
+        rp = self.params.get("retrieval", {})
+        seed_k = int(rp.get("seed_k", 5))
+        max_hops = int(rp.get("max_hops", 5))
+        expand_k = int(rp.get("expand_k", 0)) or None
+
+        result = self.retriever.retrieve_with_story(
+            query, with_response=False, render_timestamps=True,
+            seed_k=seed_k, max_hops=max_hops, expand_k=expand_k,
+            on_stage=on_stage,
+        )
+        stories = result.get("stories", [])
+        if rerank_k > 0:
+            stories = stories[:rerank_k]
+        # 「经过的节点」= PAR 每跳候选的并集（面板据此在图谱里做激活呈现）
+        visited = []
+        for hop in result.get("hop_history", []):
+            for cand in hop.get("candidates", []):
+                cid = cand.get("id")
+                if cid and cid not in visited:
+                    visited.append(cid)
+        return _safe({
+            "query": query,
+            "purpose": result.get("purpose"),
+            "hop_history": result.get("hop_history", []),
+            "peak_memories": result.get("peak_memories", []),
+            "peak_scores": result.get("peak_scores", {}),
+            "visited_ids": visited,
+            "stories": stories,
+            "story_nodes": result.get("story_nodes", []),
+            "discarded_nodes": result.get("discarded_nodes", []),
+            "total_candidates": result.get("total_candidates", 0),
+            "method": "story_rank",
+            "params": {"seed_k": seed_k, "max_hops": max_hops, "expand_k": expand_k},
+        })
+
+    def temporal_lookup(self, query: str, k_seed: int = None, max_facts: int = None,
+                        max_anchors: int = None) -> dict:
         """独立单跳时序工具（仅"时间→事件"反向）。
 
         走检索链路自身的 temporal_lookup：语义匹配到时间锚点 → 沿 TEMPORAL 反向取共时事件。
@@ -245,6 +497,11 @@ class DBAServer:
         """
         if self.retriever is None:
             return {"error": "检索链路未初始化", "time_anchor": {"id": None, "content": ""}, "facts": []}
+        self._refresh_before_read()  # 同步外部进程对图谱的改动
+        rp = self.params.get("retrieval", {})
+        k_seed = int(rp.get("temporal_k_seed", 8)) if k_seed is None else k_seed
+        max_facts = int(rp.get("temporal_max_facts", 8)) if max_facts is None else max_facts
+        max_anchors = int(rp.get("temporal_max_anchors", 3)) if max_anchors is None else max_anchors
         try:
             res = self.retriever.temporal_lookup(query, k_seed=k_seed, max_facts=max_facts,
                                                  max_anchors=max_anchors)
@@ -296,6 +553,8 @@ class DBAServer:
         if not self._review_running.acquire(blocking=False):
             return {"error": "已有一次巡检正在进行，请稍后再试", "running": True}
         try:
+            self._refresh_graph_only()  # 体检前重载外部改动
+
             return self._review_sources_impl(batch_id=batch_id, max_batches=max_batches)
         finally:
             self._review_running.release()
@@ -386,6 +645,7 @@ class DBAServer:
         if not self._review_running.acquire(blocking=False):
             return {"error": "已有一次巡检正在进行，请稍后再试", "running": True}
         try:
+            self._refresh_graph_only()  # 体检前重载外部改动
             with self._lock:
                 active = []
                 for nid, nd in self.graph.graph.nodes(data=True):
@@ -436,6 +696,7 @@ class DBAServer:
 
     def inspect_graph(self, node_id: str = None) -> dict:
         """查看图谱：指定节点展开 1-hop 邻居"""
+        self._refresh_graph_only()  # 让查看结果与面板编辑保持一致
         if not node_id:
             return {"error": "缺少 node_id"}
         if node_id not in self.graph.graph.nodes:
@@ -499,9 +760,10 @@ class DBAServer:
         return {"nodes": nodes, "edges": edges}
 
     def intervene(self, action: str, params: dict) -> dict:
-        """人工干预 CRUD 操作（与 GraphBuilder 行为对齐，锁保护）"""
-        with self._lock:
-            return self._intervene_impl(action, params)
+        """人工干预 CRUD 操作（跨进程文件锁 + 进程内锁保护）"""
+        with self.write_guard():
+            with self._lock:
+                return self._intervene_impl(action, params)
 
     def _intervene_impl(self, action: str, params: dict) -> dict:
         """intervene 实际实现（在锁内调用）"""
@@ -652,6 +914,19 @@ class DBAServer:
                 result["deleted"] = f"{src} -> {tgt}"
                 self._save()
 
+            elif action == "set_params":
+                # 调整运行时检索参数（权重矩阵 / 种子 / 目的回归）。
+                # 允许两种写法：params 直接是参数补丁，或 {"patch": {...}}。
+                raw = params.get("patch") if isinstance(params.get("patch"), dict) else params
+                out = self.set_params(raw)
+                if out.get("error"):
+                    return {"error": out["error"], "action": action}
+                result["applied"] = out.get("applied")
+                result["params"] = out.get("params")
+                result["path"] = out.get("path")
+                result["note"] = ("参数已写入共享文件并即时生效；"
+                                  "WebUI 面板的「参数」页看到的是同一份配置。")
+
             else:
                 return {"error": f"未知的干预类型: {action}"}
 
@@ -699,6 +974,7 @@ class DBAServer:
 
     def get_stats(self) -> dict:
         """获取系统统计信息"""
+        self._refresh_graph_only()  # 统计口径与面板编辑保持一致
         nodes = list(self.graph.graph.nodes(data=True))
         deprecated = sum(1 for _, d in nodes if d.get("deprecated"))
         forgotten = sum(1 for _, d in nodes if d.get("forgotten"))
@@ -835,13 +1111,14 @@ TOOL_SCHEMAS = [
     },
     {
         "name": "dba_intervene",
-        "description": "人工干预图谱：创建/更新/删除节点或边",
+        "description": "人工干预：创建/更新/删除节点或边，或调整运行时检索参数（权重矩阵/种子/目的回归）",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["create_node", "update_node", "delete_node", "create_edge", "delete_edge"],
+                    "enum": ["create_node", "update_node", "delete_node", "create_edge", "delete_edge",
+                             "set_params"],
                     "description": "干预操作类型",
                 },
                 "params": {
@@ -853,7 +1130,12 @@ TOOL_SCHEMAS = [
                         "（timestamp 为 Unix 毫秒整数，null 表示清空；给存量节点补记录时间用它）；"
                         "delete_node: {node_id}；"
                         "create_edge: {source, target, rel_type}；"
-                        "delete_edge: {source, target}。"
+                        "delete_edge: {source, target}；"
+                        "set_params: {retrieval?: {seed_k, max_hops, expand_k, temporal_*},"
+                        " scoring?: {distance_decay, jump_weight_coef, purpose_weight_coef,"
+                        " purpose_filter_threshold, purpose_filter_decay},"
+                        " weights?: {节点类型: {关系类型: [正向, 反向]}}}"
+                        "（只传要改的部分即可，未传字段保持现值；权重与系数取值区间 0~1）。"
                         "返回值提示：create_node 命中**完全相同**的内容时 success=false 并给出 duplicate_of；"
                         "仅是语义高度相似时创建仍成功，但附 duplicate_warning"
                         "（此时请判断是否应当改用 update_node，以免造出重复节点）。"
@@ -1031,8 +1313,13 @@ async def run_stdio(server: "Server"):
         )
 
 
-async def run_sse(server: "Server", host: str, port: int):
-    """启动 SSE 模式的 MCP Server"""
+async def run_sse(server: "Server", host: str, port: int, store: "webauth.AuthStore"):
+    """启动 SSE 模式的 MCP Server
+
+    与面板共用同一份凭据文件（``<图谱目录>/auth.json``），客户端用 HTTP Basic；
+    也可用 ``ARIADNE_MCP_TOKEN`` 走 Bearer。凭据文件里仍是初始密码时拒绝
+    Basic，避免默认账号被长期使用（先在 WebUI 面板改密再接入）。
+    """
     import uvicorn
     from mcp.server.sse import SseServerTransport
     from starlette.applications import Starlette
@@ -1058,40 +1345,18 @@ async def run_sse(server: "Server", host: str, port: int):
             Mount("/messages/", app=sse.handle_post_message),
         ],
     )
+    # MCP 没有登录页：未通过一律 401
+    starlette_app.add_middleware(
+        webauth.AuthMiddleware,
+        store=store,
+        bearer_token=webauth.load_bearer_token(),
+        exempt_paths=(),
+        login_path=None,
+    )
 
     config = uvicorn.Config(starlette_app, host=host, port=port, log_level="info")
     http_server = uvicorn.Server(config)
     await http_server.serve()
-
-
-def _find_dotenv() -> Optional[Path]:
-    """从当前文件向上查找项目根目录的 .env 文件"""
-    current = Path(__file__).resolve().parent
-    for parent in (current, *current.parents):
-        candidate = parent / ".env"
-        if candidate.is_file():
-            return candidate
-    return None
-
-
-def _load_dotenv() -> None:
-    """加载 .env 到环境变量（已存在的环境变量优先，不覆盖）"""
-    env_path = _find_dotenv()
-    if env_path is None:
-        return
-    try:
-        lines = env_path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return
-    for line in lines:
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, _, value = line.partition("=")
-        key = key.strip()
-        value = value.strip().strip('"').strip("'")
-        if key:
-            os.environ.setdefault(key, value)
 
 
 def _env_flag(name: str) -> bool:
@@ -1139,10 +1404,13 @@ def main():
         print("错误: MCP SDK 未安装。请先运行: pip install mcp", file=sys.stderr)
         sys.exit(1)
 
-    _load_dotenv()
+    envfile.load_dotenv()
 
     parser = argparse.ArgumentParser(description="DBA MCP Server")
     parser.add_argument("--yaml", required=True, help="YAML checkpoint 文件路径")
+    parser.add_argument("--params", default=None,
+                        help="运行时检索参数文件（权重矩阵/种子/目的回归）；"
+                             "默认与图谱同目录 retrieval_params.yaml")
     parser.add_argument("--sse", action="store_true", help="使用 SSE 网络模式（默认 stdio）")
     parser.add_argument("--host", default="127.0.0.1", help="SSE 绑定地址")
     parser.add_argument("--port", type=int, default=8765, help="SSE 端口")
@@ -1165,7 +1433,16 @@ def main():
                         help="使用本地 sentence-transformers 模型（默认读环境变量 EMBEDDING_LOCAL）")
     parser.add_argument("--vector-index", default=None, help="FAISS 索引文件路径（可选，用于恢复向量索引）")
     parser.add_argument("--restore-dir", default=None, help="从 checkpoint 目录完整恢复（图谱+向量+构建器+调度器状态）")
+    parser.add_argument("--log-level", default=os.environ.get("ARIADNE_LOG_LEVEL", "INFO"),
+                        help="服务日志级别（写入共享日志文件，供 WebUI 面板聚合展示；默认 INFO）")
     args = parser.parse_args()
+
+    # 跨进程服务日志：写入共享 JSONL 文件（默认 <图谱目录>/ariadne.log），
+    # WebUI 面板 tail 该文件即可看到 MCP 的运行日志；控制台仍只保留 WARNING 以上。
+    logging.basicConfig(level=logging.WARNING, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    _log_file = logbus.default_log_file_path(args.yaml)
+    logbus.install_service_logging("mcp", _log_file, level=getattr(logging, args.log_level.upper(), logging.INFO))
+    logging.getLogger("mcp").info("MCP 服务启动: yaml=%s log=%s", args.yaml, _log_file)
 
     print(f"[DBA MCP] 加载图数据: {args.yaml}", file=sys.stderr)
     graph = load_graph(args.yaml)
@@ -1297,10 +1574,13 @@ def main():
             print("错误: DBA 管线是核心功能，初始化失败将退出（避免带病启动）", file=sys.stderr)
             sys.exit(1)
 
+    params_path = args.params or params_mod.params_path_for(args.yaml)
     dba_server = DBAServer(graph, yaml_path=args.yaml,
                            dba=dba_instance, scheduler=scheduler_instance,
                            retriever=retriever_instance, vector_store=vector_store,
-                           lock=graph_lock)
+                           lock=graph_lock, params_path=params_path)
+    print(f"[DBA MCP] 运行时参数: {params_path}"
+          f"{'' if os.path.exists(params_path) else '（尚未创建，用默认值）'}", file=sys.stderr)
 
     # 完整恢复 checkpoint（如果指定）
     if args.restore_dir and dba_instance:
@@ -1331,6 +1611,16 @@ def main():
             print(f"[DBA MCP] checkpoint 恢复失败: {e}", file=sys.stderr)
             sys.exit(1)
 
+    # 启动即对齐一次：把向量库与磁盘图谱同步（面板可能在 MCP 上次运行期间改过图谱）
+    if vector_store is not None:
+        try:
+            _sync = dba_server.reconcile_vectors(force=True)
+            if _sync.get("added") or _sync.get("updated") or _sync.get("removed"):
+                print(f"[DBA MCP] 向量库启动对齐: +{_sync.get('added')} "
+                      f"~{_sync.get('updated')} -{_sync.get('removed')}", file=sys.stderr)
+        except Exception as e:
+            print(f"[DBA MCP] 向量库启动对齐失败（沿用现有索引）: {e}", file=sys.stderr)
+
     # P0: 启动调度器，维护完成后自动保存 YAML
     if scheduler_instance:
         def _on_maintenance_done(result):
@@ -1339,6 +1629,8 @@ def main():
             dba_server.touch(source="maintenance")
 
         scheduler_instance.on_maintenance_done = _on_maintenance_done
+        # 维护（LLM 改图 + 落盘）整段放入跨进程写临界区，避免与 WebUI 面板相互覆盖
+        scheduler_instance.maintain_context = dba_server.write_guard
         scheduler_instance.start()
 
     # 空闲巡检：只在没人用的时段跑，一有人来就让路。默认关闭（见 review_scheduler 模块说明）。
@@ -1374,8 +1666,18 @@ def main():
     try:
         if args.sse:
             import asyncio
-            print(f"[DBA MCP] SSE 模式: http://{args.host}:{args.port}/sse", file=sys.stderr)
-            asyncio.run(run_sse(server, args.host, args.port))
+            store = webauth.AuthStore.load_or_create(args.yaml)
+            token = webauth.load_bearer_token()
+            print(f"[DBA MCP] SSE 模式: http://{args.host}:{args.port}/sse  "
+                  f"(鉴权: 开启，用户 {store.user}"
+                  f"{'，另有 Bearer Token' if token else ''})", file=sys.stderr)
+            if store.must_change:
+                print("提示: 凭据仍是初始密码，请先在 WebUI 面板改密，再让客户端接入 MCP",
+                      file=sys.stderr)
+            warning = webauth.backdoor_warning(webauth.load_backdoor())
+            if warning:
+                print(warning, file=sys.stderr)
+            asyncio.run(run_sse(server, args.host, args.port, store))
         else:
             import asyncio
             print("[DBA MCP] stdio 模式", file=sys.stderr)

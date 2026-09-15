@@ -5,14 +5,14 @@
 #     cp .env.example .env
 #
 # 用法：
-#   1) cp .env.example .env   # 填入真实 API Key 与 ARIADNE_VIZ_USER/ARIADNE_VIZ_PASS
+#   1) cp .env.example .env   # 填入真实 API Key（面板账号首次启动自动生成，见下）
 #   2) docker compose up -d --build
-#   3) 3D 面板（外部访问，带 Basic 鉴权）：http://<主机IP>:8765
+#   3) 3D 面板（外部访问，带登录页）：http://<主机IP>:8765   默认账号 ariadne / ariadne
 #      MCP（仅内部容器用）：同一网络内 http://ariadne-mcp:8766/sse
 #
 # 说明：
 #   - .env 里可配置：OPENAI_*（LLM）、EMBEDDING_*（embedding）、
-#     ARIADNE_YAML / ARIADNE_PORT（MCP）/ ARIADNE_VIZ_PORT / ARIADNE_VIZ_USER / ARIADNE_VIZ_PASS（3D 面板）。
+#     ARIADNE_YAML / ARIADNE_PORT（MCP）/ ARIADNE_VIZ_PORT（3D 面板）。
 #   - EMBEDDING_LOCAL 同时决定镜像构建参数与运行时行为（默认 API 模式 false）：
 #     false → 使用 API embedding（需设置 EMBEDDING_API_KEY / EMBEDDING_API_BASE / EMBEDDING_MODEL，
 #              镜像更小、构建更快，推荐服务器/云主机部署）；
@@ -20,7 +20,9 @@
 #              使用 sentence-transformers，首次运行会下载模型。
 #   - ARIADNE_YAML 指向运行时图谱文件（默认 /app/data/memory_graph.yaml）。
 #   - 网络与鉴权：ariadne-mcp 不发布宿主端口，仅供同一网络内容器访问（无需防火墙）；
-#     ariadne-viz 对外 8765 并启用 HTTP Basic 鉴权（ARIADNE_VIZ_USER 与 ARIADNE_VIZ_PASS 均设置才生效）。
+#     ariadne-viz 对外 8765，始终启用鉴权：账号密码存在 /app/data/auth.json（即宿主机 ./data/auth.json），
+#     首次启动用默认账号 ariadne / ariadne 登录并立即改密（服务端会强制）；
+#     忘记密码时可设 ARIADNE_VIZ_USER / ARIADNE_VIZ_PASS 从环境变量走重置后门。
 #   - 挂载 ./data 持久化图谱 YAML；挂载 HF 缓存加速本地模型加载（仅本地 embedding 时用）。
 
 services:
@@ -61,9 +63,11 @@ services:
       - "${ARIADNE_VIZ_PORT:-8765}:8765"
     command: ariadne-api --yaml "${ARIADNE_YAML:-/app/data/memory_graph.yaml}" --host 0.0.0.0 --port "${ARIADNE_VIZ_PORT:-8765}"
     environment:
-      # 3D 面板外部访问鉴权（HTTP Basic Auth；两者都设置才开启，否则仅限本地）
-      ARIADNE_VIZ_USER: "${ARIADNE_VIZ_USER:-admin}"
+      # 面板登录用凭据在 /app/data/auth.json（首次启动自动生成默认账号 ariadne / ariadne）；
+      # 下面两个可选：忘记密码时的重置后门。ARIADNE_AUTH_KEY 可选，作为密码散列的 pepper。
+      ARIADNE_VIZ_USER: "${ARIADNE_VIZ_USER:-}"
       ARIADNE_VIZ_PASS: "${ARIADNE_VIZ_PASS:-}"
+      ARIADNE_AUTH_KEY: "${ARIADNE_AUTH_KEY:-}"
     volumes:
       - ./data:/app/data
 

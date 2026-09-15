@@ -147,16 +147,20 @@ python start_all.py --yaml data/sample_graph.yaml
 
 > Override default ports/address with `--api-port` / `--mcp-port` / `--host`; `Ctrl+C` stops both services.
 
-### Entry 1: 3D visualization panel
+### Entry 1: 3D visualization WebUI
 
-View in the browser and perform manual CRUD:
+View in the browser, perform manual CRUD, and inspect observability data:
 
 ```bash
 ariadne-api --yaml data/sample_graph.yaml --port 8765
 # open http://127.0.0.1:8765
 ```
 
-Features: 3D force-directed graph, layer filtering, focus mode, fuzzy search, CRUD panel, with changes written back to YAML automatically.
+Features:
+
+- **Graph**: 3D force-directed graph (per-role shapes/colors, labels, highlight, focus, fuzzy search), layer filtering with presets, node/edge CRUD (auto-written back to YAML, with undo). Concurrent writes with MCP are serialized via a cross-process file lock (`<yaml>.lock`), so neither side overwrites the other; panel edits are reconciled into the vector index by MCP before retrieval (graph acts as the authority).
+- **Observability**: metrics overview (graph size/orphans/requests/uptime), operation log viewer (LLM + DBA, filterable), runtime logs (in-process logging plus aggregated shared logs from MCP and other processes via `ARIADNE_LOG_FILE`), live log stream (SSE).
+- **Settings**: rendering/layout parameters (quality preset, forces, labels, background; persisted in the browser), filter preset management, read-only server config, graph YAML and oplog import/export.
 
 ### Entry 2: MCP server
 
@@ -170,7 +174,7 @@ ariadne-mcp --yaml data/sample_graph.yaml \
 
 ### Entry 3: Offline HTML
 
-Generate a self-contained visualization page without a server:
+Generate a self-contained visualization page without a server (reuses the WebUI frontend, read-only mode):
 
 ```bash
 ariadne-render --yaml data/sample_graph.yaml -o output.html
@@ -416,10 +420,12 @@ edges:
     │   └── inference.py
     ├── retrieval/                  # PAR retrieval + StoryRank
     │   └── retriever.py
-    ├── viz/                        # API server, 3D rendering, export
-    │   ├── api_server.py
-    │   ├── renderer.py
-    │   └── exporter.py
+    ├── viz/                        # WebUI server, static frontend, log bus, export
+    │   ├── api_server.py           # Starlette REST + SSE server
+    │   ├── logbus.py               # app-log capture + oplog tail + SSE fan-out
+    │   ├── renderer.py             # offline self-contained HTML
+    │   ├── exporter.py
+    │   └── static/                 # WebUI frontend (index.html / css / js)
     ├── mcp_server.py               # MCP server entry point
     └── loader.py                   # graph / query loading
 ```

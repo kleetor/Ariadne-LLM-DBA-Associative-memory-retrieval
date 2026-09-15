@@ -148,16 +148,39 @@ python start_all.py --yaml data/sample_graph.yaml
 
 > 可用 `--api-port` / `--mcp-port` / `--host` 覆盖默认端口与地址；`Ctrl+C` 同时停止两个服务。
 
-### 入口一：3D 可视化面板
+### 入口一：3D 可视化 WebUI
 
-浏览器查看 + 手动 CRUD：
+浏览器查看 + 手动 CRUD + 可观测性：
 
 ```bash
 ariadne-api --yaml data/sample_graph.yaml --port 8765
 # 浏览器打开 http://127.0.0.1:8765
 ```
 
-功能：3D 力导向图、图层过滤、聚焦模式、模糊搜索、CRUD 面板，操作自动写回 YAML。
+功能：
+
+- **图谱**：3D 力导向图（按角色形状/配色、标签、高亮、聚焦、模糊搜索）、图层过滤与过滤预设、节点/边 CRUD（操作自动写回 YAML，支持撤销）。与 MCP 并发写入通过跨进程文件锁（`<yaml>.lock`）串行化「读-改-写」，不会相互覆盖；面板对图谱的增删改会由 MCP 在检索前自动对账到向量索引（以图谱为权威）。
+- **可观测**：指标概览（图规模/孤立/请求/运行时长）、操作日志查看器（LLM + DBA，可筛选）、运行日志（面板进程内 logging + MCP 等其它进程的共享日志聚合，见 `ARIADNE_LOG_FILE`）、实时日志流（SSE 推送）。
+- **设置**：渲染与布局参数（性能档位/力导向/标签/背景等，浏览器本地持久化）、过滤预设管理、服务端配置只读查看、图谱 YAML 与操作日志导入导出。
+
+#### 鉴权
+
+面板与 MCP SSE **始终鉴权**，共用同一份凭据文件 `<图谱目录>/auth.json`（随机盐 + PBKDF2-HMAC-SHA256 散列，不可逆；已加入 `.gitignore`）。首次启动自动创建默认账号：
+
+```text
+ariadne / ariadne
+```
+
+- **首次登录必须改密**：用初始密码（或重置后门）登录后，除改密相关接口外的请求一律 403，前端会自动跳到 `/login?mode=change`。
+- **浏览器**：访问受保护页面会 302 到 `/login`，登录成功后下发 7 天有效的签名会话 Cookie（HttpOnly + SameSite=Lax）；顶栏显示当前用户（点击即改密）与登出按钮。登录失败按来源 IP 限速（5 次 / 5 分钟）。
+- **改密**：登录页 `/login?mode=change`（顶栏用户名 / 登出按钮旁边进入），可同时改用户名；新密码至少 8 位。
+- **脚本 / 第三方客户端**：可直接用 HTTP Basic 调 API，无需走登录页；MCP 还可用 `ARIADNE_MCP_TOKEN` 走 `Authorization: Bearer`。初始密码未修改前 Basic 会被拒（避免绕过强制改密）。
+- **MCP SSE**（`--sse`）同样受保护：无凭据连接返回 401，客户端可用 `http://user:pass@host:port/sse` 或 Bearer 头。
+- **忘记密码**：用 `.env` 里的 `ARIADNE_VIZ_USER` / `ARIADNE_VIZ_PASS` 登录（重置后门，登录后强制改密），重置完建议把这两行从 `.env` 删掉——它不是日常校验凭据。
+- **可选 pepper**：设置 `ARIADNE_AUTH_KEY` 后它参与散列且只存在环境里，`auth.json` 泄漏也无法离线爆破。注意设置后不要随意更改，否则原密码无法校验（走上面的重置后门重设即可）。
+- 会话签名密钥默认自动生成在 `<图谱目录>/.ariadne_secret`，也可用 `ARIADNE_SECRET_KEY` 显式指定；密钥不变则重启后登录态保留。
+
+无需鉴权的只有 `/api/health`（探活）与登录流程本身（`/login`、`/api/login`、`/api/logout`、登录页图标）。
 
 ### 入口二：MCP Server
 
@@ -171,7 +194,7 @@ ariadne-mcp --yaml data/sample_graph.yaml \
 
 ### 入口三：离线 HTML
 
-无需服务器，直接生成自包含可视化页面：
+无需服务器，直接生成自包含可视化页面（复用 WebUI 前端，只读模式）：
 
 ```bash
 ariadne-render --yaml data/sample_graph.yaml -o output.html
@@ -417,10 +440,12 @@ edges:
     │   └── inference.py
     ├── retrieval/                  # PAR 检索 + StoryRank
     │   └── retriever.py
-    ├── viz/                        # API Server、3D 渲染、导出
-    │   ├── api_server.py
-    │   ├── renderer.py
-    │   └── exporter.py
+    ├── viz/                        # WebUI 服务端、静态前端、日志总线、渲染、导出
+    │   ├── api_server.py           # Starlette REST + SSE 服务
+    │   ├── logbus.py               # 应用日志捕获 + 操作日志 tail + SSE 分发
+    │   ├── renderer.py             # 离线自包含 HTML 生成
+    │   ├── exporter.py
+    │   └── static/                 # WebUI 前端（index.html / css / js）
     ├── mcp_server.py               # MCP Server 入口
     └── loader.py                   # 图 / 查询加载
 ```

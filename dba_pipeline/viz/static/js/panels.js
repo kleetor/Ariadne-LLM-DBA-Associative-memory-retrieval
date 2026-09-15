@@ -11,6 +11,171 @@
   const undoStack = [];
   const MAX_UNDO = 50;
 
+  // ---- 图谱库：面板内切换与管理（不涉及 MCP）+ 按需载入 MCP ----
+  // 库 = 图谱目录下的 *.yaml。切换只影响本面板；要让 MCP 跟随必须显式点「载入 MCP」。
+
+  const graphLib = {
+    data: null,
+
+    async load() {
+      if (!A.api.isLive) return null;
+      try {
+        this.data = await A.api.getGraphs();
+      } catch (e) {
+        this.data = { error: e.message || String(e) };
+      }
+      // 状态栏始终反映面板当前图谱（与设置抽屉是否打开无关）
+      if (this.data && this.data.current) setStatus('stat-graph', this.data.current);
+      renderGraphLib(this.data);
+      return this.data;
+    },
+  };
+
+  function renderGraphLib(d) {
+    const box = $('graph-lib');
+    const stateBox = $('graph-mcp-state');
+    if (!box) return;
+    if (!d) { box.innerHTML = '<div class="hint">尚未加载。</div>'; return; }
+    if (d.error) {
+      box.innerHTML = '<div class="hint error">加载失败：' + U.escapeHtml(d.error) + '</div>';
+      return;
+    }
+    box.innerHTML = '';
+    box.appendChild(el('div', { class: 'hint', text: '目录：' + (d.dir || '-') }));
+    const list = el('div', { class: 'graph-list' });
+    const graphs = d.graphs || [];
+    graphs.forEach(function (g) { list.appendChild(graphRow(g)); });
+    if (!graphs.length) list.appendChild(el('div', { class: 'hint', text: '该目录下没有图谱文件。' }));
+    box.appendChild(list);
+    renderMcpApply(stateBox, d.mcp || {});
+  }
+
+  function graphRow(g) {
+    const row = el('div', { class: 'graph-row' + (g.current ? ' current' : '') });
+    row.appendChild(el('div', { class: 'graph-meta' }, [
+      el('div', { class: 'graph-name', text: g.name + (g.current ? '（面板当前）' : '') }),
+      el('div', { class: 'graph-sub', text: g.nodes + ' 节点 · ' + U.fmtBytes(g.size_bytes) + ' · ' + g.mtime }),
+    ]));
+    const acts = el('div', { class: 'graph-acts' });
+    if (!g.current) {
+      acts.appendChild(el('button', {
+        class: 'btn small', text: '切换',
+        onclick: function () { switchGraphTo(g.name); },
+      }));
+    }
+    acts.appendChild(el('a', {
+      class: 'btn small', href: A.api.exportGraphUrl(g.name), download: '', text: '导出',
+    }));
+    acts.appendChild(el('button', {
+      class: 'btn small', text: '载入 MCP',
+      onclick: function () { activateMcpGraph(g.name); },
+    }));
+    if (!g.current) {
+      acts.appendChild(el('button', {
+        class: 'btn small danger', text: '删除',
+        onclick: function () { removeGraph(g.name); },
+      }));
+    }
+    row.appendChild(acts);
+    return row;
+  }
+
+  function renderMcpApply(box, m) {
+    if (!box) return;
+    if (!m.active) {
+      box.className = 'mcp-apply';
+      box.textContent = 'MCP 还没收到过切换请求，仍在使用它启动时指定的图谱。';
+      return;
+    }
+    const pending = (m.generation || 0) > (m.applied_generation || 0);
+    box.className = 'mcp-apply ' + (m.status === 'error' ? 'error' : pending ? 'warn' : 'ok');
+    const parts = ['MCP 目标：' + m.active];
+    if (pending) parts.push('等待 MCP 应用（第 ' + m.generation + ' 代）');
+    else if (m.status === 'error') parts.push('应用失败：' + (m.detail || '未知原因'));
+    else if (m.status === 'ok') parts.push('已应用 ' + U.fmtTime(m.applied_at));
+    const g = m.graph || {};
+    if (g.nodes !== undefined && g.nodes !== null) parts.push(g.nodes + ' 节点 / ' + g.edges + ' 边');
+    const v = m.vector || {};
+    if (v.rebuilt) {
+      parts.push('向量重建 +' + (v.added || 0) + ' ~' + (v.updated || 0) + ' -' + (v.removed || 0));
+    }
+    box.textContent = parts.join(' · ');
+  }
+
+  async function switchGraphTo(name) {
+    if (!window.confirm('切换到「' + name + '」？之后面板的增删改都会写入该文件。')) return;
+    try {
+      const res = await A.api.switchGraph(name);
+      U.toast('已切换到 ' + name + '（' + res.nodes + ' 节点 / ' + res.edges + ' 边）', 'ok');
+      setStatus('stat-graph', name);
+      await ctx.reloadGraph(null);
+      await graphLib.load();
+    } catch (e) {
+      U.toast('切换失败：' + e.message, 'error');
+    }
+  }
+
+  async function activateMcpGraph(name) {
+    if (!window.confirm('让 MCP 切换到「' + name + '」？\n' +
+      '它会清空并重建检索用的向量索引，大图可能耗时较久。')) return;
+    try {
+      await A.api.activateMcpGraph(name);
+      U.toast('已通知 MCP 切换，正在等待它应用', 'ok');
+      await graphLib.load();
+      watchMcpApply();
+    } catch (e) {
+      U.toast('请求失败：' + e.message, 'error');
+    }
+  }
+
+  // MCP 应用要重建向量，可能几十秒；轮询到不再 pending 就停
+  let mcpApplyTimer = 0;
+
+  function watchMcpApply() {
+    clearInterval(mcpApplyTimer);
+    let ticks = 0;
+    mcpApplyTimer = setInterval(async function () {
+      ticks += 1;
+      const d = await graphLib.load();
+      const m = (d && d.mcp) || {};
+      const pending = (m.generation || 0) > (m.applied_generation || 0);
+      if (!pending || ticks > 100 || shell.activeTab !== 'settings') clearInterval(mcpApplyTimer);
+    }, 3000);
+  }
+
+  async function removeGraph(name) {
+    if (!window.confirm('删除「' + name + '」？此操作不可撤销。')) return;
+    try {
+      await A.api.deleteGraph(name);
+      U.toast('已删除 ' + name, 'ok');
+      await graphLib.load();
+    } catch (e) {
+      U.toast('删除失败：' + e.message, 'error');
+    }
+  }
+
+  function importGraphFile() {
+    const file = el('input', { type: 'file', accept: '.yaml,.yml' });
+    file.addEventListener('change', function () {
+      const f = file.files[0];
+      if (!f) return;
+      const reader = new FileReader();
+      reader.onload = async function () {
+        const name = window.prompt('新图谱的文件名（需以 .yaml 结尾）', f.name);
+        if (!name) return;
+        try {
+          const res = await A.api.createGraph(name, String(reader.result));
+          U.toast('已导入 ' + res.name + '（' + res.nodes + ' 节点 / ' + res.edges + ' 边）', 'ok');
+          await graphLib.load();
+        } catch (e) {
+          U.toast('导入失败：' + e.message, 'error');
+        }
+      };
+      reader.readAsText(f);
+    });
+    file.click();
+  }
+
   // =========================================================
   // 外壳：导航 / 抽屉 / 状态栏
   // =========================================================
@@ -29,7 +194,11 @@
       // 打开时刷新一次，保证数据新鲜
       if (tab === 'observability') observability.refresh();
       else if (tab === 'params') paramsPanel.init();
-      else if (tab === 'settings' && A.api.isLive) { settingsPanel.loadConfig(); mcpStatus.load(); }
+      else if (tab === 'settings' && A.api.isLive) {
+        settingsPanel.loadConfig();
+        mcpStatus.load();
+        graphLib.load();
+      }
     },
     closeDrawer() {
       $('drawer').classList.remove('open');
@@ -1335,6 +1504,27 @@
         dataSection.body.appendChild(el('div', { class: 'hint', text: '离线 HTML 模式：数据操作不可用。' }));
       }
       host.appendChild(dataSection.root);
+
+      // 6. 图谱库：管理图谱目录下的多份图谱；「载入 MCP」是独立动作，不自动跟随
+      const libSection = section('图谱库', '图谱目录下的所有 YAML：可切换、导入、导出、删除');
+      if (A.api.isLive) {
+        const bar = el('div', { class: 'btn-row' });
+        bar.appendChild(el('button', {
+          class: 'btn small', text: '刷新', onclick: function () { graphLib.load(); },
+        }));
+        bar.appendChild(el('button', {
+          class: 'btn small', text: '导入为新图谱…', onclick: importGraphFile,
+        }));
+        libSection.body.appendChild(bar);
+        libSection.body.appendChild(el('div', { class: 'graph-lib', id: 'graph-lib' }, [
+          el('div', { class: 'hint', text: '加载中…' }),
+        ]));
+        libSection.body.appendChild(el('div', { class: 'mcp-apply', id: 'graph-mcp-state' }));
+      } else {
+        libSection.body.appendChild(el('div', { class: 'hint', text: '离线 HTML 模式：图谱库不可用。' }));
+      }
+      host.appendChild(libSection.root);
+      if (A.api.isLive) graphLib.load();
     },
 
     refreshPresets() {
@@ -1931,6 +2121,7 @@
     wireMcpPill();
     setInterval(function () { if (!document.hidden) mcpStatus.load(); }, 30000);
     mcpStatus.load();
+    graphLib.load();   // 状态栏展示面板当前图谱
   }
 
   // 相机悬浮窗：拖动滚动条控制缩放，并实时显示相机位置

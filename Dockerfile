@@ -41,11 +41,14 @@ RUN pip install --no-cache-dir .
 
 # 可选：本地 embedding（CPU 版 torch + sentence-transformers）。默认关闭（API 模式），
 # 避免服务器虚拟硬件上跑本地模型效果差；如需本地 embedding，构建时传 --build-arg EMBEDDING_LOCAL=true
+# 取值与运行时（_env_flag）保持一致：1/true/yes/on —— 注意 .env 里写的是 1，若只认 "true"
+# 会跳过 torch 安装，而运行时按 1 走本地 embedding，结果容器一起步就 ImportError。
 ARG EMBEDDING_LOCAL=false
-RUN if [ "$EMBEDDING_LOCAL" = "true" ]; then \
-      pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu \
-      && pip install --no-cache-dir "sentence-transformers>=2.2"; \
-    fi
+RUN case "${EMBEDDING_LOCAL}" in \
+      1|true|TRUE|True|yes|YES|Yes|on|ON|On) \
+        pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu \
+        && pip install --no-cache-dir "sentence-transformers>=2.2" ;; \
+    esac
 
 # 本地 embedding 模型下载缓存（运行期第一次使用模型时下载；挂载卷可持久化加速）
 VOLUME ["/root/.cache/huggingface"]

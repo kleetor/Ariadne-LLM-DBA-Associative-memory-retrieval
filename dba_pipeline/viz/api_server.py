@@ -66,7 +66,7 @@ from dba_pipeline.loader import load_graph
 from dba_pipeline.core.jump_axis import NodeType, RelationType, get_jump_weight
 from dba_pipeline.viz import logbus
 from dba_pipeline.viz.chain_runner import ChainRunner
-from dba_pipeline import envfile, filelock, oplog
+from dba_pipeline import envfile, filelock, graphlib, oplog
 from dba_pipeline import params as params_mod
 from dba_pipeline import webauth
 
@@ -420,36 +420,58 @@ class MemoryGraphAPI:
         self._log("delete_edge", request={"source": source, "target": target}, result=result)
         return result
 
-    def export_yaml(self) -> str:
-        """导出真实 YAML checkpoint"""
-        self._reload_if_changed()
-        data = self.graph.to_dict()
+    def export_yaml(self, path: str = None) -> str:
+        """导出真实 YAML checkpoint。
+
+        不传 ``path`` 时导出当前图谱（先重载外部改动）；传路径则导出该文件
+        （图谱库里的任意一份），保持同样的「load → to_dict → dump」口径。
+        """
+        if path:
+            graph = load_graph(path)
+        else:
+            self._reload_if_changed()
+            graph = self.graph
+        data = graph.to_dict()
         return yaml.dump(data, allow_unicode=True, default_flow_style=False, sort_keys=False)
+
+    def switch_graph(self, name: str) -> dict:
+        """把面板切换到图谱库里的另一份图谱（同目录，不涉及 MCP）。
+
+        同目录是硬约束：``auth.json`` / ``.ariadne_secret`` / ``operations.log`` /
+        ``ariadne.log`` / ``retrieval_params.yaml`` 都按图谱目录取，跨目录切换会
+        连带换掉登录凭据与检索参数。
+        """
+        error = graphlib.validate_name(name)
+        if error:
+            raise ValueError(error)
+        target = graphlib.graph_path(self.yaml_path, name)
+        if not os.path.isfile(target):
+            raise ValueError(f"图谱不存在: {name}")
+        if graphlib.inspect_graph(target) is None:
+            raise ValueError(f"「{name}」不是可用的图谱（YAML 解析失败或缺少 nodes 列表）")
+
+        with self._lock:
+            if os.path.abspath(self.yaml_path or "") == os.path.abspath(target):
+                return {"changed": False, "name": name, "yaml_path": target,
+                        "nodes": self.graph.node_count, "edges": self.graph.edge_count}
+            graph = load_graph(target)          # 先校验可解析，失败不触碰现状
+            self.graph = graph
+            self.yaml_path = target
+            self._file_lock = filelock.FileLock(filelock.lock_path_for(target))
+            self._last_mtime = self._yaml_mtime()
+            self._next_node_id = self._compute_next_id()
+        return {
+            "changed": True,
+            "name": name,
+            "yaml_path": target,
+            "nodes": graph.node_count,
+            "edges": graph.edge_count,
+        }
 
     @_guarded_write
     def import_yaml(self, text: str) -> dict:
         """校验并导入 YAML（先备份现有文件，成功后热加载）"""
-        if not text or not text.strip():
-            raise ValueError("YAML 内容为空")
-        try:
-            data = yaml.safe_load(text)
-        except yaml.YAMLError as e:
-            raise ValueError(f"YAML 解析失败: {e}")
-        if not isinstance(data, dict) or not isinstance(data.get("nodes"), list):
-            raise ValueError("YAML 结构非法：缺少 nodes 列表")
-
-        # 先落到临时文件做完整校验（未知类型等会被 loader 告警但不致命）
-        fd, tmp_path = tempfile.mkstemp(suffix=".yaml")
-        os.close(fd)
-        try:
-            with open(tmp_path, "w", encoding="utf-8") as f:
-                f.write(text)
-            graph = load_graph(tmp_path)
-        finally:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
+        graph = _parse_graph_yaml(text)
 
         with self._lock:
             if self.yaml_path:
@@ -1007,10 +1029,23 @@ def create_app(api: MemoryGraphAPI, config: VizConfig,
     # ---- 导入导出 ----
 
     async def export_yaml(request: Request) -> Response:
-        data = await asyncio.to_thread(api.export_yaml)
+        # 不带 name 导出当前面板图谱；带 name 导出图谱库里的指定图谱
+        name = str(request.query_params.get("name") or "")
+        if name:
+            error = graphlib.validate_name(name)
+            if error:
+                raise ValueError(error)
+            path = graphlib.graph_path(config.yaml_path, name)
+            if not os.path.isfile(path):
+                raise ValueError(f"图谱不存在: {name}")
+            data = await asyncio.to_thread(api.export_yaml, path)
+            filename = name
+        else:
+            data = await asyncio.to_thread(api.export_yaml)
+            filename = "memory_graph.yaml"
         return Response(
             data, media_type="application/x-yaml; charset=utf-8",
-            headers={"Content-Disposition": "attachment; filename=memory_graph.yaml"},
+            headers={"Content-Disposition": f"attachment; filename={filename}"},
         )
 
     async def export_oplog(request: Request) -> Response:
@@ -1092,6 +1127,83 @@ def create_app(api: MemoryGraphAPI, config: VizConfig,
         })
         return JSONResponse(result)
 
+    # ---- 图谱库：面板内切换 / 管理（不涉及 MCP）----
+    # 库 = 图谱目录下的 *.yaml。切换只影响本面板；要让 MCP 跟随需显式调
+    # activate_mcp_graph（写共享指针文件，MCP 轮询自切换）。
+
+    def _checked_name(raw) -> str:
+        name = str(raw or "")
+        error = graphlib.validate_name(name)
+        if error:
+            raise ValueError(error)
+        return name
+
+    async def graphs_view(request: Request) -> JSONResponse:
+        items = await asyncio.to_thread(graphlib.list_graphs, config.yaml_path)
+        return JSONResponse({
+            "dir": graphlib.graph_dir(config.yaml_path),
+            "current": os.path.basename(config.yaml_path or ""),
+            "graphs": items,
+            "mcp": graphlib.state(config.yaml_path),
+        })
+
+    async def graphs_switch(request: Request) -> JSONResponse:
+        body = await _json_body(request)
+        name = _checked_name(body.get("name"))
+        result = await asyncio.to_thread(api.switch_graph, name)
+        if result.get("changed"):
+            # 面板的运行期锚点：config 供 /api/config 与 MCP 片段展示；
+            # 调用测试链路必须重建，否则它还在跑旧图。
+            config.yaml_path = result["yaml_path"]
+            chain.rebind(config.yaml_path)
+            # 记进共享指针：重启后回到面板上次选的那份（与 MCP 的切换请求分字段）
+            await asyncio.to_thread(
+                graphlib.patch_pointer, config.yaml_path, **{graphlib.PANEL_FIELD: name}
+            )
+            api._log("switch_graph", request={"name": name},
+                     result={"nodes": result["nodes"], "edges": result["edges"]})
+        return JSONResponse(result)
+
+    async def graphs_create(request: Request) -> JSONResponse:
+        """把一份 YAML 作为**新**图谱导入图谱库（不覆盖同名文件）。"""
+        body = await _json_body(request)
+        name = _checked_name(body.get("name"))
+        text = str(body.get("yaml") or "")
+        target = graphlib.graph_path(config.yaml_path, name)
+        if os.path.exists(target):
+            raise ValueError(f"图谱已存在，换个名字：{name}")
+        graph = await asyncio.to_thread(_parse_graph_yaml, text)
+        await asyncio.to_thread(_write_text_atomic, target, text)
+        result = {"name": name, "nodes": graph.node_count, "edges": graph.edge_count}
+        api._log("create_graph", request={"name": name, "bytes": len(text.encode("utf-8"))},
+                 result=result)
+        return JSONResponse({"ok": True, "path": target, **result}, status_code=201)
+
+    async def graphs_delete(request: Request) -> JSONResponse:
+        name = _checked_name(request.query_params.get("name"))
+        target = graphlib.graph_path(config.yaml_path, name)
+        if not os.path.isfile(target):
+            raise ValueError(f"图谱不存在: {name}")
+        if os.path.abspath(config.yaml_path or "") == os.path.abspath(target):
+            raise ValueError("这是面板当前正在使用的图谱，请先切换到别的图谱")
+        mcp_state = await asyncio.to_thread(graphlib.state, config.yaml_path)
+        if mcp_state.get("active") == name and mcp_state.get("status") == "ok":
+            raise ValueError("MCP 当前正在使用该图谱，请先在面板把它切到别的图谱")
+        await asyncio.to_thread(os.remove, target)
+        api._log("delete_graph", request={"name": name}, result={"path": target})
+        return JSONResponse({"ok": True, "name": name})
+
+    async def graphs_activate_mcp(request: Request) -> JSONResponse:
+        """请 MCP 切换到某份图谱：只写共享指针文件，不等它完成（重建向量可能很久）。"""
+        body = await _json_body(request)
+        name = _checked_name(body.get("name"))
+        state = await asyncio.to_thread(
+            graphlib.request_switch, config.yaml_path, name, api.actor_user,
+        )
+        api._log("activate_mcp_graph", request={"name": name},
+                 result={"generation": state.get("generation")})
+        return JSONResponse({"ok": True, "state": graphlib.state(config.yaml_path)})
+
     routes = [
         Mount("/static", app=NoCacheStaticFiles(directory=str(STATIC_DIR)), name="static"),
         Route("/", index, methods=["GET"]),
@@ -1100,6 +1212,11 @@ def create_app(api: MemoryGraphAPI, config: VizConfig,
         Route("/api/logout", logout, methods=["POST"]),
         Route("/api/password", password_change, methods=["POST"]),
         Route("/api/graph", graph_data, methods=["GET"]),
+        Route("/api/graphs", graphs_view, methods=["GET"]),
+        Route("/api/graphs", graphs_delete, methods=["DELETE"]),
+        Route("/api/graphs/switch", graphs_switch, methods=["POST"]),
+        Route("/api/graphs/create", graphs_create, methods=["POST"]),
+        Route("/api/graphs/activate-mcp", graphs_activate_mcp, methods=["POST"]),
         Route("/api/nodes", create_node, methods=["POST"]),
         Route("/api/nodes/{nid}", update_node, methods=["PUT"]),
         Route("/api/nodes/{nid}", delete_node, methods=["DELETE"]),
@@ -1147,6 +1264,51 @@ def create_app(api: MemoryGraphAPI, config: VizConfig,
     return app
 
 
+def _parse_graph_yaml(text: str) -> MemoryGraph:
+    """校验并解析一份图谱 YAML；非法内容抛 ValueError（→400）。
+
+    先做结构检查，再落到临时文件交给 ``load_graph`` 完整解析（未知类型等会被
+    loader 告警但不致命），避免半截/非法内容污染真实图谱文件。
+    """
+    if not text or not text.strip():
+        raise ValueError("YAML 内容为空")
+    try:
+        data = yaml.safe_load(text)
+    except yaml.YAMLError as e:
+        raise ValueError(f"YAML 解析失败: {e}")
+    if not isinstance(data, dict) or not isinstance(data.get("nodes"), list):
+        raise ValueError("YAML 结构非法：缺少 nodes 列表")
+
+    fd, tmp_path = tempfile.mkstemp(suffix=".yaml")
+    os.close(fd)
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            f.write(text)
+        return load_graph(tmp_path)
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
+
+def _write_text_atomic(path: str, text: str) -> None:
+    """原子写入文本文件（同目录临时文件 + 替换），避免读到半截内容。"""
+    directory = os.path.dirname(os.path.abspath(path)) or "."
+    os.makedirs(directory, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(dir=directory, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.replace(tmp_path, path)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
 async def _json_body(request: Request) -> dict:
     """解析 JSON 请求体；空体返回 {}，非法 JSON 抛 ValueError（→400）。"""
     raw = await request.body()
@@ -1176,6 +1338,28 @@ def _read_version() -> str:
         return "0.1.0"
 
 
+def _resolve_startup_graph(args) -> str:
+    """把「图谱目录 / 初始图谱都是可选」解析成一份具体的图谱路径。
+
+    图谱目录：``--graph-dir`` / ``ARIADNE_GRAPHS_DIR`` → ``--yaml`` 所在目录 → ``./data``。
+    用哪份图谱：共享指针里上次选的那份 → ``--yaml`` → 目录内的空图谱占位文件。
+    启动参数只当「第一次用哪份」的提示，不该每次重启都把面板里的选择顶掉。
+    """
+    explicit_dir = args.graph_dir or os.environ.get("ARIADNE_GRAPHS_DIR")
+    if explicit_dir:
+        graph_dir = os.path.abspath(explicit_dir)
+    elif args.yaml:
+        graph_dir = graphlib.graph_dir(os.path.abspath(args.yaml))
+    else:
+        graph_dir = os.path.abspath("data")
+
+    path, source = graphlib.resolve_startup(graph_dir, graphlib.PANEL_FIELD, args.yaml)
+    path = graphlib.ensure_placeholder(path)
+    print(f"图谱目录: {graph_dir}")
+    print(f"启动图谱: {os.path.basename(path)}（{source}）")
+    return path
+
+
 def build_config(args) -> VizConfig:
     yaml_path = str(Path(args.yaml).resolve())
     return VizConfig(
@@ -1193,11 +1377,15 @@ def main():
     envfile.load_dotenv()
 
     parser = argparse.ArgumentParser(description="DBA WebUI Server")
-    parser.add_argument("--yaml", required=True, help="Path to YAML checkpoint")
+    parser.add_argument("--yaml", default=None,
+                        help="初始图谱路径（可选；仅在共享指针没有记录时作为启动提示）")
+    parser.add_argument("--graph-dir", default=None,
+                        help="图谱库目录（可选；默认取 --yaml 所在目录，都没有则用 ./data）")
     parser.add_argument("--port", type=int, default=8765, help="Server port (default: 8765)")
     parser.add_argument("--host", default="127.0.0.1", help="Bind address (default: 127.0.0.1, 容器内请用 0.0.0.0)")
     parser.add_argument("--log-level", default="INFO", help="运行日志级别（默认 INFO）")
     args = parser.parse_args()
+    args.yaml = _resolve_startup_graph(args)
 
     config = build_config(args)
     store = webauth.AuthStore.load_or_create(config.yaml_path)

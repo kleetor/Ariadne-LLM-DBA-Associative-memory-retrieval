@@ -134,6 +134,17 @@ class ChainRunner:
 
     # ── 执行 ────────────────────────────────────────────────────────────────
 
+    def rebind(self, yaml_path: str) -> None:
+        """切换到另一份图谱后重建链路：丢弃已装配的 DBAServer，下次调用重新装配。
+
+        先等正在跑的调用测试结束（``run`` 全程持有 ``_run_lock``），避免把它脚下
+        的图谱抽走。
+        """
+        with self._run_lock:
+            self.yaml_path = str(Path(yaml_path).resolve())
+            self._server = None
+            self._init_error = None
+
     def run(self, query: str, on_stage: StageCb = None) -> Dict[str, Any]:
         """跑一次真实链路并返回完整轨迹。
 

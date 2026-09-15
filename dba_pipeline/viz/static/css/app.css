@@ -604,6 +604,26 @@ body[data-tab="settings"] #drawer-backdrop { opacity: 1; pointer-events: auto; }
 }
 .snippet pre { margin: 0; padding: 10px; font-size: 11px; line-height: 1.6; overflow-x: auto; color: var(--text); }
 
+/* 图谱库：面板内切换与管理，以及「载入 MCP」的应用回执 */
+.graph-lib { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+.graph-list { display: flex; flex-direction: column; gap: 6px; }
+.graph-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 7px 9px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg-soft);
+}
+.graph-row.current { border-color: rgba(13, 148, 136, 0.35); background: rgba(13, 148, 136, 0.06); }
+.graph-meta { min-width: 0; flex: 1; }
+.graph-name {
+  font-size: 12px; color: var(--text);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.graph-sub { font-size: 10px; color: var(--text-dim); margin-top: 2px; }
+.graph-acts { display: flex; gap: 6px; flex-shrink: 0; }
+.mcp-apply { font-size: 11px; line-height: 1.7; color: var(--text-dim); margin-top: 12px; }
+.mcp-apply.ok { color: var(--te1); }
+.mcp-apply.warn { color: var(--amber); }
+.mcp-apply.error { color: var(--rose); }
+
 /* ---------- 右键菜单 ---------- */
 
 #ctx-menu {

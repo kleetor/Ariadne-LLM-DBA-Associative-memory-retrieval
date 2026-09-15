@@ -108,6 +108,22 @@
       return request('DELETE', '/api/edges/' + encodeURIComponent(source) + '/' + encodeURIComponent(target));
     },
 
+    // ---- 图谱库（面板内切换 / 管理；载入 MCP 是独立动作）----
+    getGraphs: function () { return request('GET', '/api/graphs'); },
+    switchGraph: function (name) { return request('POST', '/api/graphs/switch', { name: name }); },
+    createGraph: function (name, yaml) {
+      return request('POST', '/api/graphs/create', { name: name, yaml: yaml });
+    },
+    deleteGraph: function (name) {
+      return request('DELETE', '/api/graphs?name=' + encodeURIComponent(name));
+    },
+    activateMcpGraph: function (name) {
+      return request('POST', '/api/graphs/activate-mcp', { name: name });
+    },
+    exportGraphUrl: function (name) {
+      return BASE + '/api/export/yaml?name=' + encodeURIComponent(name);
+    },
+
     // ---- 可观测性 ----
     getOplog: function (params) { return request('GET', '/api/oplog' + query(params)); },
     getLogs: function (params) { return request('GET', '/api/logs' + query(params)); },

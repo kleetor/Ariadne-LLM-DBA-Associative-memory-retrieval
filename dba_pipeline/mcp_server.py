@@ -46,7 +46,7 @@ from dba_pipeline.source_store import (
     default_source_dir, list_batches, load_batch, render_batch_text, source_store_enabled,
 )
 from dba_pipeline.extraction.review_scheduler import IdleReviewScheduler, ReviewConfig
-from dba_pipeline import envfile, filelock, oplog
+from dba_pipeline import envfile, filelock, graphlib, oplog
 from dba_pipeline import params as params_mod
 from dba_pipeline import webauth
 from dba_pipeline.viz import logbus
@@ -205,6 +205,65 @@ class DBAServer:
             self._reload_if_changed()
         except Exception as e:
             logging.getLogger("mcp").warning("重载图谱失败（沿用现有内存图）: %s", e)
+
+    # ---- 图谱切换（由面板通过共享指针文件请求）----
+
+    def switch_graph(self, new_path: str) -> dict:
+        """切换到另一份图谱，并**全量重建**向量索引。
+
+        同目录约束：auth.json / .ariadne_secret / 日志 / retrieval_params.yaml 都是
+        按图谱目录取的，跨目录切换会连带换掉登录凭据与参数文件，故只允许同目录。
+
+        切换用 :func:`load_into` **就地**重载，而不是新建 MemoryGraph 再赋值——
+        ``dba`` / ``retriever`` / ``graph_builder`` 都持有同一个 graph 实例的引用，
+        换对象会让它们继续指向旧图。
+
+        先解析校验、成功才动状态：失败时原图谱与向量库保持不变。
+        """
+        target = os.path.abspath(new_path)
+        if os.path.dirname(target) != graphlib.graph_dir(self.yaml_path):
+            raise ValueError("只能切换到同一目录下的图谱（凭据 / 日志 / 参数按目录共享）")
+        if not os.path.isfile(target):
+            raise ValueError(f"图谱不存在: {os.path.basename(target)}")
+        if os.path.abspath(self.yaml_path or "") == target:
+            return {"changed": False, "reason": "已经是当前图谱",
+                    "nodes": self.graph.node_count, "edges": self.graph.edge_count,
+                    "vector": {"rebuilt": False}}
+
+        load_graph(target)          # 先校验可解析，失败不触碰现状
+        started = time.perf_counter()
+
+        with self._lock:
+            load_into(self.graph, target)
+            self.yaml_path = target
+            self._file_lock = filelock.FileLock(
+                filelock.lock_path_for(target), timeout=self._file_lock_timeout
+            )
+            self._last_yaml_mtime = self._yaml_mtime()
+            self._next_node_id = self._compute_next_id()
+            self._vector_mtime = 0
+
+        vector_stats = {"rebuilt": False}
+        if self.vector_store is not None:
+            desired = self._graph_contents()
+            if desired:
+                # 换图后旧向量与新图毫无关系，增量对账在这里不适用，必须清空重建
+                self.vector_store.clear_vectors()
+                vector_stats = dict(self.vector_store.reconcile(desired))
+                vector_stats["rebuilt"] = True
+            else:
+                # 与 reconcile_vectors 的处理保持一致：空图谱不清空既有索引，避免误删
+                vector_stats["reason"] = "图谱为空，保留既有向量索引"
+            self._vector_mtime = self._yaml_mtime()
+
+        return {
+            "changed": True,
+            "yaml_path": target,
+            "nodes": self.graph.node_count,
+            "edges": self.graph.edge_count,
+            "vector": vector_stats,
+            "seconds": round(time.perf_counter() - started, 2),
+        }
 
     # ---- 运行时参数（权重矩阵 / 种子 / 目的回归）----
 
@@ -1359,6 +1418,59 @@ async def run_sse(server: "Server", host: str, port: int, store: "webauth.AuthSt
     await http_server.serve()
 
 
+class GraphSwitchWatcher(threading.Thread):
+    """轮询共享指针文件，把面板登记的「切到某图谱」请求应用到本进程。
+
+    MCP 的 SSE 服务没有控制端点、也没有会话签名器，面板无法直接调用它，因此
+    走文件契约 + 进程内自切换——与图谱 YAML / retrieval_params.yaml 的热重载
+    是同一思路。指针文件与图谱同目录，切换后路径锚点不变，故构造时的
+    ``yaml_path`` 可以一直复用。
+    """
+
+    def __init__(self, dba: "DBAServer", yaml_path: str, interval: float = 3.0):
+        super().__init__(daemon=True, name="graph-switch-watcher")
+        self.dba = dba
+        self.yaml_path = yaml_path
+        self.interval = max(1.0, interval)
+        self._stop = threading.Event()
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    def run(self) -> None:
+        log = logging.getLogger("mcp")
+        while not self._stop.wait(self.interval):
+            try:
+                request = graphlib.pending_request(self.yaml_path)
+            except Exception as e:
+                log.warning("读取图谱切换请求失败（忽略本次）: %s", e)
+                continue
+            if request:
+                self._apply(request)
+
+    def _apply(self, request: dict) -> None:
+        log = logging.getLogger("mcp")
+        name = str(request.get("active") or "")
+        generation = request.get("generation")
+        log.info("收到图谱切换请求: %s (generation=%s，来自 %s)",
+                 name, generation, request.get("requested_by") or "面板")
+        try:
+            result = self.dba.switch_graph(graphlib.graph_path(self.yaml_path, name))
+        except Exception as e:
+            log.error("图谱切换失败: %s", e)
+            graphlib.report_applied(self.yaml_path, generation,
+                                    status="error", detail=str(e))
+            return
+
+        graphlib.report_applied(
+            self.yaml_path, generation, status="ok",
+            graph={"nodes": result.get("nodes"), "edges": result.get("edges")},
+            vector=result.get("vector") or {},
+        )
+        log.info("图谱已切换为 %s（%s 节点 / %s 边，耗时 %ss）",
+                 name, result.get("nodes"), result.get("edges"), result.get("seconds"))
+
+
 def _env_flag(name: str) -> bool:
     """将环境变量解析为布尔值（用于 store_true 的默认值）"""
     value = os.environ.get(name)
@@ -1407,7 +1519,10 @@ def main():
     envfile.load_dotenv()
 
     parser = argparse.ArgumentParser(description="DBA MCP Server")
-    parser.add_argument("--yaml", required=True, help="YAML checkpoint 文件路径")
+    parser.add_argument("--yaml", default=None,
+                        help="初始图谱路径（可选；仅在共享指针没有记录时作为启动提示）")
+    parser.add_argument("--graph-dir", default=None,
+                        help="图谱库目录（可选；默认取 --yaml 所在目录，都没有则用 ./data）")
     parser.add_argument("--params", default=None,
                         help="运行时检索参数文件（权重矩阵/种子/目的回归）；"
                              "默认与图谱同目录 retrieval_params.yaml")
@@ -1436,6 +1551,21 @@ def main():
     parser.add_argument("--log-level", default=os.environ.get("ARIADNE_LOG_LEVEL", "INFO"),
                         help="服务日志级别（写入共享日志文件，供 WebUI 面板聚合展示；默认 INFO）")
     args = parser.parse_args()
+
+    # 图谱目录与「用哪份图谱」都允许不指定：
+    # 目录取自 --graph-dir / ARIADNE_GRAPHS_DIR → --yaml 所在目录 → ./data；
+    # 用哪份则优先读共享指针（面板/MCP 上次的选择），启动参数只当首次的提示。
+    _explicit_dir = args.graph_dir or os.environ.get("ARIADNE_GRAPHS_DIR")
+    if _explicit_dir:
+        _graph_dir = os.path.abspath(_explicit_dir)
+    elif args.yaml:
+        _graph_dir = graphlib.graph_dir(os.path.abspath(args.yaml))
+    else:
+        _graph_dir = os.path.abspath("data")
+    args.yaml, _src = graphlib.resolve_startup(_graph_dir, graphlib.MCP_FIELD, args.yaml)
+    args.yaml = graphlib.ensure_placeholder(args.yaml)
+    print(f"[DBA MCP] 图谱目录: {_graph_dir}；启动图谱: {os.path.basename(args.yaml)}（{_src}）",
+          file=sys.stderr)
 
     # 跨进程服务日志：写入共享 JSONL 文件（默认 <图谱目录>/ariadne.log），
     # WebUI 面板 tail 该文件即可看到 MCP 的运行日志；控制台仍只保留 WARNING 以上。
@@ -1658,6 +1788,14 @@ def main():
         print("[DBA MCP] 空闲巡检未启动（设 ARIADNE_REVIEW_IDLE=<秒> 开启；"
               "它会消耗 LLM 额度，故默认关闭）", file=sys.stderr)
 
+    # 图谱切换监听：面板把「切到某图谱」写进共享指针文件，这里轮询并自切换
+    switch_watcher = GraphSwitchWatcher(
+        dba_server, args.yaml, interval=float(os.environ.get("ARIADNE_GRAPH_POLL") or 3.0)
+    )
+    switch_watcher.start()
+    print(f"[DBA MCP] 图谱切换监听已启动（轮询 {switch_watcher.interval:.0f}s，"
+          f"图谱库目录 {graphlib.graph_dir(args.yaml)}）", file=sys.stderr)
+
     server = create_mcp_server(dba_server)
 
     _print_status(graph=graph, dba=dba_instance, retriever=retriever_instance,
@@ -1684,6 +1822,8 @@ def main():
             asyncio.run(run_stdio(server))
     finally:
         # 优雅退出：先停空闲巡检（它可能正在调 LLM），再 flush 调度器缓冲中的对话
+        if switch_watcher:
+            switch_watcher.stop()
         if review_scheduler:
             review_scheduler.stop()
         if scheduler_instance:

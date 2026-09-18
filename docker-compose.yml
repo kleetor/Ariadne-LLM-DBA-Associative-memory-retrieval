@@ -54,7 +54,8 @@ services:
       # - /host/path/my_memory.yaml:/data/graph.yaml
       - hf-cache:/root/.cache/huggingface
 
-  # 3D 可视化面板（ariadne-api）：只读 YAML，无需 LLM/embedding，独立端口（默认 8765）
+  # 3D 可视化面板（ariadne-api）：浏览/编辑图谱本身不需要 LLM，
+  # 但面板的「调用测试」会在面板进程内跑真实链路，所以同样需要模型配置（见下方 env_file）。
   ariadne-viz:
     image: ariadne-mcp:latest
     container_name: ariadne-viz
@@ -62,12 +63,21 @@ services:
     ports:
       - "${ARIADNE_VIZ_PORT:-8765}:8765"
     command: ariadne-api --yaml "${ARIADNE_YAML:-/app/data/memory_graph.yaml}" --host 0.0.0.0 --port "${ARIADNE_VIZ_PORT:-8765}"
+    # 面板的「调用测试」要在面板进程内跑真实链路（意图识别 → PAR → StoryRank），
+    # 需要与 MCP 相同的模型配置，故同样注入 .env。
+    # 注意：要真能跑通，镜像的 embedding 模式必须与 .env 的 EMBEDDING_LOCAL 一致
+    #       （API 模式的镜像不含 torch，EMBEDDING_LOCAL=1 会 ImportError）。
+    env_file:
+      - .env
     environment:
       # 面板登录用凭据在 /app/data/auth.json（首次启动自动生成默认账号 ariadne / ariadne）；
       # 下面两个可选：忘记密码时的重置后门。ARIADNE_AUTH_KEY 可选，作为密码散列的 pepper。
       ARIADNE_VIZ_USER: "${ARIADNE_VIZ_USER:-}"
       ARIADNE_VIZ_PASS: "${ARIADNE_VIZ_PASS:-}"
       ARIADNE_AUTH_KEY: "${ARIADNE_AUTH_KEY:-}"
+      # MCP 与面板是两个容器：面板的「MCP 连接」区块要探活到另一个容器，
+      # 容器内的 127.0.0.1 指不到它，故显式给出同一 compose 网络内的端点。
+      ARIADNE_MCP_URL: "http://ariadne-mcp:${ARIADNE_PORT:-8766}/sse"
     volumes:
       - ./data:/app/data
 

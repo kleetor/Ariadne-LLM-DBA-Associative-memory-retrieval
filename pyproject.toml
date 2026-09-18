@@ -48,8 +48,13 @@ where = ["."]
 include = ["dba_pipeline*", "alm*"]
 
 [tool.setuptools.package-data]
+# 静态前端要随包一起安装：容器里 `ariadne-api`（控制台脚本）从 site-packages 导入，
+# 漏声明就会导致 /static/icon.png 与 /static/graph.json 404（本地从源码树跑则正常，
+# 因此这个问题只在 pip 安装/容器里出现）。
 dba_pipeline = [
     "viz/static/*.html",
+    "viz/static/*.png",
+    "viz/static/*.json",
     "viz/static/css/*.css",
     "viz/static/js/*.js",
 ]

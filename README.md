@@ -56,6 +56,7 @@ Ariadne 的长期目标是回答一个问题：**Agent 应如何像人类一样�
 - [架构](#架构)
 - [安装](#安装)
 - [快速开始](#快速开始)
+- [Docker 部署](#docker-部署)
 - [检索方法：PAR 基线](#检索方法par-基线)
 - [MCP 服务详解](#mcp-服务详解)
 - [数据格式](#数据格式)
@@ -211,6 +212,71 @@ ariadne-mcp \
 ```bash
 ariadne-render --yaml data/sample_graph.yaml -o output.html
 ```
+
+## Docker 部署
+
+同一份镜像同时提供 MCP Server（`ariadne-mcp`）与 3D 面板（`ariadne-api`）两个入口，二者共用同一份 `./data`。
+
+### 方式一：docker compose（推荐）
+
+```bash
+cp .env.example .env        # 填入模型信息
+docker compose up -d --build
+```
+
+- **面板**：`http://<主机>:8765`（`ARIADNE_VIZ_PORT` 可改），默认账号 `ariadne / ariadne`，首次登录强制改密；
+- **MCP**：默认**不发布宿主端口**，仅供同一 compose 网络内的容器访问 `http://ariadne-mcp:8766/sse`。若本机 IDE 要直连，把 `docker-compose.yml` 里那段 `ports` 注释打开（已绑定回环，无需开防火墙）；
+- 两个服务都挂载 `./data:/app/data`，因此**宿主机的 `./data` 就是图谱库**：在面板里切换图谱会在那里生成/更新 `active_graph.json`。
+
+### 方式二：加载预构建镜像
+
+```bash
+docker load -i package/ariadne-mcp.tar
+
+docker run -d --name ariadne-mcp -p 8766:8766 \
+  -e OPENAI_API_KEY=sk-xxx -e OPENAI_API_BASE=https://api.deepseek.com/v1 -e OPENAI_MODEL=deepseek-v4-flash \
+  -e EMBEDDING_LOCAL=false \
+  -e EMBEDDING_API_KEY=sk-xxx -e EMBEDDING_API_BASE=https://api.siliconflow.cn/v1 -e EMBEDDING_MODEL=BAAI/bge-large-zh-v1.5 \
+  -v $(pwd)/data:/app/data \
+  ariadne-mcp:latest
+```
+
+> tar 是 OCI 布局，Docker 25+ / Podman / containerd 均可导入；更老的 Docker 可用 `skopeo copy docker-archive:ariadne-mcp.tar docker-archive:out.tar` 转换一次。
+
+### embedding 模式决定镜像大小
+
+`EMBEDDING_LOCAL` **同时是构建参数与运行时开关，两边必须一致**（取值 `1/true/yes/on` 均认）：
+
+| 模式 | 构建 | 运行时需设置 | 镜像体积 |
+| --- | --- | --- | --- |
+| **API**（默认） | `--build-arg EMBEDDING_LOCAL=false` | `EMBEDDING_LOCAL=false` + `EMBEDDING_API_KEY/BASE/MODEL` | 约 700 MB |
+| **本地** | `--build-arg EMBEDDING_LOCAL=true` | `EMBEDDING_LOCAL=true` | 需额外装 CPU 版 torch，2 GB+ |
+
+> 若只认 `"true"` 而 `.env` 写的是 `1`，构建时会跳过 torch，运行时却按本地模式走，容器一起步就 ImportError——Dockerfile 已按同一套真值判断。
+> 本地模式首次运行要下载模型，建议挂载 HF 缓存（compose 已建 `hf-cache` 卷）或预置缓存后设 `HF_HUB_OFFLINE=1` 离线运行。
+
+### 容器内的图谱库
+
+与本地完全一致：用哪份图谱由共享指针决定，图谱目录取 `ARIADNE_YAML` 所在目录，也可用 `ARIADNE_GRAPHS_DIR` 显式指定：
+
+```bash
+-e ARIADNE_GRAPHS_DIR=/app/data
+```
+
+### 注意
+
+- **不要把 `data/auth.json`、`data/.ariadne_secret` 拷进镜像或卷**：前者是密码散列，后者是会话 Cookie 的签名密钥（泄漏即可伪造登录态）。`.dockerignore` 已排除它们，容器首次启动会自行生成。
+- 镜像**不预置凭据**。因此不挂载 `./data` 时，升级镜像会让凭据回到默认账号、并使已有登录态失效（签名密钥重新生成）——这是有意为之。
+- 面板的**「调用测试」**（在面板内跑真实链路）需要模型配置，compose 里已给 `ariadne-viz` 注入 `.env`，并设了 `ARIADNE_MCP_URL=http://ariadne-mcp:8766/sse`，让面板的「MCP 连接」区块能探活到另一个容器。**前提是**镜像的 embedding 模式与 `.env` 的 `EMBEDDING_LOCAL` 一致（API 模式的镜像不含 torch，写 `1` 会 ImportError）。
+
+### 更新已有部署
+
+| 场景 | 需要替换 |
+| --- | --- |
+| 用预构建镜像 | 重新 `docker load` 新 tar；`docker-compose.yml` 若缺 `ariadne-viz` 的 `env_file` / `ARIADNE_MCP_URL`，建议一并替换 |
+| 在部署机上构建 | `Dockerfile`、`.dockerignore`、`docker-compose.yml`、`dba_pipeline/`、`data/*.yaml`、`pyproject.toml`、`requirements.txt` |
+
+> **`.dockerignore` 必须一起更新**，否则新构建的镜像会把 `data/` 下的凭据与密钥重新打进去。
 
 ## 检索方法：PAR 基线
 

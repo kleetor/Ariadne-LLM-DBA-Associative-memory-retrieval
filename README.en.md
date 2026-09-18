@@ -54,6 +54,7 @@ The ultimate goal is to let an Agent **recall an experience like a person rememb
 - [Architecture](#architecture)
 - [Installation](#installation)
 - [Quick Start](#quick-start)
+- [Docker Deployment](#docker-deployment)
 - [Retrieval Method: PAR Baseline](#retrieval-method-par-baseline)
 - [MCP Server](#mcp-server)
 - [Data Format](#data-format)
@@ -188,6 +189,71 @@ Generate a self-contained visualization page without a server (reuses the WebUI 
 ```bash
 ariadne-render --yaml data/sample_graph.yaml -o output.html
 ```
+
+## Docker Deployment
+
+A single image provides both entry points — the MCP server (`ariadne-mcp`) and the 3D panel (`ariadne-api`) — and they share the same `./data`.
+
+### Option 1: docker compose (recommended)
+
+```bash
+cp .env.example .env        # fill in your model settings
+docker compose up -d --build
+```
+
+- **Panel**: `http://<host>:8765` (override with `ARIADNE_VIZ_PORT`); default account `ariadne / ariadne`, with a forced password change on first login.
+- **MCP**: host ports are **not published** by default; it is reachable only from other containers on the same compose network at `http://ariadne-mcp:8766/sse`. To connect from an IDE on the host, uncomment the `ports:` block in `docker-compose.yml` (it binds to loopback, so no firewall change is needed).
+- Both services mount `./data:/app/data`, so **the host's `./data` is the graph library**: switching graphs in the panel creates/updates `active_graph.json` there.
+
+### Option 2: load a prebuilt image
+
+```bash
+docker load -i package/ariadne-mcp.tar
+
+docker run -d --name ariadne-mcp -p 8766:8766 \
+  -e OPENAI_API_KEY=sk-xxx -e OPENAI_API_BASE=https://api.deepseek.com/v1 -e OPENAI_MODEL=deepseek-v4-flash \
+  -e EMBEDDING_LOCAL=false \
+  -e EMBEDDING_API_KEY=sk-xxx -e EMBEDDING_API_BASE=https://api.siliconflow.cn/v1 -e EMBEDDING_MODEL=BAAI/bge-large-zh-v1.5 \
+  -v $(pwd)/data:/app/data \
+  ariadne-mcp:latest
+```
+
+> The tar uses the OCI layout and loads on Docker 25+ / Podman / containerd; for older Docker, convert it once with `skopeo copy docker-archive:ariadne-mcp.tar docker-archive:out.tar`.
+
+### The embedding mode decides the image size
+
+`EMBEDDING_LOCAL` is **both a build arg and a runtime switch — the two must agree** (values `1/true/yes/on` are all accepted):
+
+| Mode | Build | Runtime | Image size |
+| --- | --- | --- | --- |
+| **API** (default) | `--build-arg EMBEDDING_LOCAL=false` | `EMBEDDING_LOCAL=false` + `EMBEDDING_API_KEY/BASE/MODEL` | ~700 MB |
+| **Local** | `--build-arg EMBEDDING_LOCAL=true` | `EMBEDDING_LOCAL=true` | extra CPU-only torch, 2 GB+ |
+
+> If the build only accepted `"true"` while `.env` said `1`, torch would be skipped but the runtime would still take the local path, failing with an ImportError on startup — the Dockerfile now uses the same truthiness rules.
+> Local mode downloads the model on first run; mount the HF cache (compose already defines an `hf-cache` volume) or pre-seed the cache and run offline with `HF_HUB_OFFLINE=1`.
+
+### Graph library inside the container
+
+Identical to a local run: which graph is in use comes from the shared pointer. The graph directory defaults to the directory of `ARIADNE_YAML`, or can be set explicitly:
+
+```bash
+-e ARIADNE_GRAPHS_DIR=/app/data
+```
+
+### Caveats
+
+- **Never bake `data/auth.json` or `data/.ariadne_secret` into the image or a volume**: the former holds the password hash, the latter is the session-cookie signing key (leaking it lets anyone forge a login). `.dockerignore` already excludes them, and the container generates fresh ones on first start.
+- The image ships **no credentials**. So without a `./data` mount, upgrading the image resets the account to the default and invalidates existing sessions (the signing key is regenerated) — this is intentional.
+- The panel's **"chain test"** (running a real chain from the panel) needs model settings; compose already injects `.env` into `ariadne-viz` and sets `ARIADNE_MCP_URL=http://ariadne-mcp:8766/sse` so the panel's MCP block can health-check the other container. **The prerequisite is** that the image's embedding mode matches `EMBEDDING_LOCAL` in `.env` (an API-mode image has no torch, so `1` raises an ImportError).
+
+### Updating an existing deployment
+
+| Scenario | What to replace |
+| --- | --- |
+| Using a prebuilt image | `docker load` the new tar; if your `docker-compose.yml` lacks `env_file` / `ARIADNE_MCP_URL` on `ariadne-viz`, replace it too |
+| Building on the deploy host | `Dockerfile`, `.dockerignore`, `docker-compose.yml`, `dba_pipeline/`, `data/*.yaml`, `pyproject.toml`, `requirements.txt` |
+
+> **`.dockerignore` must be updated too**, otherwise a freshly built image will bake the credentials and signing key under `data/` back in.
 
 ## Retrieval Method: PAR Baseline
 

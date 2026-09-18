@@ -26,6 +26,7 @@ from dba_pipeline.loader import load_graph
 
 from alm.config import ALMConfig
 from alm.contract import AddMessage
+from alm.judge import RelevanceJudge
 from alm.rerank import cosine, rerank
 
 try:
@@ -47,6 +48,92 @@ logger = logging.getLogger(__name__)
 _FALLBACK_CONTENT_LIMIT = 2000
 
 
+class RetrievalStats:
+    """检索可观测性：累计每次 Search 的「候选最高余弦」与弃权次数。
+
+    存在的理由是**标定弃权阈值**：ALM 真实数据不可离线观测，但平台每次 smoke 都会打
+    我们的 `/search`，把这些请求的 best_cos 记下来（只记数值，**不记 query 正文**，
+    符合平台的合规要求），跑完一轮就能看到真实查询实际落在什么区间：
+
+    - 若 p10 已经高于阈值 → 阈值偏低，漏弃权会伤 H（无记忆时没返回空）；
+    - 若 p90 低于阈值 → 阈值偏高，过度弃权会成片伤 A（有记忆也返回空）；
+    - 若阈值正好落在分布中间 → 必须重标定，此时任何一个方向的偏移都在扣分。
+
+    Add / Search 在线程池中并发执行，故计数加锁。
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self.searches = 0
+        self.abstained = 0
+        self._cosines: List[float] = []
+
+    def record_search(self, best_cos: float) -> None:
+        """每次检索都调用（含最终未弃权的），保证余弦分布完整"""
+        with self._lock:
+            self.searches += 1
+            self._cosines.append(round(float(best_cos), 4))
+
+    def record_abstain(self) -> None:
+        """确认弃权时调用。
+
+        与 record_search 分开，是因为两段式判定的弃权点落在检索**之后**
+        （模糊带要等 top-N 排好才能交给 LLM 判定），无法在记余弦时一并确定。
+        """
+        with self._lock:
+            self.abstained += 1
+
+    def last_cosine(self) -> Optional[float]:
+        """最近一次检索的候选最高余弦；尚未记录过则返回 None。
+
+        供标定脚本按查询取值用（串行发起检索即可一一对应）。
+        """
+        with self._lock:
+            return self._cosines[-1] if self._cosines else None
+
+    @staticmethod
+    def _quantile(values: List[float], q: float) -> float:
+        if not values:
+            return 0.0
+        ordered = sorted(values)
+        pos = int(round(q * (len(ordered) - 1)))
+        return ordered[max(0, min(pos, len(ordered) - 1))]
+
+    def summary(self) -> Dict[str, Any]:
+        with self._lock:
+            searches = self.searches
+            abstained = self.abstained
+            cosines = list(self._cosines)
+        return {
+            "searches": searches,
+            "abstained": abstained,
+            "abstain_rate": round(abstained / searches, 4) if searches else 0.0,
+            "min": round(min(cosines), 4) if cosines else 0.0,
+            "p10": round(self._quantile(cosines, 0.10), 4),
+            "p25": round(self._quantile(cosines, 0.25), 4),
+            "p50": round(self._quantile(cosines, 0.50), 4),
+            "p75": round(self._quantile(cosines, 0.75), 4),
+            "p90": round(self._quantile(cosines, 0.90), 4),
+            "max": round(max(cosines), 4) if cosines else 0.0,
+        }
+
+    def report(self) -> str:
+        """人类可读的分布汇总（进程退出时打印到 stderr）"""
+        data = self.summary()
+        lines = [
+            "=" * 60,
+            "[ALM] 检索余弦分布（标定 ALM_ABSTAIN_COS 用）",
+            "=" * 60,
+            f"  检索次数 : {data['searches']}",
+            f"  弃权次数 : {data['abstained']}（{data['abstain_rate'] * 100:.1f}%）",
+            f"  best_cos : min={data['min']}  p10={data['p10']}  p25={data['p25']}  "
+            f"p50={data['p50']}",
+            f"             p75={data['p75']}  p90={data['p90']}  max={data['max']}",
+            "=" * 60,
+        ]
+        return "\n".join(lines)
+
+
 class MemorySpace:
     """单个 user_id 的完整记忆栈：图谱 + 向量 + DBA 维护 + PAR 检索"""
 
@@ -57,6 +144,7 @@ class MemorySpace:
         embeddings,
         llm,
         yaml_path: Path,
+        stats: Optional[RetrievalStats] = None,
     ):
         if not HAS_DEPS:
             raise RuntimeError(
@@ -66,6 +154,7 @@ class MemorySpace:
         self.user_id = user_id
         self.config = config
         self.yaml_path = Path(yaml_path)
+        self.stats = stats
         # 串行化单个用户空间内的图谱写入与 YAML 落盘
         self._lock = threading.RLock()
 
@@ -92,6 +181,12 @@ class MemorySpace:
             vector_store=self.vector_store,
             inference=InferenceEngine(llm),
             path_tracker=PathTracker(),
+        )
+        # 弃权模糊带的二次判定（仅当 config.abstain_verify_hi > 0 时被调用）
+        self.judge = RelevanceJudge(
+            llm,
+            top_n=config.abstain_judge_top_n,
+            max_chars=config.abstain_judge_max_chars,
         )
 
     # ---- 初始化 ----
@@ -166,7 +261,9 @@ class MemorySpace:
 
     def add(self, messages: List[AddMessage]) -> Dict[str, int]:
         """同步写入一批消息：DBA 维护完成后才返回（对齐 ALM 契约）"""
-        payload = messages[: self.config.max_messages_per_add]
+        limit = self.config.max_messages_per_add
+        payload = messages[:limit]
+        overflow = messages[limit:]
         conversation = self._format_conversation(payload)
         batch_ts = self._batch_timestamp(payload)
 
@@ -175,12 +272,20 @@ class MemorySpace:
             created = (result.get("result") or {}).get("created_ids") or []
             if self._should_fallback(result, created):
                 created = self._store_raw_fallback(payload, batch_ts)
+            if overflow:
+                # 条数上限只用于控制 LLM 成本，**不等于可以丢弃内容**：契约要求每次
+                # Add 的消息已完整存储。超出部分改走无需 LLM 的兜底落库。
+                logger.warning(
+                    "空间 %s 单次 Add %d 条超过维护上限 %d，超出 %d 条改走兜底落库",
+                    self._masked_id(), len(messages), limit, len(overflow),
+                )
+                created = created + self._store_raw_fallback(overflow, batch_ts)
 
         logger.info(
             "空间 %s 写入完成: messages=%d nodes=%d",
-            self._masked_id(), len(payload), len(created),
+            self._masked_id(), len(messages), len(created),
         )
-        return {"messages": len(payload), "nodes": len(created)}
+        return {"messages": len(messages), "nodes": len(created)}
 
     @staticmethod
     def _batch_timestamp(messages: List[AddMessage]) -> Optional[int]:
@@ -200,13 +305,21 @@ class MemorySpace:
         ALM 要求每次 Add 的消息「已完整存储且可被检索」，而 Ariadne 的
         triage 会在判定无维护价值时整段跳过、LLM 也可能抽不出节点——
         这两种情况都必须兜底，否则该会话记忆永久缺失。
+
+        但「LLM 发起了 create 却一个都没落地」不属于这两种情况：那说明这些内容
+        命中了语义去重，即图中已有等价记忆。此时再兜底是有害的——兜底刻意把去重
+        阈值提到 2.0（相当于关闭去重），会把同一批内容以原文形式重复写入。平台重试
+        同一次 Add 时正好走这条链：去重命中 → created 为空 → 兜底关去重 → 必然重复。
         """
         if result.get("skipped"):
             return True
         if created:
             return False
-        # DBA 虽未新建节点，但可能改写了既有节点，此时内容已被覆盖
         node_ops = (result.get("ops") or {}).get("node_ops") or []
+        if not node_ops:
+            return True
+        if any(op.get("action") == "create" for op in node_ops):
+            return False
         return not any(op.get("action") in ("update", "deprecate", "fix_type") for op in node_ops)
 
     def _store_raw_fallback(
@@ -219,16 +332,32 @@ class MemorySpace:
         只有第 1 条落库）。调用方 add() 已持有 space 锁，builder 共享同一把锁，
         因此这里的阈值临时调整不会被并发观察到。
         """
+        limit = self.config.fallback_max_nodes
+        if len(messages) > limit:
+            logger.warning(
+                "空间 %s 兜底落库条数超上限: %d → %d 条，超出部分未存储",
+                self._masked_id(), len(messages), limit,
+            )
+
         ops = []
-        for msg in messages[: self.config.fallback_max_nodes]:
+        clipped = 0
+        for msg in messages[:limit]:
             text = msg.content.strip()
             if not text:
                 continue
+            raw = f"{msg.role}: {text}"
+            if len(raw) > _FALLBACK_CONTENT_LIMIT:
+                clipped += 1
             ops.append({
                 "action": "create",
-                "content": f"{msg.role}: {text}"[:_FALLBACK_CONTENT_LIMIT],
+                "content": raw[:_FALLBACK_CONTENT_LIMIT],
                 "node_type": NodeType.THING.value,
             })
+        if clipped:
+            logger.warning(
+                "空间 %s 兜底落库 %d 条内容超 %d 字符被截断",
+                self._masked_id(), clipped, _FALLBACK_CONTENT_LIMIT,
+            )
         if not ops:
             return []
 
@@ -283,8 +412,15 @@ class MemorySpace:
         叙述内容随查询变化，不能像普通节点那样由内容派生 id；改为对采纳的节点集合
         取哈希，这样同一批记忆在同一作用域下的 id 保持稳定。
         """
+        if not node_ids:
+            return ""
         joined = "|".join(sorted(node_ids))
         return "story:" + hashlib.sha1(joined.encode("utf-8")).hexdigest()[:10]
+
+    @staticmethod
+    def _story_id_from_text(text: str) -> str:
+        """采纳节点集合为空时的兜底 id：改由叙述正文派生，避免跨查询撞同一个常量 id"""
+        return "story:" + hashlib.sha1((text or "").encode("utf-8")).hexdigest()[:10]
 
     def _collect_temporal_candidates(self, query: str, exclude_ids) -> List[Dict[str, Any]]:
         """时序补召（T4）：语义命中时间锚点后，沿 TEMPORAL 边反向取共时事件。
@@ -345,13 +481,31 @@ class MemorySpace:
         vectors = self.vector_store.get_content_vectors([c["id"] for c in candidates])
         return max((cosine(query_vec, v) for v in vectors), default=0.0)
 
+    def _abstain(self, best_cos: float, reason: str) -> List[Dict[str, Any]]:
+        """按契约返回空数组；同时记账与打日志"""
+        if self.stats is not None:
+            self.stats.record_abstain()
+        logger.info(
+            "空间 %s 弃权: best_cos=%.4f 硬下限=%.4f 原因=%s",
+            self._masked_id(), best_cos, self.config.abstain_cosine, reason,
+        )
+        return []
+
     def search(self, query: str, top_k: int) -> List[Dict[str, Any]]:
         """检索并按梯度重排为 ALM 的 data 数组（只返回节点原文，不经过 StoryRank）
 
         候选按证据来源分梯度：T1 种子 → T2 图扩展（1 跳及以上）→ T3 语义救援
         （被目的回归过滤掉、但语义上可能相关的邻居）。梯度以**软先验乘子**参与打分，
         因此高相关的低梯度节点仍可越过弱相关的高梯度节点。
+
+        全程持有空间锁：add() 改图时持的是同一把锁，检索若不持锁就可能读到「字典
+        边迭代边被改」的中间态；代价是同 user_id 的并发检索串行（跨 user_id 互不
+        影响，而评测里同一 user_id 的并发度远低于跨 user_id 的并发度）。
         """
+        with self._lock:
+            return self._search_locked(query, top_k)
+
+    def _search_locked(self, query: str, top_k: int) -> List[Dict[str, Any]]:
         if self.retriever.path_tracker is not None:
             self.retriever.path_tracker.start_session()
 
@@ -364,7 +518,15 @@ class MemorySpace:
         if self.config.search_shape == "raw":
             result = self.retriever.retrieve(query, **retrieve_kwargs)
         else:
-            result = self.retriever.retrieve_with_story(query, **retrieve_kwargs)
+            # with_response=False：ALM 只消费 stories / story_nodes，GenerateResponse 的产物
+            # 从不被读取，却要多打一次 LLM（约 2.7s；Search 并发可达 256）。同时主办方把
+            # 「Search 阶段生成最终答案」划为红线，即便结果被丢弃也不应触发该链路。
+            result = self.retriever.retrieve_with_story(
+                query,
+                with_response=False,
+                render_timestamps=self.config.render_timestamps,
+                **retrieve_kwargs,
+            )
 
         mode = self.config.rerank_mode
         # 查询向量同时服务于重排与弃权判定，故无论重排模式如何都先算出来
@@ -379,15 +541,6 @@ class MemorySpace:
         if not candidates:
             return []
 
-        # 弃权：候选与查询的最大余弦低于阈值时视为「无相关记忆」，按契约返回空数组
-        best_cos = self._best_cosine(query_vec, candidates)
-        if self.config.abstain_cosine > 0.0 and best_cos < self.config.abstain_cosine:
-            logger.info(
-                "空间 %s 弃权: 最高余弦 %.4f < 阈值 %.4f",
-                self._masked_id(), best_cos, self.config.abstain_cosine,
-            )
-            return []
-
         if mode != "off":
             candidates += self._collect_rescue_candidates(
                 self._seed_ids(result), {item["id"] for item in candidates}, query_vec
@@ -398,9 +551,21 @@ class MemorySpace:
             query, {item["id"] for item in candidates}
         )
 
+        # 弃权第一段（硬下限）：低于它一律弃权，连判定调用都不必发。
+        # 必须在**并集**上算余弦：T3 救援候选本就是按语义相似度挑出来的，只看 T1/T2
+        # 会低估 best_cos，把一个其实有相关记忆的查询误判为「无记忆」。
+        # 每次检索都记录（只记数值、不记 query 正文）：平台 smoke 打进来的真实查询
+        # 无法离线复现，只能靠这组数字反推分布来标定阈值。
+        best_cos = self._best_cosine(query_vec, candidates)
+        if self.stats is not None:
+            self.stats.record_search(best_cos)
+        logger.info("空间 %s 检索: best_cos=%.4f", self._masked_id(), best_cos)
+        if self.config.abstain_cosine > 0.0 and best_cos < self.config.abstain_cosine:
+            return self._abstain(best_cos, "低于硬下限")
+
         pool = self.config.rerank_pool
         if pool > 0:
-            candidates = candidates[:pool]
+            candidates = self._truncate_candidates(candidates, pool)
 
         content_vecs = None
         if mode != "off":
@@ -420,6 +585,20 @@ class MemorySpace:
             query=query,
             pool=pool,
         )
+
+        # 弃权第二段（模糊带判定）：余弦落在 [abstain_cosine, abstain_verify_hi) 时，
+        # 单看数值分不清「库里确实没有」与「有、但提问措辞与节点原文距离远」——实测
+        # 两类样本的余弦区间重叠（见 alm/judge.py 顶部注释）。故把已排好序的 top-N
+        # 交给 LLM 判一次；判否才弃权，判定失败按放行处理。
+        if self.config.abstain_verify_hi > 0.0 and best_cos < self.config.abstain_verify_hi:
+            verdict = self.judge.is_relevant(query, items)
+            if verdict is False:
+                return self._abstain(best_cos, "模糊带判定为无相关信息")
+            logger.info(
+                "空间 %s 模糊带放行: best_cos=%.4f verdict=%s",
+                self._masked_id(), best_cos, verdict,
+            )
+
         shape = self.config.search_shape
         stories = result.get("stories") or []
         if shape == "raw" or not stories:
@@ -441,9 +620,14 @@ class MemorySpace:
         if shape != "raw" and stories:
             # 叙述置顶：由 _normalize_scores 归一化后其 score 恒为 1.0
             top_score = max((item["score"] for item in projected), default=1.0)
+            story = stories[0]
+            # adopted_ids 可能全部落在候选之外（LLM 幻觉或重编号），此时集合为空。
+            # 对空集合取哈希会让所有这类查询共用同一个常量 id，故退回由正文派生。
+            story_id = self._story_id(result.get("story_nodes") or []) \
+                or self._story_id_from_text(story)
             projected = [{
-                "id": self._story_id(result.get("story_nodes") or []),
-                "content": stories[0],
+                "id": story_id,
+                "content": story,
                 "score": top_score,
             }] + projected
 
@@ -485,6 +669,36 @@ class MemorySpace:
         ordered = list(candidates.values())
         ordered.sort(key=lambda item: (item["tier"], -item["par_score"]))
         return ordered
+
+    def _truncate_candidates(
+        self, candidates: List[Dict[str, Any]], pool: int
+    ) -> List[Dict[str, Any]]:
+        """按梯度截断候选池，为低梯度（T3 救援 / T4 时序）保留名额。
+
+        候选顺序是 T1、T2（按 par_score 降序）后接 T3、T4，而 T3/T4 的 par_score 恒为
+        0，直接取前 pool 条会在 PAR 候选本就接近 pool 时把它们**整段**切掉——救援与
+        时序通道于是静默失效（配置还在，能力没了）。这里先给低梯度留
+        rerank_pool_reserve 个名额，其余名额按原顺序从高梯度取；名额没占满时按原顺序补齐。
+        """
+        if pool <= 0 or len(candidates) <= pool:
+            return candidates
+
+        reserve = max(0, min(self.config.rerank_pool_reserve, pool))
+        high = [item for item in candidates if int(item.get("tier", 1)) <= 2]
+        low = [item for item in candidates if int(item.get("tier", 1)) > 2]
+
+        low_keep = low[:reserve]
+        high_keep = high[: max(0, pool - len(low_keep))]
+        kept = high_keep + low_keep
+
+        if len(kept) < pool:
+            kept_ids = {id(item) for item in kept}
+            for item in candidates:
+                if len(kept) >= pool:
+                    break
+                if id(item) not in kept_ids:
+                    kept.append(item)
+        return kept
 
     def _collect_rescue_candidates(
         self, seed_ids: List[str], known: set, query_vec

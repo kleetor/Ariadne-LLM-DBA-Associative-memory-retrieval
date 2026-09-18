@@ -19,6 +19,7 @@ import hmac
 import logging
 import os
 import sys
+import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -100,9 +101,12 @@ def create_app(engine: ALMEngine, config: ALMConfig) -> Starlette:
         try:
             # 阻塞式 LLM 维护放到线程池，避免阻塞事件循环（正式评测 Add 并发可达 16–64）
             await run_in_threadpool(engine.add, parsed)
-        except Exception as exc:
-            logger.exception("Add 处理失败 user_id=%s", _mask(parsed.user_id))
-            return _error(500, f"内部错误: {type(exc).__name__}: {str(exc)[:200]}")
+        except Exception:
+            # 只回传一个可对账的 error_id，明细留在服务端日志：异常字符串可能带上游
+            # 响应片段、文件路径乃至记忆正文，而 content 是唯一需要給平台的信道。
+            error_id = uuid.uuid4().hex[:8]
+            logger.exception("Add 处理失败 user_id=%s error_id=%s", _mask(parsed.user_id), error_id)
+            return _error(500, f"内部错误（error_id={error_id}）")
 
         return JSONResponse(
             build_add_response(parsed.request_id, parsed.user_id, parsed.session_id)
@@ -124,9 +128,10 @@ def create_app(engine: ALMEngine, config: ALMConfig) -> Starlette:
 
         try:
             items = await run_in_threadpool(engine.search, parsed)
-        except Exception as exc:
-            logger.exception("Search 处理失败 user_id=%s", _mask(parsed.user_id))
-            return _error(500, f"内部错误: {type(exc).__name__}: {str(exc)[:200]}")
+        except Exception:
+            error_id = uuid.uuid4().hex[:8]
+            logger.exception("Search 处理失败 user_id=%s error_id=%s", _mask(parsed.user_id), error_id)
+            return _error(500, f"内部错误（error_id={error_id}）")
 
         return JSONResponse(build_search_response(items))
 
@@ -201,7 +206,11 @@ def _print_status(config: ALMConfig, engine: ALMEngine) -> None:
         f"  检索参数   : seed_k={config.seed_k} expand_k={config.expand_k} "
         f"max_hops={config.max_hops} max_top_k={config.max_top_k}",
         f"  重排       : {config.rerank_mode}（pool={config.rerank_pool} "
+        f"reserve={config.rerank_pool_reserve} "
         f"tiers={config.rerank_tier_weights} rescue={config.rerank_rescue}）",
+        f"  形态/弃权  : shape={config.search_shape} render_ts={config.render_timestamps} "
+        f"abstain_cos={config.abstain_cosine} verify_hi={config.abstain_verify_hi} "
+        f"judge_top_n={config.abstain_judge_top_n}",
         f"  监听       : http://{config.host}:{config.port}",
         f"  端点       : POST /add  POST /search  GET /health",
         "=" * 60,
@@ -246,6 +255,9 @@ def main():
         uvicorn.run(app, host=config.host, port=config.port, log_level="warning")
     finally:
         engine.close()
+        # 退出时报账：token 用量与成本、检索余弦分布（均用于压测 / 评测后的标定）
+        print(engine.token_meter.report(), file=sys.stderr)
+        print(engine.retrieval_stats.report(), file=sys.stderr)
 
 
 if __name__ == "__main__":

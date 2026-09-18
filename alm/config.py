@@ -86,8 +86,10 @@ class ALMConfig:
     # ---- 写入 ----
     # 单次 Add 最多处理的消息条数（防止异常输入打爆 LLM）
     max_messages_per_add: int = 64
-    # triage 跳过时的兜底落库上限（保证本次会话内容仍可被检索）
-    fallback_max_nodes: int = 64
+    # triage 跳过时的兜底落库上限（保证本次会话内容仍可被检索）。
+    # 必须 ≥ max_messages_per_add：维护链路只处理前 N 条，其余改走兜底，
+    # 兜底上限若小于 N 会让「超量消息」这条补救路径再次丢内容。
+    fallback_max_nodes: int = 256
 
     # ---- 检索 ----
     # seed_k 为 seed 数量上限；seed_k_min 为下限。
@@ -120,11 +122,41 @@ class ALMConfig:
 
     # ---- 弃权 ----
     # 候选与查询的最大余弦低于该值时，视为「无相关记忆」，按 ALM 契约返回空数组。
-    # 0 表示关闭弃权判定（永远返回候选）。
+    # 注意这是**两段式弃权的硬下限**，置 0 只关掉第一段；第二段（模糊带判定）由
+    # abstain_verify_hi 单独控制，**也必须一并置 0 才能整体关闭弃权**（见 space.py）。
     # 0.52 由 comprehensive 数据集用 bge-large-zh 标定：该阈值下 6/6 弃权题正确弃权，
     # 70 条可作答题中仅 1 条被误弃权（总准确 0.9211 → 0.9868）。
     # 换数据集或换 embedding 模型后需重新标定。
-    abstain_cosine: float = 0.52
+    # 标定手段：每次 Search 都会把候选最高余弦记进 RetrievalStats（见 space.py），
+    # 平台 smoke 打一轮后从服务端日志读分位数，即可判断该值是偏低还是偏高。
+    #
+    # 实测（eval/probe_abstain_threshold.py，刻意拉开措辞的低余弦探针集，20 条）：
+    #   有答案查询余弦 min=0.3954 中位=0.5064；无答案查询 max=0.4701 —— 两类区间
+    #   重叠，单一阈值必然错一边；0.52 恰好落在有答案分布的中位附近，误弃权 6~7/12。
+    #   纯阈值最优为 0.40；配合下面的模糊带判定可做到 A 召回 95% / H 准确 100%。
+    # 因此本值取 0.35 作为**硬下限**（低于它连判定都不发），模糊带交给判定处理。
+    abstain_cosine: float = 0.35
+
+    # ---- 弃权模糊带二次判定（见 alm/judge.py）----
+    # abstain_cosine ≤ best_cos < abstain_verify_hi 时，把已排序的 top-N 片段交给
+    # LLM 判一次「是否够回答问题」，判否才弃权；调用失败或解析失败一律放行。
+    # 依据：单一余弦无法区分「库里没有」与「有但措辞距离远」（两类区间实测重叠）。
+    #
+    # 实测（同上探针集）：t_low=0.35 / t_hi=0.50 / top_n=3 时
+    #   A 召回 95.0% / H 准确 100%，三种权重下综合均优于纯阈值；
+    #   对 t_low∈[0.30,0.40]、t_hi≥0.50、top_n∈[3,10] 均不敏感。
+    #   t_hi 低于 0.50 会漏判边界样本（实测 n08 cos=0.4701 未被拦下）。
+    # 0 表示关闭二次判定（退回纯阈值行为）。
+    abstain_verify_hi: float = 0.50
+    # 判定时喂给 LLM 的片段条数与单条截断长度（实测 top_n=3 已饱和）
+    abstain_judge_top_n: int = 3
+    abstain_judge_max_chars: int = 200
+
+    # ---- 记忆整理的时间渲染 ----
+    # 开启后，叙事 prompt 切换为带规则 9 的变体（「记录于 YYYY-MM-DD」是记录时间、
+    # 不是事件发生时间），节点时间戳因此进入 content。默认关闭：ALM 侧原本逐字使用
+    # 基础 prompt，属于刻意冻结的评测行为，改动须由 smoke A/B 的分数决定。
+    render_timestamps: bool = False
 
     # ---- 时序补召（C 维度：时间与事件序列）----
     # 主检索器的图扩展方向对时序是单向的（反向权重为 0），启用后额外调用时序工具，
@@ -151,6 +183,10 @@ class ALMConfig:
     rerank_mode: str = "tiered"
     # 参与重排的候选池上限
     rerank_pool: int = 80
+    # 候选池中预留给低梯度（T3 救援 / T4 时序）的名额。T3/T4 在候选序列里排在 T1/T2
+    # 之后且 par_score 恒为 0，若不预留就会在 PAR 候选接近 pool 时被整段切掉，使救援
+    # 与时序通道在大图上静默失效。0 表示退回「只取前 pool 条」的旧行为。
+    rerank_pool_reserve: int = 20
     # 梯度先验乘子，依次对应 T1 种子 / T2 图扩展（1 跳）/ T3 语义救援 / T4 时序补召。
     # T4 高于 T3：它来自语义命中的时间锚点，比"仅因被目的过滤掉才需救援"的节点更可信。
     rerank_tier_weights: List[float] = field(default_factory=lambda: [1.0, 0.7, 0.4, 0.65])
@@ -177,7 +213,7 @@ class ALMConfig:
             embedding_base_url=_env("EMBEDDING_API_BASE"),
             embedding_local=_env_bool("EMBEDDING_LOCAL"),
             max_messages_per_add=_env_int("ALM_MAX_MESSAGES_PER_ADD", 64),
-            fallback_max_nodes=_env_int("ALM_FALLBACK_MAX_NODES", 64),
+            fallback_max_nodes=_env_int("ALM_FALLBACK_MAX_NODES", 256),
             seed_k=_env_int("ALM_SEED_K", 40),
             seed_k_min=_env_int("ALM_SEED_K_MIN", 5),
             expand_k=_env_int("ALM_EXPAND_K", 40),
@@ -185,9 +221,14 @@ class ALMConfig:
             max_top_k=_env_int("ALM_MAX_TOP_K", 100),
             rerank_mode=(_env("ALM_RERANK_MODE", "tiered") or "tiered").strip().lower(),
             rerank_pool=_env_int("ALM_RERANK_POOL", 80),
+            rerank_pool_reserve=_env_int("ALM_RERANK_POOL_RESERVE", 20),
             fallback_dedup_threshold=_env_float("ALM_FALLBACK_DEDUP_THRESHOLD", 2.0),
             orphan_threshold=_env_int("ALM_ORPHAN_THRESHOLD", 10 ** 9),
-            abstain_cosine=_env_float("ALM_ABSTAIN_COS", 0.52),
+            abstain_cosine=_env_float("ALM_ABSTAIN_COS", 0.35),
+            abstain_verify_hi=_env_float("ALM_ABSTAIN_VERIFY_HI", 0.50),
+            abstain_judge_top_n=_env_int("ALM_ABSTAIN_JUDGE_TOP_N", 3),
+            abstain_judge_max_chars=_env_int("ALM_ABSTAIN_JUDGE_MAX_CHARS", 200),
+            render_timestamps=_env_bool("ALM_RENDER_TIMESTAMPS", False),
             temporal_recall=_env_bool("ALM_TEMPORAL_RECALL", False),
             temporal_k_seed=_env_int("ALM_TEMPORAL_K_SEED", 8),
             temporal_max_facts=_env_int("ALM_TEMPORAL_MAX_FACTS", 8),

@@ -491,21 +491,46 @@ class MemorySpace:
         )
         return []
 
-    def search(self, query: str, top_k: int) -> List[Dict[str, Any]]:
+    def _option_vectors(self, options: Optional[List[str]]) -> Optional[List[Any]]:
+        """选择题各选项的查询向量；未启用对比档位或没有选项时返回 None。
+
+        逐选项**单独**编码（而不是把选项拼进题干）：拼接会让长选项稀释题干，并让
+        干扰项把「匹配错误选项」的记忆拉上来。分开编码后由重排取 max 聚合。
+        任一选项编码失败即整体退回纯题干检索——宁可不增益，也不要半个信号。
+        """
+        if not self.config.options_contrast or not options:
+            return None
+        vectors = []
+        for text in options:
+            try:
+                vectors.append(self.vector_store._embed(text))
+            except Exception as exc:
+                logger.warning("选项向量计算失败，退回纯题干检索: %s", exc)
+                return None
+        return vectors or None
+
+    def search(
+        self, query: str, top_k: int, options: Optional[List[str]] = None
+    ) -> List[Dict[str, Any]]:
         """检索并按梯度重排为 ALM 的 data 数组（只返回节点原文，不经过 StoryRank）
 
         候选按证据来源分梯度：T1 种子 → T2 图扩展（1 跳及以上）→ T3 语义救援
         （被目的回归过滤掉、但语义上可能相关的邻居）。梯度以**软先验乘子**参与打分，
         因此高相关的低梯度节点仍可越过弱相关的高梯度节点。
 
+        `options` 是选择题（含 Streaming）才有的顶层选项；开放题为 None，此时本方法
+        行为与启用前逐字一致。
+
         全程持有空间锁：add() 改图时持的是同一把锁，检索若不持锁就可能读到「字典
         边迭代边被改」的中间态；代价是同 user_id 的并发检索串行（跨 user_id 互不
         影响，而评测里同一 user_id 的并发度远低于跨 user_id 的并发度）。
         """
         with self._lock:
-            return self._search_locked(query, top_k)
+            return self._search_locked(query, top_k, options)
 
-    def _search_locked(self, query: str, top_k: int) -> List[Dict[str, Any]]:
+    def _search_locked(
+        self, query: str, top_k: int, options: Optional[List[str]] = None
+    ) -> List[Dict[str, Any]]:
         if self.retriever.path_tracker is not None:
             self.retriever.path_tracker.start_session()
 
@@ -537,6 +562,13 @@ class MemorySpace:
             logger.warning("查询向量计算失败，退回 PAR 排序: %s", exc)
             mode = "off"
 
+        # 选择题的选项向量：仅 contrast 档位且 mode != off 时参与打分（off 模式无语义分）
+        option_vecs = self._option_vectors(options) if mode != "off" else None
+
+        # 选择题保护：选项题按定义可回答，题干偏短导致余弦偏低时不应整题归零。
+        # 只在确有 options 时生效，开放题路径不受影响（见 ALMConfig.options_abstain_guard）。
+        guard = self.config.options_abstain_guard and bool(options)
+
         candidates = self._collect_par_candidates(result)
         if not candidates:
             return []
@@ -560,7 +592,7 @@ class MemorySpace:
         if self.stats is not None:
             self.stats.record_search(best_cos)
         logger.info("空间 %s 检索: best_cos=%.4f", self._masked_id(), best_cos)
-        if self.config.abstain_cosine > 0.0 and best_cos < self.config.abstain_cosine:
+        if not guard and self.config.abstain_cosine > 0.0 and best_cos < self.config.abstain_cosine:
             return self._abstain(best_cos, "低于硬下限")
 
         pool = self.config.rerank_pool
@@ -584,19 +616,30 @@ class MemorySpace:
             llm=self.retriever.llm,
             query=query,
             pool=pool,
+            option_vecs=option_vecs,
+            weight_option=self.config.options_contrast_weight,
         )
 
         # 弃权第二段（模糊带判定）：余弦落在 [abstain_cosine, abstain_verify_hi) 时，
         # 单看数值分不清「库里确实没有」与「有、但提问措辞与节点原文距离远」——实测
         # 两类样本的余弦区间重叠（见 alm/judge.py 顶部注释）。故把已排好序的 top-N
         # 交给 LLM 判一次；判否才弃权，判定失败按放行处理。
-        if self.config.abstain_verify_hi > 0.0 and best_cos < self.config.abstain_verify_hi:
+        if (
+            not guard
+            and self.config.abstain_verify_hi > 0.0
+            and best_cos < self.config.abstain_verify_hi
+        ):
             verdict = self.judge.is_relevant(query, items)
             if verdict is False:
                 return self._abstain(best_cos, "模糊带判定为无相关信息")
             logger.info(
                 "空间 %s 模糊带放行: best_cos=%.4f verdict=%s",
                 self._masked_id(), best_cos, verdict,
+            )
+        elif guard and best_cos < self.config.abstain_verify_hi:
+            logger.info(
+                "空间 %s 选择题保护：跳过弃权 best_cos=%.4f 选项数=%d",
+                self._masked_id(), best_cos, len(options or []),
             )
 
         shape = self.config.search_shape

@@ -152,6 +152,22 @@ class ALMConfig:
     abstain_judge_top_n: int = 3
     abstain_judge_max_chars: int = 200
 
+    # ---- 选择题 options ----
+    # 文本赛道含 Streaming 选择题，平台只在选择题的 Search 顶层下发 options（不含金标），
+    # 开放题不下发。两个开关都默认关闭，因此开放题路径与既有评测行为完全不变；
+    # 是否启用由本地 MC 集 A/B 的分数决定（见 eval/probe_options_mc.py）。
+    #
+    # abstain_guard：有 options 时跳过两段式弃权。选择题按定义是可回答的，而它的题干
+    #   往往比开放题短（真正的判别信息在选项里），余弦容易被压低——实测短问句余弦可低至
+    #   0.23~0.41（Plan §7.6），一旦落到硬下限之下就是整题归零，代价远大于多返几条无关内容。
+    # contrast：把「各选项与候选的最大余弦」并入层内融合。动机是选择题题干常常欠定，
+    #   只用题干做种子与重排会丢失判别信号；逐选项单独编码再取 max 聚合，而不是把选项
+    #   拼进题干——拼接会让长选项稀释题干，并让干扰项把「匹配错误选项」的记忆拉上来。
+    options_abstain_guard: bool = False
+    options_contrast: bool = False
+    # 对比信号在层内融合中的占比（仅 rerank_mode != off 时生效）
+    options_contrast_weight: float = 0.35
+
     # ---- 记忆整理的时间渲染 ----
     # 开启后，叙事 prompt 切换为带规则 9 的变体（「记录于 YYYY-MM-DD」是记录时间、
     # 不是事件发生时间），节点时间戳因此进入 content。默认关闭：ALM 侧原本逐字使用
@@ -228,6 +244,9 @@ class ALMConfig:
             abstain_verify_hi=_env_float("ALM_ABSTAIN_VERIFY_HI", 0.50),
             abstain_judge_top_n=_env_int("ALM_ABSTAIN_JUDGE_TOP_N", 3),
             abstain_judge_max_chars=_env_int("ALM_ABSTAIN_JUDGE_MAX_CHARS", 200),
+            options_abstain_guard=_env_bool("ALM_OPTIONS_ABSTAIN_GUARD", False),
+            options_contrast=_env_bool("ALM_OPTIONS_CONTRAST", False),
+            options_contrast_weight=_env_float("ALM_OPTIONS_CONTRAST_WEIGHT", 0.35),
             render_timestamps=_env_bool("ALM_RENDER_TIMESTAMPS", False),
             temporal_recall=_env_bool("ALM_TEMPORAL_RECALL", False),
             temporal_k_seed=_env_int("ALM_TEMPORAL_K_SEED", 8),

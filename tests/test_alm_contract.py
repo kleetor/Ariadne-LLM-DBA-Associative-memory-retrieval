@@ -12,7 +12,14 @@ from alm.contract import (
     parse_search_request,
 )
 from alm.engine import space_filename
-from alm.rerank import cosine, embedding_scores, parse_llm_scores, rerank, tier_weight
+from alm.rerank import (
+    cosine,
+    embedding_scores,
+    option_similarity_scores,
+    parse_llm_scores,
+    rerank,
+    tier_weight,
+)
 from alm.space import MemorySpace
 
 
@@ -250,6 +257,63 @@ class TestRerank:
         assert scores[0] == pytest.approx(1.0)
         assert scores[1] == pytest.approx(0.0)
         assert scores[2] == pytest.approx(0.5)
+
+    def test_option_similarity_takes_max_across_options(self):
+        # 每个候选只对「最接近它的那个选项」负责，取 max 而非均值
+        scores = option_similarity_scores([[1, 0], [0, 1]], [[1, 0], [0, 1], [-1, 0]])
+        assert scores[0] == pytest.approx(1.0)
+        assert scores[1] == pytest.approx(1.0)
+        assert scores[2] == pytest.approx(0.5)
+
+    def test_option_similarity_empty_options(self):
+        # 空选项列表退化为全 0.5（等价于关闭对比信号）
+        assert option_similarity_scores([], [[1, 0]]) == [0.5]
+
+    def test_contrast_lets_option_match_overtake(self):
+        """对比档位：只匹配选项、不匹配题干的候选应当越过只匹配题干的候选"""
+        items = [
+            {"id": "a", "content": "A", "par_score": 0.0},
+            {"id": "b", "content": "B", "par_score": 0.0},
+        ]
+        common = dict(
+            mode="tiered",
+            query_vec=[1, 0],
+            content_vecs=[[1, 0], [0, 1]],
+            weight_par=0.0,
+            weight_embedding=1.0,
+            tier_weights=[1.0, 1.0, 1.0],
+        )
+        # 无对比信号：语义分只看题干 → a 在前
+        without = rerank([dict(i) for i in items], **common)
+        assert without[0]["id"] == "a"
+
+        # 打开对比（选项只有第二个）→ b 在前
+        with_contrast = rerank(
+            [dict(i) for i in items],
+            option_vecs=[[0, 1]],
+            weight_option=0.9,
+            **common,
+        )
+        assert with_contrast[0]["id"] == "b"
+        assert with_contrast[0]["score"] > with_contrast[1]["score"]
+
+    def test_contrast_weight_zero_is_noop(self):
+        """weight_option=0 时传入 option_vecs 不应改变任何排序（默认关闭语义）"""
+        items = [
+            {"id": "a", "content": "A", "par_score": 1.0},
+            {"id": "b", "content": "B", "par_score": 0.5},
+        ]
+        common = dict(
+            mode="embedding",
+            query_vec=[1, 0],
+            content_vecs=[[1, 0], [0, 1]],
+            weight_par=0.3,
+            weight_embedding=0.7,
+        )
+        baseline = rerank([dict(i) for i in items], **common)
+        with_vectors = rerank([dict(i) for i in items], option_vecs=[[0, 1]], **common)
+        assert [i["id"] for i in baseline] == [i["id"] for i in with_vectors]
+        assert [i["score"] for i in baseline] == [i["score"] for i in with_vectors]
 
     def test_mode_off_orders_by_par_score(self):
         out = rerank(self._items(), "off")

@@ -66,6 +66,20 @@ def embedding_scores(query_vec, content_vecs: List[Any]) -> List[float]:
     return [(cosine(query_vec, vec) + 1.0) / 2.0 for vec in content_vecs]
 
 
+def option_similarity_scores(option_vecs, content_vecs: List[Any]) -> List[float]:
+    """候选与**各选项**的最大余弦，映射到 [0, 1]。
+
+    取 max 而不是均值：一条记忆只要强支持某一个选项就有判别价值，取均值会被它与
+    其余干扰项的无关性稀释。选项由调用方逐个单独编码传入（不拼进题干），因此这里
+    天然避免了「长选项稀释题干」与「干扰项污染」两个拼接式做法的副作用。
+    """
+    scores: List[float] = []
+    for vec in content_vecs:
+        best = max((cosine(opt, vec) for opt in option_vecs), default=0.0)
+        scores.append((best + 1.0) / 2.0)
+    return scores
+
+
 def _normalize_by_max(values: List[float]) -> List[float]:
     top = max(values) if values else 0.0
     if top <= 0.0:
@@ -126,6 +140,8 @@ def rerank(
     llm=None,
     query: str = "",
     pool: int = 0,
+    option_vecs: Optional[List[Any]] = None,
+    weight_option: float = 0.0,
 ) -> List[Dict[str, Any]]:
     """对候选重排，就地写入 item["score"]，返回按 score 降序的列表。
 
@@ -138,6 +154,9 @@ def rerank(
         tier_weights: 梯度先验乘子，下标 0/1/2 对应 tier 1/2/3
         llm: LangChain LLM 实例（仅 llm 模式使用）
         pool: 参与 LLM 打分的最大候选数（0 表示全部）
+        option_vecs: 选择题各选项的向量；非空且 weight_option > 0 时，把「候选与各选项
+                     的最大余弦」按该权重并入层内语义分（选择题专用，开放题为 None）
+        weight_option: 对比信号在层内语义分中的占比
     """
     if not items:
         return items
@@ -150,6 +169,15 @@ def rerank(
 
     vecs = content_vecs if content_vecs is not None else [None] * len(items)
     embeddings = embedding_scores(query_vec, vecs)
+    # 选择题：题干欠定时判别信息在选项里，故把「与各选项的最大相似度」并入语义分。
+    # 放在这里（而非 _rerank_by_llm 内部）是为了让 llm / tiered / embedding 三种模式
+    # 拿到同一份语义分，避免对比信号只对某一种模式生效。
+    if option_vecs and weight_option > 0.0:
+        option_scores = option_similarity_scores(option_vecs, vecs)
+        embeddings = [
+            (1.0 - weight_option) * emb + weight_option * opt
+            for emb, opt in zip(embeddings, option_scores)
+        ]
     par_norm = _normalize_by_max([float(item.get("par_score", 0.0)) for item in items])
 
     if mode == "llm" and llm is not None:

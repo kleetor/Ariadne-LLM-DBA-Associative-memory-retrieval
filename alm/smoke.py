@@ -104,7 +104,34 @@ def main() -> int:
         print("[WARN] 检索结果为空，请确认 Add 的模型 / Embedding 配置是否生效", file=sys.stderr)
         return 1
 
-    print(json.dumps({"add": "ok", "search": "ok", "returned": len(items)}, ensure_ascii=False))
+    # 4) Search（选择题 options）——文本赛道含 Streaming 选择题，平台会在顶层下发选项；
+    #    这里只验证该字段能被接受、不破坏契约，且返回结构不变（不校验排序效果）。
+    options_body = {
+        "query": "小林在哪里工作？做什么？",
+        "options": ["A. 杭州做后端开发", "B. 成都做平面设计"],
+        "user_id": args.user_id,
+        "top_k": 100,
+    }
+    started = time.time()
+    try:
+        resp = requests.post(f"{base}/search", json=options_body, headers=headers, timeout=args.timeout)
+    except Exception as exc:
+        return _fail(f"search(options) 请求失败: {exc}")
+    if resp.status_code != 200:
+        return _fail(f"search(options) 返回 {resp.status_code}: {resp.text[:300]}")
+    data = resp.json()
+    if not isinstance(data.get("data"), list):
+        return _fail("search(options).data 必须为顶层数组")
+    if len(data["data"]) > options_body["top_k"]:
+        return _fail(f"search(options) 返回 {len(data['data'])} 条，超过 top_k")
+    for idx, item in enumerate(data["data"]):
+        if not item.get("id") or not item.get("content"):
+            return _fail(f"search(options).data[{idx}] 缺少必填 id / content")
+    print(f"[OK] /search(options) -> 200（{time.time() - started:.1f}s，"
+          f"{len(data['data'])} 条）")
+
+    print(json.dumps({"add": "ok", "search": "ok", "search_options": "ok",
+                      "returned": len(items)}, ensure_ascii=False))
     return 0
 
 

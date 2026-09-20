@@ -226,11 +226,15 @@ class ALMEngine:
         return stats
 
     def search(self, request: SearchRequest) -> List[Dict[str, Any]]:
-        """同步检索：只在该 user_id 的空间内检索"""
+        """同步检索：只在该 user_id 的空间内检索。
+
+        `options` 是选择题（含 Streaming）才有的顶层选项，透传给检索层参与选择题保护
+        与选项对比聚合；开放题为 None。
+        """
         with self._lease(request.user_id, create=False) as space:
             if space is None:
                 return []
-            return space.search(request.query, request.top_k)
+            return space.search(request.query, request.top_k, request.options)
 
     # ---- 运维 ----
 

@@ -211,6 +211,8 @@ def _print_status(config: ALMConfig, engine: ALMEngine) -> None:
         f"  形态/弃权  : shape={config.search_shape} render_ts={config.render_timestamps} "
         f"abstain_cos={config.abstain_cosine} verify_hi={config.abstain_verify_hi} "
         f"judge_top_n={config.abstain_judge_top_n}",
+        f"  选择题     : guard={config.options_abstain_guard} "
+        f"contrast={config.options_contrast} w={config.options_contrast_weight}",
         f"  监听       : http://{config.host}:{config.port}",
         f"  端点       : POST /add  POST /search  GET /health",
         "=" * 60,

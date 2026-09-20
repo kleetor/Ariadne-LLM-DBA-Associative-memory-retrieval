@@ -692,7 +692,10 @@ def _mcp_snippets(url: str, yaml_path: str) -> dict:
         }}}),
         "basic": dump({"mcpServers": {"ariadne": {
             "url": url,
-            "headers": {"Authorization": "Basic <base64(用户名:密码)>"},
+            # 占位符刻意不用 `<base64(...)>`：那种写法像函数调用，容易被当成
+            # 「客户端会自动计算」而原样填写，导致鉴权必然失败。
+            "headers": {"Authorization": "Basic 粘贴 base64(用户名:密码) 的输出，"
+                                          "生成：printf '用户名:密码' | base64 -w0"},
         }}}),
         "stdio": dump({"mcpServers": {"ariadne": {
             "command": "python",

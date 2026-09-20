@@ -34,11 +34,14 @@ services:
     image: ariadne-mcp:latest
     container_name: ariadne-mcp
     restart: unless-stopped
-    # MCP 仅供同一 compose 网络内的容器访问（内部调用 http://ariadne-mcp:8766/sse），
-    # 不发布宿主端口，因此不涉及宿主防火墙/外部暴露。
-    # 若需从宿主机本机 IDE 访问，取消下面注释并绑定回环（无需开防火墙）：
-    # ports:
-    #   - "127.0.0.1:${ARIADNE_PORT:-8766}:8766"
+    # MCP 默认仅供同一 compose 网络内的容器访问（内部调用 http://ariadne-mcp:8766/sse）。
+    # 需要从外部（宿主机 IDE 或别的机器）连接时，看下面两种写法：
+    #   - 只从宿主机本机连 → 绑回环，不经过公网、无需开防火墙/安全组
+    #   - 要从别的机器连   → 绑 0.0.0.0（当前写法），并放行云安全组/系统防火墙
+    ports:
+      - "${ARIADNE_PORT:-8766}:8766"
+      # 仅宿主机本机访问时改用这一行（更安全，不暴露到公网）：
+      # - "127.0.0.1:${ARIADNE_PORT:-8766}:8766"
     # 注入 .env 中全部变量为容器环境变量
     env_file:
       - .env

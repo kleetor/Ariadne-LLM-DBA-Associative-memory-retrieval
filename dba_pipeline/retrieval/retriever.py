@@ -846,6 +846,7 @@ class PurposeDrivenRetriever:
         expand_k: Optional[int] = None,
         render_timestamps: bool = False,
         on_stage: StageHook = None,
+        purpose: Optional[List[str]] = None,
     ) -> Dict:
         """检索 → 连通性粗筛 → StoryRank 故事化 →（可选）生成回复
 
@@ -853,6 +854,9 @@ class PurposeDrivenRetriever:
         max_hops / expand_k 为 None 时沿用 retrieve() 的默认值。
         render_timestamps 为 True 时把节点记录时间一并交给 StoryRank（MCP 侧使用），
         默认 False 以保持 ALM 侧输出不变。
+        purpose: 可选，显式注入的目的列表（透传给 retrieve()，**提供即跳过内部目的推断**，
+            调用方须自行保证 purposes 已推断完毕，见 retrieve() 的 purpose 说明）；
+            None 时行为与改造前完全一致（内部自行推断）。
         on_stage: 可选阶段观测回调，透传给 retrieve() 并补充故事化两段（面板「调用测试」）。
         """
         retrieve_kwargs: Dict[str, Any] = {"seed_k": seed_k, "on_stage": on_stage}
@@ -860,6 +864,8 @@ class PurposeDrivenRetriever:
             retrieve_kwargs["max_hops"] = max_hops
         if expand_k is not None:
             retrieve_kwargs["expand_k"] = expand_k
+        if purpose is not None:
+            retrieve_kwargs["purpose"] = purpose
         result = self.retrieve(query, **retrieve_kwargs)
         peak_memories = result.get("peak_memories", [])
         hop_history = result.get("hop_history", [])

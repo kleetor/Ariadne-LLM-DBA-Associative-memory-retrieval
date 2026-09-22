@@ -5,10 +5,13 @@ LangChain LLM 封装：状态推断 + 目的推断 + 回复生成
 """
 
 from datetime import datetime
+import logging
 from typing import List, Optional
 
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
+
+logger = logging.getLogger(__name__)
 
 
 def format_ts_ms(ts) -> str:
@@ -43,6 +46,10 @@ STATUS_INFERENCE_PROMPT = ChatPromptTemplate.from_messages([
 ])
 
 # ---- 目的推断 Prompt ----
+# 该 prompt 同时承担一个**时序二元标签**（temporal），供 ALM 的 /search 决定是否调用
+# 独立时序工具 temporal_lookup：把它合并在这一次调用里，是为了「不新增 LLM 调用」，
+# 且判定只依赖 query（见 Plan §3.2）。判据刻意保守——误判为 true 会引入无关时间锚点、
+# 稀释主通道，故要求「拿不准一律 false」。
 
 PURPOSE_INFERENCE_PROMPT = ChatPromptTemplate.from_messages([
     ("system", """你是对话意图分析助手。根据用户消息，先判断查询类型，再推断用户的目的。
@@ -55,12 +62,18 @@ PURPOSE_INFERENCE_PROMPT = ChatPromptTemplate.from_messages([
 {{
     "status": "用户当前状态",
     "query_type": "information 或 emotional",
+    "temporal": true 或 false,
     "purposes": ["目的1", "目的2", "目的3"]
 }}
 
 规则：
 - information 类型：目的必须是信息获取类（如「获取信息」「了解事实」「确认细节」「比较选择」「还原经历」），禁止社交/情绪类目的（如「社交互动」「建立关系」「倾诉」）
 - emotional 类型：目的可以是「倾诉」「寻求建议」「理解原因」「寻求安慰」等
+- temporal 是**二元判断**：只有当查询明确要求还原「某个时间点/时间段发生了什么」时才置 true，
+  如「上周体检结果怎么样」「昨天下午做了什么」「寒假去了哪」「高中时成绩如何」；
+  其余（问偏好、问身份、问属性、问原因、闲聊、情绪表达等）一律 false。
+  **拿不准一律 false**：误判为 true 会引入无关的时间锚点。
+- temporal 只作独立布尔标签，不影响 purposes 的推断。
 只输出 JSON。"""),
     ("human", "{query}"),
 ])
@@ -193,25 +206,26 @@ class InferenceEngine:
     def infer_status(self, query: str) -> dict:
         """推断用户状态和情绪"""
         import json
-        import logging
         chain = STATUS_INFERENCE_PROMPT | self.llm
         response = chain.invoke({"query": query})
         try:
             return json.loads(response.content)
         except json.JSONDecodeError:
-            logging.warning(f"状态推断 JSON 解析失败，原始响应: {response.content[:200]}")
+            # 只记长度，不记原文：原始响应由 query 派生，落进日志即等于落评测正文
+            # （合规要求日志不含记忆内容）。用模块 logger 而非 root，才能被
+            # server._configure_logging 对 dba_pipeline 的级别闸统一管控。
+            logger.warning("状态推断 JSON 解析失败（响应长度 %d），按未知处理", len(response.content or ""))
             return {"status": "unknown", "emotion": "中性"}
 
     def infer_purpose(self, query: str) -> dict:
         """推断用户隐含目的"""
         import json
-        import logging
         chain = PURPOSE_INFERENCE_PROMPT | self.llm
         response = chain.invoke({"query": query})
         try:
             return json.loads(response.content)
         except json.JSONDecodeError:
-            logging.warning(f"目的推断 JSON 解析失败，原始响应: {response.content[:200]}")
+            logger.warning("目的推断 JSON 解析失败（响应长度 %d），按默认目的处理", len(response.content or ""))
             return {"status": "unknown", "purposes": ["理解"]}
 
     def story_rank(self, query: str, path: dict, render_timestamps: bool = False) -> dict:
@@ -221,8 +235,10 @@ class InferenceEngine:
             query: 用户当前消息
             path: {"nodes": [{"id", "content", "node_type", "timestamp"}],
                    "edges": [{"from", "to", "rel_type", "is_reverse"}]}
-            render_timestamps: 是否把节点的记录时间渲染进 prompt（MCP 侧开启；
-                ALM 侧保持 False，prompt 与既有行为逐字一致）
+            render_timestamps: 是否把节点的记录时间渲染进 prompt，并切换带规则 9 的
+                prompt 变体（规则 9 专门声明「记录于」是记录时间、非事件时间）。
+                MCP 侧硬编码开启；ALM 侧默认关闭（0920 A/B 补测显示净收益为 0，
+                见 Plan §7.10.5 F），可用 ALM_RENDER_TIMESTAMPS=1 打开。
 
         Returns:
             {"story": str, "adopted_ids": [id, ...]}

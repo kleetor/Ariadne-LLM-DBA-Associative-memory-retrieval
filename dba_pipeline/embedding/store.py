@@ -8,7 +8,10 @@ LangChain 向量存储封装
 
 from typing import Dict, List, Tuple, Optional
 import logging
+import os
+import random
 import threading
+import time
 
 import numpy as np
 import requests
@@ -17,6 +20,39 @@ from langchain_core.embeddings import Embeddings
 from langchain_core.documents import Document
 
 logger = logging.getLogger(__name__)
+
+# ---- Embedding API 的瞬时故障重试 ----
+# 云主机上共享 embedding 端点出现 429（限流）/ 连接超时是常态，而这条链路对两端都是
+# 关键路径：Add 侧建图要嵌入全部节点，Search 侧拿不到查询向量就无法判定相关性。
+# 所以在网络层先做有界重试，重试耗尽才向上抛错——ALM 的 /search 会把异常转成 5xx，
+# 交给平台重试，而不是静默降级成「没有相关记忆」。
+_RETRY_STATUS = frozenset({408, 409, 425, 429, 500, 502, 503, 504})
+# 总尝试次数（含首次）。可用 EMBEDDING_MAX_ATTEMPTS 覆盖。
+_EMBED_MAX_ATTEMPTS = max(1, int(os.environ.get("EMBEDDING_MAX_ATTEMPTS", "4")))
+_RETRY_BASE = 0.5        # 指数退避基数（秒）：0.5 → 1 → 2 → 4
+_RETRY_CAP = 4.0         # 单次退避上限
+_RETRY_AFTER_CAP = 10.0  # 尊重 Retry-After，但不超过该上限
+
+
+def _sleep_before_retry(attempt: int, reason: str, resp=None) -> bool:
+    """退避后返回 True（可以再试）；已达次数上限则返回 False（由调用方抛错）"""
+    if attempt >= _EMBED_MAX_ATTEMPTS - 1:
+        return False
+    delay = min(_RETRY_CAP, _RETRY_BASE * (2 ** attempt))
+    if resp is not None:
+        retry_after = resp.headers.get("Retry-After")
+        if retry_after:
+            try:
+                delay = max(delay, min(_RETRY_AFTER_CAP, float(retry_after)))
+            except (TypeError, ValueError):
+                pass
+    delay += random.uniform(0, 0.3)  # 抖动，避免多线程同时重试再次撞限流
+    logger.warning(
+        "Embedding 调用失败，%.1fs 后重试（第 %d/%d 次）: %s",
+        delay, attempt + 1, _EMBED_MAX_ATTEMPTS, reason,
+    )
+    time.sleep(delay)
+    return True
 
 
 class OpenAIEmbeddings(Embeddings):
@@ -48,18 +84,31 @@ class OpenAIEmbeddings(Embeddings):
             "Content-Type": "application/json",
         }
         texts, budget = [t[: self._MAX_CHARS] for t in input_texts], self._MAX_CHARS
+        attempt = 0
         while True:
             payload = {
                 "model": self.model,
                 "input": texts,
                 "encoding_format": "float",
             }
-            resp = requests.post(url, json=payload, headers=headers, timeout=30)
+            try:
+                resp = requests.post(url, json=payload, headers=headers, timeout=30)
+            except requests.exceptions.RequestException as exc:
+                # 连接失败 / 超时：属瞬时故障，退避重试；次数耗尽才抛出
+                if not _sleep_before_retry(attempt, f"{type(exc).__name__}: {exc}"):
+                    raise
+                attempt += 1
+                continue
             if resp.status_code == 200:
                 break
             if resp.status_code == 400 and budget > 400:
                 budget //= 2
                 texts = [t[:budget] for t in texts]
+                continue
+            if resp.status_code in _RETRY_STATUS:
+                if not _sleep_before_retry(attempt, f"HTTP {resp.status_code}", resp):
+                    resp.raise_for_status()
+                attempt += 1
                 continue
             resp.raise_for_status()
         data = resp.json()

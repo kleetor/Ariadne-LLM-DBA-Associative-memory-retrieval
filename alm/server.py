@@ -50,6 +50,30 @@ def _error(status: int, reason: str) -> JSONResponse:
     return JSONResponse({"detail": {"reason": reason}}, status_code=status)
 
 
+# 回环地址：这些情况下不鉴权是安全的（仅本机可达）
+_LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
+
+
+def _is_loopback(host: str) -> bool:
+    return (host or "").strip().lower() in _LOOPBACK_HOSTS
+
+
+def _warn_if_unauthenticated(config: ALMConfig) -> None:
+    """非回环监听 + 未配置鉴权 Key 时告警。
+
+    第二期要求参赛方自行把服务放到公网；此时若 ALM_API_KEYS 为空，_authorized() 会
+    放行**所有**请求——任何人都能读写该记忆库。这里只告警不阻断，以免破坏本地开发与
+    公开 smoke 的既有用法。
+    """
+    if config.api_keys or _is_loopback(config.host):
+        return
+    logger.warning(
+        "ALM_API_KEYS 未配置，但监听 %s（非回环）：所有请求都会被放行。"
+        "公网自托管部署必须先设置鉴权 Key。",
+        config.host,
+    )
+
+
 def _extract_key(request: Request) -> str:
     """从 X-Api-Key / Authorization: Bearer|Token 中取出凭据"""
     key = request.headers.get("x-api-key", "").strip()
@@ -69,7 +93,34 @@ def _authorized(request: Request, config: ALMConfig) -> bool:
     provided = _extract_key(request)
     if not provided:
         return False
-    return any(hmac.compare_digest(provided, key) for key in config.api_keys)
+    # 比较前统一编码为 bytes：hmac.compare_digest 对含非 ASCII 字符的 str 会抛
+    # TypeError，那会让一个畸形请求头变成 500（本函数在 handler 的 try 之外调用）。
+    provided_bytes = provided.encode("utf-8")
+    return any(
+        hmac.compare_digest(provided_bytes, key.encode("utf-8")) for key in config.api_keys
+    )
+
+
+def _enforce_auth_guard(config: ALMConfig) -> None:
+    """非回环监听且无 Key 时**拒绝启动**（除非显式允许）。
+
+    只告警挡不住这个配置：容器里 ALM_HOST 固定 0.0.0.0，忘配 ALM_API_KEYS 就等于
+    把公网记忆库完全开放，而服务看起来一切正常（/health 绿、Add/Search 都能用）。
+    本地自测绑回环不受影响；确需无鉴权运行（例如内网 smoke）可设 ALM_ALLOW_NO_AUTH=1。
+    """
+    if config.api_keys or _is_loopback(config.host):
+        return
+    if os.environ.get("ALM_ALLOW_NO_AUTH", "").strip().lower() in ("1", "true", "yes", "on"):
+        logger.warning(
+            "ALM_ALLOW_NO_AUTH 已开启：在 %s 上无鉴权运行，所有请求都会被放行", config.host
+        )
+        return
+    raise SystemExit(
+        f"拒绝启动：ALM_API_KEYS 为空但监听 {config.host}（非回环），"
+        "所有请求都会被放行（公网下等于完全开放记忆库）。\n"
+        "  请设置非空的 ALM_API_KEYS（即提交给平台的 Memory System Key）；\n"
+        "  仅本地自测可改为绑定 127.0.0.1，或显式设置 ALM_ALLOW_NO_AUTH=1。"
+    )
 
 
 def _mask(user_id: str) -> str:
@@ -150,9 +201,17 @@ def create_app(engine: ALMEngine, config: ALMConfig) -> Starlette:
 
 
 def _configure_logging(level: str) -> None:
-    """核心链路的 info 日志会打印记忆正文，默认只保留 warning 以上（数据合规）"""
+    """日志级别：核心链路的 info 日志会打印记忆正文，默认只保留 warning 以上（数据合规）。
+
+    除限制 root 级别外，还要**显式钉住 `dba_pipeline`**：它的 graph_builder 会在 INFO
+    里打印节点内容节选（`创建节点 [n1] status: <content[:50]>…`）。默认 root=WARNING
+    时这些日志本就不可见，但那是"恰好被压住"——一旦有人为排查问题把 root 调高，评测
+    记忆就会被写进日志。这里显式设成 WARNING，与该参数无关，作为合规上的第二道闸。
+    """
     logging.basicConfig(level=logging.WARNING, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     logging.getLogger("alm").setLevel(getattr(logging, level.upper(), logging.INFO))
+    # 记忆正文只可能出现在这条链路的下游 logger 里，钉死在 WARNING 之上
+    logging.getLogger("dba_pipeline").setLevel(logging.WARNING)
 
 
 def _find_dotenv() -> Optional[Path]:
@@ -193,7 +252,12 @@ def _load_dotenv() -> None:
 
 
 def _print_status(config: ALMConfig, engine: ALMEngine) -> None:
-    auth = f"开启（{len(config.api_keys)} 个 Key）" if config.api_keys else "未开启（仅限本地/公开 smoke）"
+    if config.api_keys:
+        auth = f"开启（{len(config.api_keys)} 个 Key）"
+    elif _is_loopback(config.host):
+        auth = "未开启（仅本机可达，可接受）"
+    else:
+        auth = "⚠ 未开启且非回环监听：所有请求都会被放行"
     embedding = f"{config.embedding_model}（{'本地' if config.embedding_local else 'API'}）"
     lines = [
         "=" * 60,
@@ -204,15 +268,11 @@ def _print_status(config: ALMConfig, engine: ALMEngine) -> None:
         f"  数据目录   : {config.data_dir}",
         f"  鉴权       : {auth}",
         f"  检索参数   : seed_k={config.seed_k} expand_k={config.expand_k} "
-        f"max_hops={config.max_hops} max_top_k={config.max_top_k}",
-        f"  重排       : {config.rerank_mode}（pool={config.rerank_pool} "
-        f"reserve={config.rerank_pool_reserve} "
-        f"tiers={config.rerank_tier_weights} rescue={config.rerank_rescue}）",
-        f"  形态/弃权  : shape={config.search_shape} render_ts={config.render_timestamps} "
-        f"abstain_cos={config.abstain_cosine} verify_hi={config.abstain_verify_hi} "
+        f"max_hops={config.max_hops} max_top_k={config.max_top_k} "
+        f"render_ts={config.render_timestamps}",
+        f"  弃权       : abstain_cos={config.abstain_cosine} "
+        f"verify_hi={config.abstain_verify_hi} "
         f"judge_top_n={config.abstain_judge_top_n}",
-        f"  选择题     : guard={config.options_abstain_guard} "
-        f"contrast={config.options_contrast} w={config.options_contrast_weight}",
         f"  监听       : http://{config.host}:{config.port}",
         f"  端点       : POST /add  POST /search  GET /health",
         "=" * 60,
@@ -239,6 +299,9 @@ def main():
         config.data_dir = Path(args.data_dir)
 
     _configure_logging(args.log_level)
+    # 自托管部署下最常见的危险配置：非回环监听却没设鉴权（记忆库完全开放）
+    _warn_if_unauthenticated(config)
+    _enforce_auth_guard(config)
 
     # 延迟导入：确保 .env（HF_HUB_OFFLINE 等）在 langchain / huggingface_hub
     # 被导入之前就已写入环境变量，否则本地 embedding 会走网络并长时间阻塞。

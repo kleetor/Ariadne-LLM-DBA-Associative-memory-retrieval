@@ -98,7 +98,8 @@ def main() -> int:
 
     print(f"[OK] /search -> 200（{time.time() - started:.1f}s，{len(items)} 条）")
     for item in items[:3]:
-        print(f"    - [{item['id']}] score={item.get('score')} {item['content'][:60]}")
+        print(f"    - [{item['id']}] score={item.get('score')} "
+              f"created_at={item.get('created_at')} {item['content'][:60]}")
 
     if not items:
         print("[WARN] 检索结果为空，请确认 Add 的模型 / Embedding 配置是否生效", file=sys.stderr)

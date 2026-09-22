@@ -14,9 +14,11 @@ import logging
 import os
 import tempfile
 import threading
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import numpy as np
 import yaml
 
 from dba_pipeline.core.jump_axis import NodeType
@@ -27,7 +29,6 @@ from dba_pipeline.loader import load_graph
 from alm.config import ALMConfig
 from alm.contract import AddMessage
 from alm.judge import RelevanceJudge
-from alm.rerank import cosine, rerank
 
 try:
     from dba_pipeline.embedding.store import VectorStore
@@ -46,6 +47,18 @@ logger = logging.getLogger(__name__)
 
 # 兜底节点单条内容的上限（与 embedding 端的截断预算保持一致）
 _FALLBACK_CONTENT_LIMIT = 2000
+
+
+def _cosine(a, b) -> float:
+    """余弦相似度；任一输入缺失或为零向量时返回 0（仅服务于弃权判定）"""
+    if a is None or b is None:
+        return 0.0
+    vec_a = np.asarray(a, dtype=float)
+    vec_b = np.asarray(b, dtype=float)
+    denom = float(np.linalg.norm(vec_a) * np.linalg.norm(vec_b))
+    if denom <= 0.0:
+        return 0.0
+    return float(np.dot(vec_a, vec_b) / denom)
 
 
 class RetrievalStats:
@@ -157,6 +170,12 @@ class MemorySpace:
         self.stats = stats
         # 串行化单个用户空间内的图谱写入与 YAML 落盘
         self._lock = threading.RLock()
+        # 自上次落盘以来图谱是否被改动过。add() 置位、save() 成功后清位。
+        # 作用不只是省一次写盘：留存储存期清理（alm/cleanup.py）按 mtime 判定
+        # 空间最后一次被写入的时间，而 engine.close() 会对**全部驻留空间**调 save()。
+        # 若无条件重写，停服这一步就会把每个空间的 mtime 刷成停服时刻，
+        # 使「先停服再清理」的既定流程永远判定不到过期空间（静默空转）。
+        self._dirty = False
 
         self.graph = (
             load_graph(str(self.yaml_path)) if self.yaml_path.exists() else MemoryGraph()
@@ -268,6 +287,9 @@ class MemorySpace:
         batch_ts = self._batch_timestamp(payload)
 
         with self._lock:
+            # 先置位再改图：maintain 中途抛错时图谱可能已被部分修改，
+            # 此时保持 dirty 让退出路径仍会落盘，宁多写一次也不丢内容。
+            self._dirty = True
             result = self.dba.maintain(conversation, timestamp=batch_ts)
             created = (result.get("result") or {}).get("created_ids") or []
             if self._should_fallback(result, created):
@@ -422,44 +444,6 @@ class MemorySpace:
         """采纳节点集合为空时的兜底 id：改由叙述正文派生，避免跨查询撞同一个常量 id"""
         return "story:" + hashlib.sha1((text or "").encode("utf-8")).hexdigest()[:10]
 
-    def _collect_temporal_candidates(self, query: str, exclude_ids) -> List[Dict[str, Any]]:
-        """时序补召（T4）：语义命中时间锚点后，沿 TEMPORAL 边反向取共时事件。
-
-        默认关闭（见 ALMConfig.temporal_recall）。实测该通道与主检索高度冗余：
-        产出节点 97% 已被主链路召回；10 条 temporal 查询上新增的 8 个节点无一命中 gold；
-        而新增节点的 gold 重叠为 0，意味着提权只会挤占正确节点。故保留实现以备在真实
-        数据上重新评估，默认不启用。时间锚点自身一并带上，便于回答模型定位「何时」。
-        """
-        if not self.config.temporal_recall:
-            return []
-        try:
-            res = self.retriever.temporal_lookup(
-                query,
-                k_seed=self.config.temporal_k_seed,
-                max_facts=self.config.temporal_max_facts,
-                max_anchors=self.config.temporal_max_anchors,
-            )
-        except Exception as exc:
-            logger.warning("时序补召失败: %s", exc)
-            return []
-
-        out: List[Dict[str, Any]] = []
-        for group in res.get("matches") or []:
-            anchor = group.get("time_anchor") or {}
-            items = ([anchor] if anchor.get("id") else []) + list(group.get("facts") or [])
-            for item in items:
-                node_id = item.get("id")
-                if not node_id or node_id in exclude_ids:
-                    continue
-                exclude_ids.add(node_id)
-                out.append({
-                    "id": node_id,
-                    "content": item.get("content") or "",
-                    "par_score": 0.0,
-                    "tier": 4,
-                })
-        return out
-
     def _render_content(self, node_id: str, content: str) -> str:
         """为输出内容附上节点类型，保留实体/属性的类型信息。
 
@@ -474,12 +458,34 @@ class MemorySpace:
         label = getattr(node_type, "value", None) or str(node_type or "")
         return f"[{label}] {content}" if label else content
 
+    def _node_created_at(self, node_id: str) -> Optional[str]:
+        """节点的记录时间，渲染成 `YYYY-MM-DD`；无时间戳则返回 None（不输出该字段）。
+
+        契约里 `created_at` 是可选字段，但平台侧确实会用：CLBench 的
+        `format_selected_memories()` 把每条记忆渲染成 `- [<created_at>] 正文`，缺失即整条
+        记忆丢掉时间线索；官方 Answer 模板第 7 条还要求把 yesterday / last month 这类相对
+        时间换算成日期，前提同样是记忆里带时间。
+
+        注意语义：节点 `timestamp` 是**记录时间**（写入图谱的时刻），不是事件发生时间
+        （见 dba_pipeline/llm/inference.py 顶部说明），因此这里只提供日期，不做任何换算。
+        """
+        try:
+            ts = self.graph.graph.nodes[node_id].get("timestamp")
+        except Exception:
+            return None
+        if isinstance(ts, bool) or not isinstance(ts, (int, float)) or ts <= 0:
+            return None
+        try:
+            return datetime.fromtimestamp(ts / 1000.0).strftime("%Y-%m-%d")
+        except (OSError, OverflowError, ValueError):
+            return None
+
     def _best_cosine(self, query_vec, candidates: List[Dict[str, Any]]) -> float:
         """候选与查询的最大余弦相似度（弃权判定用）"""
         if query_vec is None or not candidates:
             return 0.0
         vectors = self.vector_store.get_content_vectors([c["id"] for c in candidates])
-        return max((cosine(query_vec, v) for v in vectors), default=0.0)
+        return max((_cosine(query_vec, v) for v in vectors), default=0.0)
 
     def _abstain(self, best_cos: float, reason: str) -> List[Dict[str, Any]]:
         """按契约返回空数组；同时记账与打日志"""
@@ -491,144 +497,226 @@ class MemorySpace:
         )
         return []
 
-    def _option_vectors(self, options: Optional[List[str]]) -> Optional[List[Any]]:
-        """选择题各选项的查询向量；未启用对比档位或没有选项时返回 None。
-
-        逐选项**单独**编码（而不是把选项拼进题干）：拼接会让长选项稀释题干，并让
-        干扰项把「匹配错误选项」的记忆拉上来。分开编码后由重排取 max 聚合。
-        任一选项编码失败即整体退回纯题干检索——宁可不增益，也不要半个信号。
-        """
-        if not self.config.options_contrast or not options:
-            return None
-        vectors = []
-        for text in options:
-            try:
-                vectors.append(self.vector_store._embed(text))
-            except Exception as exc:
-                logger.warning("选项向量计算失败，退回纯题干检索: %s", exc)
-                return None
-        return vectors or None
-
     def search(
         self, query: str, top_k: int, options: Optional[List[str]] = None
     ) -> List[Dict[str, Any]]:
-        """检索并按梯度重排为 ALM 的 data 数组（只返回节点原文，不经过 StoryRank）
+        """检索并按 ALM 契约组装 data 数组。
 
-        候选按证据来源分梯度：T1 种子 → T2 图扩展（1 跳及以上）→ T3 语义救援
-        （被目的回归过滤掉、但语义上可能相关的邻居）。梯度以**软先验乘子**参与打分，
-        因此高相关的低梯度节点仍可越过弱相关的高梯度节点。
-
-        `options` 是选择题（含 Streaming）才有的顶层选项；开放题为 None，此时本方法
-        行为与启用前逐字一致。
+        返回内容 = MCP `query_memory` 对外给出的记忆内容（即叙事），检索直接使用共享检索器，
+        不做候选扩召、重排或形态切换。`options` 只是契约字段（选择题才下发，见 contract.py），
+        检索只消费题干，不对选项做任何加工。
 
         全程持有空间锁：add() 改图时持的是同一把锁，检索若不持锁就可能读到「字典
         边迭代边被改」的中间态；代价是同 user_id 的并发检索串行（跨 user_id 互不
         影响，而评测里同一 user_id 的并发度远低于跨 user_id 的并发度）。
         """
         with self._lock:
-            return self._search_locked(query, top_k, options)
+            return self._search_locked(query, top_k)
 
-    def _search_locked(
-        self, query: str, top_k: int, options: Optional[List[str]] = None
-    ) -> List[Dict[str, Any]]:
+    def _route_purposes(self, query: str) -> Optional[List[str]]:
+        """时序路由：一次目的判定 →（仅当判定为时序）追加锚点/事实文本。
+
+        返回最终 purpose 列表（供 retrieve_with_story 注入）。任何失败/退化都
+        **静默退回**：抛出异常时返回 None（由检索器内部自行推断）、工具无产出时返回
+        原始 purposes。
+
+        为什么必须由 ALM 显式调用 infer_purpose：`Retriever.retrieve()` 的 `purpose`
+        语义是「提供时**跳过**内部独立推断」（见 retriever.py 的 `if purpose is not None`
+        分支），故显式传 purpose 就等于放弃内部推断，必须自己先把 purposes 推断出来，
+        否则会完全丢失「目的驱动种子」。`seed_ids` 是内部计算的，外部无法注入种子，
+        所以用时序产出驱动主通道的唯一途径就是把产出并入 purpose。
+
+        四条约束（Plan §3.2）：
+          ① 判定只看 query、一次定死：本方法只接收 query，infer_purpose 只调用一次，
+             且在任何检索结果产生之前完成；
+          ② 时序产出只**追加**：merged = purposes + 追加文本，不改写既有目的；
+          ③ 不碰控制流：本方法不决定是否调用主通道（由调用方无条件执行）；
+          ④ 全过程打日志：判定结果 / match_type / 锚点 id / 追加条数，只记数值与 ID，
+             **不记 query 正文**（合规要求）。
+        """
+        # ① 目的判定（时序标签与 purposes 合并在同一次 LLM 调用里，不新增调用）
+        try:
+            info = self.retriever.inference.infer_purpose(query)
+            # infer_purpose 直接返回 json.loads 的结果：合法 JSON 也可能是数组或标量，
+            # 那种情况下 .get 会抛 AttributeError。放进同一个 try，按退化处理。
+            purposes = list(info.get("purposes") or []) if isinstance(info, dict) else []
+            is_temporal = bool(info.get("temporal")) if isinstance(info, dict) else False
+        except Exception as exc:
+            logger.warning(
+                "空间 %s 目的推断失败，改由检索器内部推断: %s", self._masked_id(), exc
+            )
+            return None
+
+        if not purposes:
+            # 退化（LLM 返回了合法 JSON 但无 purposes）：退回内部推断，避免空目的向量
+            logger.warning("空间 %s 目的推断无结果，改由检索器内部推断", self._masked_id())
+            return None
+
+        logger.info(
+            "空间 %s 时序路由: 判定=%s 目的数=%d",
+            self._masked_id(), "时序" if is_temporal else "非时序", len(purposes),
+        )
+        if not is_temporal:
+            return purposes
+
+        # ② 时序工具：时间锚点 → 共时事实（仅向量检索 + 图单跳，无 LLM 调用）
+        try:
+            res = self.retriever.temporal_lookup(
+                query,
+                k_seed=self.config.temporal_k_seed,
+                max_facts=self.config.temporal_max_facts,
+                max_anchors=self.config.temporal_max_anchors,
+            )
+        except Exception as exc:
+            logger.warning(
+                "空间 %s 时序查询失败，静默退回仅目的通道: %s", self._masked_id(), exc
+            )
+            return purposes
+
+        extra: List[str] = []
+        seen_text = set()
+        anchor_ids: List[str] = []
+        fact_count = 0
+        for group in res.get("matches") or []:
+            anchor = group.get("time_anchor") or {}
+            if anchor.get("id"):
+                anchor_ids.append(anchor["id"])
+            # 锚点自身也并入目的：查询问的往往是「何时」，锚点文本直接给出时间线索
+            texts = [anchor.get("content") or ""]
+            for fact in group.get("facts") or []:
+                # time_consistent 为 False 表示事实自带的时期词与该锚点完全不相交
+                # （疑似 TEMPORAL 边错配）。宁漏不误：这类事实不并入目的，避免引偏。
+                if fact.get("time_consistent") is False:
+                    continue
+                texts.append(fact.get("content") or "")
+            for text in texts:
+                text = text.strip()
+                if text and text not in seen_text:
+                    seen_text.add(text)
+                    extra.append(text)
+            fact_count += len(group.get("facts") or [])
+
+        logger.info(
+            "空间 %s 时序查询: match_type=%s 锚点=%s 事实数=%d 可并入=%d",
+            self._masked_id(), res.get("match_type"), anchor_ids, fact_count, len(extra),
+        )
+        if not extra:
+            logger.info("空间 %s 时序路由无可用锚点，退回仅目的通道", self._masked_id())
+            return purposes
+
+        # ③ 只追加不覆盖
+        merged = purposes + extra
+        logger.info(
+            "空间 %s 时序路由追加: 目的 %d → %d（追加 %d 条锚点/事实文本）",
+            self._masked_id(), len(purposes), len(merged), len(extra),
+        )
+        return merged
+
+    def _search_locked(self, query: str, top_k: int) -> List[Dict[str, Any]]:
         if self.retriever.path_tracker is not None:
             self.retriever.path_tracker.start_session()
 
-        # story / hybrid 形态下，同一次调用内顺带产出记忆整理叙述，避免重复检索
-        retrieve_kwargs = dict(
+        # 时序路由（Plan §3.2）：开启时由 ALM 先用 query 做一次目的判定，命中时序则把
+        # temporal_lookup 的锚点/事实文本**追加**进 purpose，再驱动下面的主通道。
+        # 关闭时返回 None → 检索器内部自行推断，链路与改造前逐字一致。
+        injected_purpose = self._route_purposes(query) if self.config.temporal_route else None
+
+        # with_response=False：ALM 只消费 stories / story_nodes，GenerateResponse 的产物
+        # 从不被读取，却要多打一次 LLM（约 2.7s；Search 并发可达 256）。同时主办方把
+        # 「Search 阶段生成最终答案」划为红线，即便结果被丢弃也不应触发该链路。
+        # 主通道无条件执行（约束 ③）：无论时序路由是否命中、是否失败，这里都必须走到。
+        result = self.retriever.retrieve_with_story(
+            query,
+            with_response=False,
+            render_timestamps=self.config.render_timestamps,
             seed_k=self._effective_seed_k(),
             max_hops=self.config.max_hops,
             expand_k=self.config.expand_k,
+            purpose=injected_purpose,
         )
-        if self.config.search_shape == "raw":
-            result = self.retriever.retrieve(query, **retrieve_kwargs)
-        else:
-            # with_response=False：ALM 只消费 stories / story_nodes，GenerateResponse 的产物
-            # 从不被读取，却要多打一次 LLM（约 2.7s；Search 并发可达 256）。同时主办方把
-            # 「Search 阶段生成最终答案」划为红线，即便结果被丢弃也不应触发该链路。
-            result = self.retriever.retrieve_with_story(
-                query,
-                with_response=False,
-                render_timestamps=self.config.render_timestamps,
-                **retrieve_kwargs,
-            )
+        # 约束 ④：主通道是否执行必须可观测（失效模式是静默的）
+        logger.info(
+            "空间 %s 主通道已执行: 峰值=%d 叙事=%d",
+            self._masked_id(),
+            len(result.get("peak_memories") or []),
+            len(result.get("stories") or []),
+        )
 
-        mode = self.config.rerank_mode
-        # 查询向量同时服务于重排与弃权判定，故无论重排模式如何都先算出来
-        query_vec = None
+        # 查询向量只服务于弃权判定（返回内容本身不再依赖它），但**不允许静默降级**：
+        # 拿不到查询向量就返回空数组，与「库里确实没有相关记忆」在平台侧完全无法区分，
+        # 等于把 embedding 故障变成一条不重试的错误答案。这里直接抛出，由 /search
+        # 转成 5xx 交给平台重试（embedding 层内部已先做过有界退避重试）。
         try:
             query_vec = self.vector_store._embed(query)
         except Exception as exc:
-            logger.warning("查询向量计算失败，退回 PAR 排序: %s", exc)
-            mode = "off"
-
-        # 选择题的选项向量：仅 contrast 档位且 mode != off 时参与打分（off 模式无语义分）
-        option_vecs = self._option_vectors(options) if mode != "off" else None
-
-        # 选择题保护：选项题按定义可回答，题干偏短导致余弦偏低时不应整题归零。
-        # 只在确有 options 时生效，开放题路径不受影响（见 ALMConfig.options_abstain_guard）。
-        guard = self.config.options_abstain_guard and bool(options)
-
-        candidates = self._collect_par_candidates(result)
-        if not candidates:
-            return []
-
-        if mode != "off":
-            candidates += self._collect_rescue_candidates(
-                self._seed_ids(result), {item["id"] for item in candidates}, query_vec
+            logger.error(
+                "空间 %s 查询向量计算失败（embedding 不可用）: %s", self._masked_id(), exc
             )
+            raise RuntimeError(
+                "查询向量计算失败：embedding 服务不可用，请检查 EMBEDDING_MODEL / "
+                "EMBEDDING_API_BASE / EMBEDDING_API_KEY"
+            ) from exc
 
-        # 时序补召与目的过滤无关，故不受重排模式影响
-        candidates += self._collect_temporal_candidates(
-            query, {item["id"] for item in candidates}
-        )
+        items: List[Dict[str, Any]] = []
 
-        # 弃权第一段（硬下限）：低于它一律弃权，连判定调用都不必发。
-        # 必须在**并集**上算余弦：T3 救援候选本就是按语义相似度挑出来的，只看 T1/T2
-        # 会低估 best_cos，把一个其实有相关记忆的查询误判为「无记忆」。
+        # 只返回叙事一条。MCP 的 `query_memory` 对外给出的记忆内容就是 `stories`
+        # （`story_nodes` 只是一个 id 列表，正文本就不是它对外的记忆产物），所以这是对
+        # MCP 最严格的忠实映射。实测（Plan §7.10.6）：叙事首条已覆盖全部命中的 gold fact，
+        # 其后的原子节点边际贡献为 0（top-1 累计命中 == top-all），而平台也没有任何检索侧
+        # 指标会因条数变化——故节点条目是纯冗余，收拢掉。
+        stories = result.get("stories") or []
+        if stories:
+            story = stories[0]
+            # adopted_ids 可能全部落在候选之外（LLM 幻觉或重编号），此时集合为空。
+            # 对空集合取哈希会让所有这类查询共用同一个常量 id，故退回由正文派生。
+            story_id = self._story_id(result.get("story_nodes") or []) \
+                or self._story_id_from_text(story)
+            # 叙述刻意不带 created_at：它跨多条记忆、时间跨度可能很宽，给单一日期会让
+            # Answer 模型误以为整段叙述都发生在同一天。
+            items.append({"id": story_id, "content": story, "score": 1.0})
+        else:
+            # 叙事缺失（LLM 调用失败等）时**不能静默返回空数组**——那与「弃权」无法区分，
+            # 会把「检索到了但没整理成文」误报成「库里没有相关记忆」。此时退回采纳节点原文。
+            logger.warning("空间 %s 叙事缺失，退回采纳节点原文", self._masked_id())
+            for node_id in result.get("story_nodes") or []:
+                node = self.graph.get_node(node_id)
+                if not node or node.get("deprecated") or node.get("forgotten"):
+                    continue
+                content = node.get("content")
+                if not content:
+                    continue
+                entry = {
+                    "id": node_id,
+                    "content": self._render_content(node_id, content),
+                    # 占位分：最终分数由 _normalize_scores 按返回顺序折算（首条恒 1.0）
+                    "score": 1.0,
+                }
+                created_at = self._node_created_at(node_id)
+                if created_at:
+                    entry["created_at"] = created_at
+                items.append(entry)
+
+        # 契约要求返回条数不超过 top_k
+        items = items[:top_k]
+
+        # 弃权（唯一保留的 ALM 自造能力）：best_cos 取候选池 T1/T2 的最大余弦。
         # 每次检索都记录（只记数值、不记 query 正文）：平台 smoke 打进来的真实查询
         # 无法离线复现，只能靠这组数字反推分布来标定阈值。
+        candidates = self._collect_par_candidates(result)
         best_cos = self._best_cosine(query_vec, candidates)
         if self.stats is not None:
             self.stats.record_search(best_cos)
         logger.info("空间 %s 检索: best_cos=%.4f", self._masked_id(), best_cos)
-        if not guard and self.config.abstain_cosine > 0.0 and best_cos < self.config.abstain_cosine:
+
+        # 弃权第一段（硬下限）：低于它一律弃权，连判定调用都不必发。
+        if self.config.abstain_cosine > 0.0 and best_cos < self.config.abstain_cosine:
             return self._abstain(best_cos, "低于硬下限")
-
-        pool = self.config.rerank_pool
-        if pool > 0:
-            candidates = self._truncate_candidates(candidates, pool)
-
-        content_vecs = None
-        if mode != "off":
-            content_vecs = self.vector_store.get_content_vectors(
-                [item["id"] for item in candidates]
-            )
-
-        items = rerank(
-            candidates,
-            mode=mode,
-            query_vec=query_vec,
-            content_vecs=content_vecs,
-            weight_par=self.config.rerank_weight_par,
-            weight_embedding=self.config.rerank_weight_embedding,
-            tier_weights=self.config.rerank_tier_weights,
-            llm=self.retriever.llm,
-            query=query,
-            pool=pool,
-            option_vecs=option_vecs,
-            weight_option=self.config.options_contrast_weight,
-        )
 
         # 弃权第二段（模糊带判定）：余弦落在 [abstain_cosine, abstain_verify_hi) 时，
         # 单看数值分不清「库里确实没有」与「有、但提问措辞与节点原文距离远」——实测
         # 两类样本的余弦区间重叠（见 alm/judge.py 顶部注释）。故把已排好序的 top-N
         # 交给 LLM 判一次；判否才弃权，判定失败按放行处理。
-        if (
-            not guard
-            and self.config.abstain_verify_hi > 0.0
-            and best_cos < self.config.abstain_verify_hi
-        ):
+        if self.config.abstain_verify_hi > 0.0 and best_cos < self.config.abstain_verify_hi:
             verdict = self.judge.is_relevant(query, items)
             if verdict is False:
                 return self._abstain(best_cos, "模糊带判定为无相关信息")
@@ -636,59 +724,14 @@ class MemorySpace:
                 "空间 %s 模糊带放行: best_cos=%.4f verdict=%s",
                 self._masked_id(), best_cos, verdict,
             )
-        elif guard and best_cos < self.config.abstain_verify_hi:
-            logger.info(
-                "空间 %s 选择题保护：跳过弃权 best_cos=%.4f 选项数=%d",
-                self._masked_id(), best_cos, len(options or []),
-            )
 
-        shape = self.config.search_shape
-        stories = result.get("stories") or []
-        if shape == "raw" or not stories:
-            atom_limit = top_k
-        elif shape == "story":
-            atom_limit = 0
-        else:  # hybrid：叙述占首条，其余名额留给原子节点
-            atom_limit = max(0, top_k - 1)
-
-        # 只透出 ALM 契约声明的字段（id / content / score）
-        projected = [
-            {
-                "id": item["id"],
-                "content": self._render_content(item["id"], item["content"]),
-                "score": item["score"],
-            }
-            for item in items[:atom_limit]
-        ]
-        if shape != "raw" and stories:
-            # 叙述置顶：由 _normalize_scores 归一化后其 score 恒为 1.0
-            top_score = max((item["score"] for item in projected), default=1.0)
-            story = stories[0]
-            # adopted_ids 可能全部落在候选之外（LLM 幻觉或重编号），此时集合为空。
-            # 对空集合取哈希会让所有这类查询共用同一个常量 id，故退回由正文派生。
-            story_id = self._story_id(result.get("story_nodes") or []) \
-                or self._story_id_from_text(story)
-            projected = [{
-                "id": story_id,
-                "content": story,
-                "score": top_score,
-            }] + projected
-
-        return self._normalize_scores(projected)
-
-    @staticmethod
-    def _seed_ids(result: Dict[str, Any]) -> List[str]:
-        """hop 0 的候选即种子节点"""
-        for entry in result.get("hop_history") or []:
-            if int(entry.get("hop", -1)) == 0:
-                return [c["id"] for c in (entry.get("candidates") or []) if c.get("id")]
-        return []
+        return self._normalize_scores(items)
 
     def _collect_par_candidates(self, result: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """T1 种子 + T2 图扩展。
+        """T1 种子 + T2 图扩展的候选并集，仅供弃权判定取 best_cos 用。
 
-        直接取 hop_history（它比 peak 容忍带更全），每条候选自带 hop 与关系边信息，
-        因此梯度无需额外推断。截断时先保 T1、再按组合分排 T2。
+        直接取 hop_history（它比 peak 容忍带更全）。返回内容不再参与排序，故这里的
+        排序只影响可读性。
         """
         par_scores = result.get("peak_scores") or {}
         candidates: Dict[str, Dict[str, Any]] = {}
@@ -713,75 +756,6 @@ class MemorySpace:
         ordered.sort(key=lambda item: (item["tier"], -item["par_score"]))
         return ordered
 
-    def _truncate_candidates(
-        self, candidates: List[Dict[str, Any]], pool: int
-    ) -> List[Dict[str, Any]]:
-        """按梯度截断候选池，为低梯度（T3 救援 / T4 时序）保留名额。
-
-        候选顺序是 T1、T2（按 par_score 降序）后接 T3、T4，而 T3/T4 的 par_score 恒为
-        0，直接取前 pool 条会在 PAR 候选本就接近 pool 时把它们**整段**切掉——救援与
-        时序通道于是静默失效（配置还在，能力没了）。这里先给低梯度留
-        rerank_pool_reserve 个名额，其余名额按原顺序从高梯度取；名额没占满时按原顺序补齐。
-        """
-        if pool <= 0 or len(candidates) <= pool:
-            return candidates
-
-        reserve = max(0, min(self.config.rerank_pool_reserve, pool))
-        high = [item for item in candidates if int(item.get("tier", 1)) <= 2]
-        low = [item for item in candidates if int(item.get("tier", 1)) > 2]
-
-        low_keep = low[:reserve]
-        high_keep = high[: max(0, pool - len(low_keep))]
-        kept = high_keep + low_keep
-
-        if len(kept) < pool:
-            kept_ids = {id(item) for item in kept}
-            for item in candidates:
-                if len(kept) >= pool:
-                    break
-                if id(item) not in kept_ids:
-                    kept.append(item)
-        return kept
-
-    def _collect_rescue_candidates(
-        self, seed_ids: List[str], known: set, query_vec
-    ) -> List[Dict[str, Any]]:
-        """T3 语义救援：种子的 1 跳邻居里，被目的回归过滤掉的那些。
-
-        这批节点的画像很明确——purpose 分低于阈值（所以被丢弃），但语义相似度可能很高。
-        这里只按语义相似度取前 N 个，避免把噪声全捞回来。
-        """
-        limit = self.config.rerank_rescue
-        if limit <= 0 or not seed_ids or query_vec is None:
-            return []
-
-        try:
-            expanded = self.graph.expand_with_trace(seed_ids)
-        except Exception as exc:
-            logger.warning("救援候选扩展失败: %s", exc)
-            return []
-
-        pool: List[Dict[str, Any]] = []
-        for node_id in expanded:
-            if node_id in known:
-                continue
-            node = self.graph.get_node(node_id)
-            if not node or node.get("deprecated") or node.get("forgotten"):
-                continue
-            content = node.get("content")
-            if not content:
-                continue
-            pool.append({"id": node_id, "content": content, "par_score": 0.0, "tier": 3})
-
-        if not pool:
-            return []
-
-        vectors = self.vector_store.get_content_vectors([item["id"] for item in pool])
-        scored = sorted(
-            zip(pool, vectors), key=lambda pair: cosine(query_vec, pair[1]), reverse=True
-        )
-        return [item for item, _ in scored[:limit]]
-
     @staticmethod
     def _normalize_scores(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """把重排得分归一化到 (0, 1]，保证「数值越大越相关」
@@ -804,9 +778,16 @@ class MemorySpace:
 
     # ---- 持久化 ----
 
-    def save(self):
-        """原子写回 YAML，避免进程中断损坏主文件"""
+    def save(self, force: bool = False):
+        """原子写回 YAML，避免进程中断损坏主文件
+
+        仅在图谱确有改动时落盘（`force=True` 可强制）。这不只是省 I/O：cleanup.py
+        按 mtime 判断空间最后一次被写入的时间，无条件重写会让「停服」本身刷新 mtime，
+        使 30 天留存清理永远判定不到过期空间。详见 __init__ 中 _dirty 的说明。
+        """
         with self._lock:
+            if not self._dirty and not force:
+                return
             data = self.graph.to_dict()
             self.yaml_path.parent.mkdir(parents=True, exist_ok=True)
             fd, tmp_path = tempfile.mkstemp(dir=str(self.yaml_path.parent), suffix=".tmp")
@@ -821,6 +802,8 @@ class MemorySpace:
                 except OSError:
                     pass
                 raise
+            # 写盘成功后才清位：中途失败时保持 dirty，下次仍会重试落盘
+            self._dirty = False
 
     # ---- 内部工具 ----
 

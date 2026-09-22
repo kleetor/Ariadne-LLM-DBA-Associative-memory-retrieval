@@ -9,9 +9,9 @@
 - 每次调用打一行 INFO（logger ``alm.tokens``），含本次与累计用量；
 - 进程退出时由 ``ALMEngine.close()`` 打一份汇总，含按单价折算的估算成本。
 
-单价从环境变量读取（USD / 每百万 token），默认为 gpt-4o-mini 官方价——
-正式评测规定 Add / Search 必须用 gpt-4o-mini，用该价目表可直接折算正式成本；
-本地用其它模型（如 deepseek-v4-flash）时按供应商价目表覆盖：
+单价从环境变量读取（USD / 每百万 token），默认取 gpt-4o-mini 官方价。
+**该默认值只是基准价**：工业榜单不限制 Add / Search 使用的模型，本系统实际使用
+deepseek-v4-flash，故须按供应商价目表覆盖，否则折算出的成本会失真：
 
     ALM_PRICE_INPUT_PER_M   默认 0.15
     ALM_PRICE_OUTPUT_PER_M  默认 0.60

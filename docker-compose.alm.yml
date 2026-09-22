@@ -1,21 +1,40 @@
-# Ariadne ALM — Agent Memory Leaderboard 接入部署
+# Ariadne ALM — Agent Memory Leaderboard 接入（参赛方**自托管**部署）
+#
+# ⚠️ 第二期新规：所有参赛组别都必须**由参赛方自行部署** Add / Search API，平台不代为
+#    部署，也不接受只提交 GitHub 仓库 / Docker 镜像 / 启动说明。因此本文件不是"交付物"，
+#    而是**我们自己把服务跑在公网**的部署清单；仓库与镜像只用于开放性、署名与复现审核。
 #
 # 与 docker-compose.yml（MCP 服务）的区别：
 #   1. 入口是 ariadne-alm，暴露同步 Add / Search / Health；
-#   2. **必须发布宿主端口**——平台要从外部调用，MCP 那样仅内网可达是不行的；
-#   3. 挂载持久卷保存记忆（见下方「持久化」说明）；
-#   4. 默认走 API embedding（镜像小）。容器本就必须出网（Add / Search 被要求使用
-#      gpt-4o-mini），所以本地向量模型买不到离线收益，只多背 GB 级体积。
+#   2. 必须有公网入口（平台从外部调用），不能像 MCP 那样只在内网可达；
+#   3. 记忆必须持久化（见下方「持久化」——自托管下这是硬要求，不再是兜底）；
+#   4. 默认走 API embedding（镜像小）。服务本就必须出网访问 LLM 端点，
+#      所以本地向量模型买不到离线收益，只多背 GB 级体积。
 #
-# 用法：
-#   1) 确认项目根目录 .env 已配置 OPENAI_*（Add/Search 的 LLM 按规则须为 gpt-4o-mini）
+# 自托管带来的四项硬要求（旧"把镜像交给维护团队部署"的假设已失效）：
+#   1. **公网 HTTPS 可达**：平台拒绝解析到私网 / 回环 / 链路本地地址的 URL，URL 内也
+#      不得含凭据。仅绑 127.0.0.1 不可用；本服务自身不做 TLS，需前置反向代理
+#      （Nginx / Caddy）终止证书后转发到 8770。
+#   2. **鉴权必须开启**：`ALM_API_KEYS` 不能为空。为空时服务放行所有请求（见
+#      alm/server.py `_authorized`），公网暴露等于把记忆库完全开放。
+#   3. **常驻与持久化由我方负责**：容器需长驻（`restart: unless-stopped`），
+#      `/data` 必须挂持久卷，否则重启后 Search 找不到此前 Add 写入的内容。
+#   4. **出网与凭据由我方提供**：LLM / embedding 的端点与密钥从宿主机环境注入，
+#      平台不注入任何凭据。
+#
+# 用法（自托管）：
+#   1) 在 .env 里补齐两项，缺任一项服务都会在启动时报错而不是静默跑偏：
+#      - ALM_API_KEYS：非空（即提交给平台的 Memory System Key）
+#      - EMBEDDING_MODEL：与 EMBEDDING_API_BASE 对应的模型名
+#      LLM 直接沿用 .env 的 OPENAI_*（工业榜单不限制 Add / Search 使用的模型；
+#      该限制只存在于开源方法榜）。需要单独一套时用 ALM_OPENAI_* 覆盖。
 #   2) docker compose -f docker-compose.alm.yml up -d --build
-#   3) 自测：python -m alm.smoke --base-url http://127.0.0.1:8770
+#   3) 自测：python -m alm.smoke --base-url http://127.0.0.1:8770 --api-key <key>
+#   4) 前置反向代理终止 TLS，把公网域名（如 https://alm.example.com）转发到本服务
 #
-# 持久化：容器内 /data 存放各 user_id 的记忆文件。**若平台按 user_id 重启容器，
-#   没有持久卷就会导致「Add 返回 200 → 重启 → Search 什么也找不到」**，
-#   因此这里用命名卷；挂载卷同时也是「评测环境是否保留磁盘」这一问题的兜底方案。
-#   若实测平台不重启容器，可去掉 volumes 换取更干净的每次全新启动。
+# 持久化：容器内 /data 存放各 user_id 的记忆 YAML 与 <user_id>.index/。
+#   旧方案里这个卷是"以防平台按 user_id 重启容器"的兜底；自托管后它是**必需项**——
+#   容器重启、镜像升级、宿主机维护都必须保住它，否则同一次评测内 Add 与 Search 就断了。
 
 services:
   ariadne-alm:
@@ -33,29 +52,69 @@ services:
     container_name: ariadne-alm
     restart: unless-stopped
 
-    # 平台必须能从外部调用 Add / Search，故发布端口（可用 ALM_PORT 覆盖）
+    # 公网入口。二选一：
+    #   - 前置反向代理（推荐，AML 要求 HTTPS）：只绑回环，由反代终止 TLS 并对外 —— 用下面第一行
+    #   - 平台直连本端口（需自行保障 HTTPS，如云 LB）：绑 0.0.0.0 —— 用下面第二行
     ports:
-      - "${ALM_PORT:-8770}:8770"
+      # 两侧必须同为 ${ALM_PORT}：容器内的监听端口也由同一个变量决定
+      # （Dockerfile.alm 的 CMD 用 --port "${ALM_PORT:-8770}"）。若容器侧写死 8770，
+      # 改过 ALM_PORT 后公网入口会错位，而容器内 healthcheck 仍走 ${ALM_PORT} 因而照常通过，
+      # 表现为「容器健康但平台打不通」。
+      - "127.0.0.1:${ALM_PORT:-8770}:${ALM_PORT:-8770}"
+      # - "${ALM_PORT:-8770}:${ALM_PORT:-8770}"
 
     env_file:
       - .env
     environment:
-      # 容器内固定监听 0.0.0.0，否则宿主无法访问
+      # 容器内固定监听 0.0.0.0，否则宿主/反代无法访问
       ALM_HOST: "0.0.0.0"
       ALM_PORT: "${ALM_PORT:-8770}"
       ALM_DATA_DIR: "${ALM_DATA_DIR:-/data}"
       # 鉴权：逗号分隔的可用 Key，支持 X-Api-Key 或 Authorization: Bearer/Token。
-      # 留空则不鉴权（仅适用于本地自测 / 公开 smoke；正式评测必须设置）。
+      # **留空 = 不鉴权 = 放行所有请求**，且服务会拒绝以该配置在非回环地址启动
+      # （见 alm/server.py `_enforce_auth_guard`）。该值同时就是提交给平台的
+      # Memory System Key（不得写入公开仓库/URL/截图/邮件）。
       ALM_API_KEYS: "${ALM_API_KEYS:-}"
-      # 显式覆盖 .env 的开发期取值（environment 优先级高于 env_file）：
+
+      # ---- 以下显式覆盖 .env 的开发期取值（environment 优先级高于 env_file）----
       # 不覆盖的话，.env 里的 EMBEDDING_LOCAL=1 会让容器去找镜像中并不存在的本地模型。
       EMBEDDING_LOCAL: "${ALM_EMBEDDING_LOCAL:-false}"
 
+      # LLM：沿用 .env 的 OPENAI_*（工业榜单对 Add / Search 使用的模型**无限制**；
+      # 该限制只存在于开源方法榜）。如需给 ALM 单独一套端点/密钥，走 ALM_ 前缀变量。
+      OPENAI_MODEL: "${ALM_OPENAI_MODEL:-${OPENAI_MODEL:-}}"
+      OPENAI_API_BASE: "${ALM_OPENAI_API_BASE:-${OPENAI_API_BASE:-}}"
+      OPENAI_API_KEY: "${ALM_OPENAI_API_KEY:-${OPENAI_API_KEY:-}}"
+
+      # embedding 的模型名必须与端点匹配（例如 SiliconFlow 的模型名恰好就是 bge 的
+      # HF 仓库 id，而 OpenAI 是 text-embedding-3-small）。名字填错时 Add 仍会成功
+      # （索引落盘失败只降级），而 Search 会返回 5xx 由平台重试——不再静默返回空数组。
+      EMBEDDING_MODEL: "${ALM_EMBEDDING_MODEL:-${EMBEDDING_MODEL:-}}"
+      EMBEDDING_API_BASE: "${ALM_EMBEDDING_API_BASE:-${EMBEDDING_API_BASE:-}}"
+      EMBEDDING_API_KEY: "${ALM_EMBEDDING_API_KEY:-${EMBEDDING_API_KEY:-}}"
+
     volumes:
+      # 自托管下的必需项：进程重启、镜像升级、宿主机维护都不能丢 /data
       - alm-data:/data
 
     # HEALTHCHECK 在镜像内定义（GET /health，无需鉴权）
-    # 平台若自行探活，地址为 http://<host>:<ALM_PORT>/health
+    # 平台会主动探活：http://<公网域名>/health（反代需把该路径一并转发）
+
+    # 合规：AML 要求评测数据仅用于本次评测，并在任务结束后 30 天内删除。
+    # 记忆只在 /data 下落盘（<user_id>.yaml + <user_id>.index/），日志不含正文。
+    #
+    # ⚠️ 两条约束互相牵扯，顺序不能错：
+    #   ① 规则同时要求「接口在提交后至少 30 天稳定可访问」——**不能评测一结束就停服**。
+    #      材料截止 10/31、评测停止 11/4，接口至少需维持到 11 月底之后。
+    #   ② 清理必须先停服务：引擎退出时会把内存中驻留的空间重新落盘（engine.close()），
+    #      在服务运行期删除文件会被这一步写回来。
+    # 因此正确顺序是【等 ≥30 天可访问期结束后】再清理：
+    #   docker compose -f docker-compose.alm.yml stop ariadne-alm
+    #   docker compose -f docker-compose.alm.yml run --rm --no-deps ariadne-alm \
+    #     python -m alm.cleanup --older-than-days 30            # 预演，核对清单
+    #   docker compose -f docker-compose.alm.yml run --rm --no-deps ariadne-alm \
+    #     python -m alm.cleanup --older-than-days 30 --apply    # 执行
+    #   清理执行完，本次评测的接口运维义务才算结束。
 
 volumes:
   alm-data:

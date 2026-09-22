@@ -92,6 +92,10 @@ class ALMEngine:
             api_key=config.llm_api_key or "not-needed",
             base_url=config.llm_base_url,
             temperature=0,
+            # 显式提高瞬时故障重试次数（SDK 默认 2）。云主机到 LLM 端点的连接抖动与
+            # 429 较常见，而 Add/Search 各自只允许一次上游重试机会：这里失败会把整个
+            # 请求变成 5xx，代价远高于多试一次。
+            max_retries=3,
             callbacks=[meter] if meter is not None else None,
         )
 
@@ -190,18 +194,19 @@ class ALMEngine:
 
     # ---- 幂等 ----
 
-    def _cached_add(self, request_id: str) -> Optional[Dict[str, int]]:
+    def _cached_add(self, user_id: str, request_id: str) -> Optional[Dict[str, int]]:
         with self._registry_lock:
-            cached = self._request_log.get(request_id)
+            cached = self._request_log.get((user_id, request_id))
             if cached is not None:
-                self._request_log.move_to_end(request_id)
+                self._request_log.move_to_end((user_id, request_id))
                 return dict(cached)
         return None
 
-    def _remember_add(self, request_id: str, stats: Dict[str, int]) -> None:
+    def _remember_add(self, user_id: str, request_id: str, stats: Dict[str, int]) -> None:
         with self._registry_lock:
-            self._request_log[request_id] = dict(stats)
-            self._request_log.move_to_end(request_id)
+            key = (user_id, request_id)
+            self._request_log[key] = dict(stats)
+            self._request_log.move_to_end(key)
             while len(self._request_log) > self.MAX_REQUEST_LOG:
                 self._request_log.popitem(last=False)
 
@@ -210,11 +215,13 @@ class ALMEngine:
     def add(self, request: AddRequest) -> Dict[str, int]:
         """同步写入：返回时记忆必须已持久化且可被检索。
 
-        幂等：平台对 5xx 有有限次重试，而重跑维护会重复写入记忆，故按 request_id
-        记录已处理的返回结果，重复请求直接回放。记录驻留内存并限定容量（见
-        MAX_REQUEST_LOG），进程重启后不保留——重试通常紧跟在失败之后，够用。
+        幂等：平台对 5xx 有有限次重试，而重跑维护会重复写入记忆，故按 (user_id,
+        request_id) 记录已处理的返回结果，重复请求直接回放。键里带 user_id 是为了
+        避免「同一 request_id 被两个 user_id 复用」时第二个请求被误判为重复、
+        从而静默跳过写入。记录驻留内存并限定容量（见 MAX_REQUEST_LOG），进程重启后
+        不保留——重试通常紧跟在失败之后，够用。
         """
-        cached = self._cached_add(request.request_id)
+        cached = self._cached_add(request.user_id, request.request_id)
         if cached is not None:
             logger.info("Add 重复请求，跳过维护: request_id 已处理")
             return cached
@@ -222,14 +229,14 @@ class ALMEngine:
         with self._lease(request.user_id, create=True) as space:
             stats = space.add(request.messages)
             space.save()
-        self._remember_add(request.request_id, stats)
+        self._remember_add(request.user_id, request.request_id, stats)
         return stats
 
     def search(self, request: SearchRequest) -> List[Dict[str, Any]]:
         """同步检索：只在该 user_id 的空间内检索。
 
-        `options` 是选择题（含 Streaming）才有的顶层选项，透传给检索层参与选择题保护
-        与选项对比聚合；开放题为 None。
+        `options` 是选择题（含 Streaming）才有的顶层选项；契约允许该字段，故一并透传，
+        但**不参与检索**——本系统不在 Search 里做任何面向评分形态的处理（见 space.search）。
         """
         with self._lease(request.user_id, create=False) as space:
             if space is None:
@@ -243,7 +250,12 @@ class ALMEngine:
             return len(self._spaces)
 
     def close(self):
-        """退出前落盘所有驻留空间，避免批次缓冲丢失"""
+        """退出前落盘有改动的驻留空间，避免批次缓冲丢失
+
+        只写自上次落盘后被改动的空间（见 MemorySpace._dirty）：无条件重写会把
+        所有驻留空间的 mtime 刷成停服时刻，导致留存期清理按 mtime 判定时永远
+        找不到过期空间。
+        """
         with self._registry_lock:
             for space in self._spaces.values():
                 try:

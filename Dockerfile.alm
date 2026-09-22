@@ -1,12 +1,17 @@
-# Ariadne ALM — Agent Memory Leaderboard 接入镜像
+# Ariadne ALM — Agent Memory Leaderboard 接入镜像（参赛方**自托管**用）
+#
+# ⚠️ 第二期新规：参赛方必须自行部署并运维公网 Add / Search API，平台不代为部署，
+#    也不接受只提交仓库 / 镜像 / 启动说明。本镜像因此是**我们自己的部署工具**，
+#    不是"交给维护团队的交付物"；仓库与镜像仅用于开放性、署名与复现审核。
+#    自托管的配套要求见 docker-compose.alm.yml 顶部（HTTPS、鉴权、持久卷、出网）。
 #
 # 与 Dockerfile（MCP 服务）的区别：
 #   - 入口是 ariadne-alm（同步 Add / Search 服务），不是 ariadne-mcp
-#   - 必须发布端口：平台要从外部调用 /add、/search、/health
+#   - 需要公网入口：由我们发布端口并前置反向代理，平台从外部调用 /add、/search、/health
 #
 # 关于 embedding 模式：默认走 **API embedding**（镜像小、构建快）。
-#   之所以不做「本地模型 + 运行期离线」：Add / Search 按规则必须使用 gpt-4o-mini，
-#   容器本就必须具备出网能力，本地模型买不到任何离线收益，却要多背 GB 级体积
+#   之所以不做「本地模型 + 运行期离线」：LLM 端点必须出网访问，容器本就必须具备
+#   出网能力，本地向量模型买不到任何离线收益，却要多背 GB 级体积
 #   （CPU torch + 中文向量模型）。embedding 也不是延迟瓶颈——Search 的耗时在
 #   目的推断与记忆整理两次 LLM 调用上，embedding 仅在空间冷启动重建索引时批量发生。
 #   如需本地模型（例如部署环境只放通 LLM 端点、不放通 embedding 端点），
@@ -19,9 +24,10 @@
 #
 # 运行（本地验证）：
 #   docker run --rm -p 8770:8770 \
+#     -e ALM_API_KEYS=sk-local-test \
 #     -e OPENAI_API_KEY=sk-xxx \
-#     -e OPENAI_API_BASE=https://api.openai.com/v1 \
-#     -e OPENAI_MODEL=gpt-4o-mini \
+#     -e OPENAI_API_BASE=https://<llm-endpoint>/v1 \
+#     -e OPENAI_MODEL=<llm-model> \
 #     -e EMBEDDING_LOCAL=0 \
 #     -e EMBEDDING_API_KEY=sk-xxx \
 #     -e EMBEDDING_API_BASE=https://<embedding-endpoint>/v1 \
@@ -29,9 +35,14 @@
 #     -v alm-data:/data \
 #     ariadne-alm
 #
+# 注意 ALM_API_KEYS 必填：监听 0.0.0.0 且未设 Key 时服务会直接拒绝启动
+#   （见 alm/server.py `_enforce_auth_guard`），只告警不足以防住"公网记忆库裸奔"。
+#   仅本地无鉴权自测可加 -e ALM_ALLOW_NO_AUTH=1。
+#
 # 注意：API embedding 需要 EMBEDDING_API_KEY / EMBEDDING_API_BASE / EMBEDDING_MODEL
-#   三项，且 EMBEDDING_MODEL 要填 **API 的模型名**，不是 HuggingFace 仓库 id
-#   （两者不可混用）。
+#   三项，且 EMBEDDING_MODEL 要填**端点上真实存在的模型名**（SiliconFlow 恰好就是
+#   bge 的 HF 仓库 id，OpenAI 则是 text-embedding-3-small）。填错时 Add 仍会返回
+#   成功，但 Search 会返回 5xx 由平台重试——不会再静默返回空数组。
 
 FROM python:3.11-slim
 
@@ -75,7 +86,8 @@ RUN if [ "$EMBEDDING_LOCAL" = "true" ]; then \
 ENV EMBEDDING_LOCAL=${EMBEDDING_LOCAL} \
     EMBEDDING_MODEL=${EMBEDDING_MODEL}
 
-# 记忆以本地文件形式落在该目录；评测环境若按 user_id 重启容器，需挂载持久卷
+# 记忆以本地文件形式落在该目录。自托管下必须挂持久卷：进程重启、镜像升级、
+# 宿主机维护都不能丢，否则同一次评测内 Add 与 Search 之间就断了。
 VOLUME ["/data"]
 
 EXPOSE 8770

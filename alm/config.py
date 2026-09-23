@@ -65,6 +65,13 @@ class ALMConfig:
     llm_model: Optional[str] = None
     llm_api_key: Optional[str] = None
     llm_base_url: Optional[str] = None
+    # 链路内部是否开启 deepseek 的思考模式（该端点**默认开启**，effort=high）。
+    # **默认关闭**，依据是两阶段对照实验（见 Plan/0921——thinking档位对照实验报告.md）：
+    # 关闭后 Add/Search 的 output token 降到约 1/16、写入快 2.5 倍，而 gold 覆盖
+    # 28/28/30 三档极差仅 2（落在噪声内），且开启档位反而出现读取饱和。
+    # 抽取、目的推断、叙事整理共用同一个 LLM 实例，故这一处开关覆盖整条链路；
+    # 叙事整理只是把已检索记忆拼装成叙事，无长上下文推理需求。
+    llm_thinking: bool = False
 
     # ---- Embedding ----
     embedding_model: Optional[str] = None
@@ -176,6 +183,7 @@ class ALMConfig:
             llm_model=_env("OPENAI_MODEL"),
             llm_api_key=_env("OPENAI_API_KEY"),
             llm_base_url=_env("OPENAI_API_BASE"),
+            llm_thinking=_env_bool("ALM_LLM_THINKING", False),
             embedding_model=_env("EMBEDDING_MODEL"),
             embedding_api_key=_env("EMBEDDING_API_KEY"),
             embedding_base_url=_env("EMBEDDING_API_BASE"),

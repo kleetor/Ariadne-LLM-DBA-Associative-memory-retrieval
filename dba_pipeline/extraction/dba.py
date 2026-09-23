@@ -81,7 +81,7 @@ EDGE_LINKING_PROMPT = """你是记忆图谱的「边连接器」：节点已经�
 ## 边类型（8）
 CAUSAL=因→果 | SCENARIO=同场景 | SEQUENCE=先→后 | PREFERENCE=偏好 | SOCIAL=社交 | ATTRIBUTE=属性 | TEMPORAL=事件→时间 | TAXONOMIC=子→父
 方向：CAUSAL/SEQUENCE/PREFERENCE/TEMPORAL/TAXONOMIC 单向；SCENARIO/SOCIAL/ATTRIBUTE 双向
-边界：A不发生B还会发生?不会=CAUSAL,可能=SEQUENCE；B是环境=SCENARIO/自身属性=ATTRIBUTE；喜欢=PREFERENCE/需要=CAUSAL
+边界：A不发生B还会发生?不会=CAUSAL,可能=SEQUENCE；B是环境=SCENARIO/自身属性=ATTRIBUTE；喜欢=PREFERENCE/需要=CAUSAL；上位类别=TAXONOMIC（个人记忆里通常是「X 是一种 Y」这类常识归类，很少出现，没有就不连）
 
 ## 操作
 create(连边) | delete(删错误/过时的边)
@@ -90,7 +90,7 @@ create(连边) | delete(删错误/过时的边)
 1. **尽量全连**：同一场景内（工作/健康/社交/情绪/学生时代）所有存在关系的事实之间都要连边——场景内高相关节点是检索枢纽，应连接尽可能多的节点（如「后端开发」连接项目加班、同事、主管、工作年限、换工作意向等）
 2. **跨场景大胆桥接**：工作→健康→情绪→社交 之间，只要找得到因果/场景/时序/偏好/人物关系之一就连——跨场景联想是检索的价值所在
 3. 连接「本轮新节点」与「已有相关节点」：新事实必须尽量接入已有图谱结构，能连则连
-4. 边类型要准确：喜欢/偏好→PREFERENCE、自身属性→ATTRIBUTE、同场景并存→SCENARIO、先后来→SEQUENCE、因果→CAUSAL、人物关系→SOCIAL
+4. 边类型要准确：喜欢/偏好→PREFERENCE、自身属性→ATTRIBUTE、同场景并存→SCENARIO、先后来→SEQUENCE、因果→CAUSAL、人物关系→SOCIAL、上位类别→TAXONOMIC
 5. 保留时间维度：长期习惯与单次事件按语义连（CAUSAL/SEQUENCE）
 6. 边审计：删除已过时/被新事实覆盖的边；本轮未提到但可能仍成立的保留
 

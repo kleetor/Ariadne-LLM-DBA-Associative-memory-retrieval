@@ -48,6 +48,7 @@ from dba_pipeline.source_store import (
 from dba_pipeline.extraction.review_scheduler import IdleReviewScheduler, ReviewConfig
 from dba_pipeline import envfile, filelock, graphlib, oplog
 from dba_pipeline import params as params_mod
+from dba_pipeline.llm.provider import thinking_kwargs
 from dba_pipeline import webauth
 from dba_pipeline.viz import logbus
 
@@ -1537,6 +1538,8 @@ def main():
                         help="LLM API Key（默认读环境变量 OPENAI_API_KEY）")
     parser.add_argument("--llm-base-url", default=os.environ.get("OPENAI_API_BASE"),
                         help="LLM API Base URL（默认读环境变量 OPENAI_API_BASE）")
+    parser.add_argument("--llm-thinking", action="store_true", default=_env_flag("OPENAI_THINKING"),
+                        help="开启 LLM 思考模式（默认关闭；环境变量 OPENAI_THINKING）")
     parser.add_argument("--embedding-model", default=os.environ.get("EMBEDDING_MODEL"),
                         help="Embedding 模型名（默认读环境变量 EMBEDDING_MODEL）")
     parser.add_argument("--embedding-api-key", default=os.environ.get("EMBEDDING_API_KEY"),
@@ -1635,11 +1638,15 @@ def main():
                 print("错误: 需要配置 LLM API Key（--llm-api-key 或环境变量 OPENAI_API_KEY）"
                       "或指定 --llm-base-url（本地模型）", file=sys.stderr)
                 sys.exit(1)
+            # 思考模式默认关闭（依据见 Plan/0921——thinking档位对照实验报告.md）。该参数只有
+            # deepseek 系端点认，其它模型带上会 400，故统一由 provider.thinking_kwargs 判定。
+            llm_extra = thinking_kwargs(args.llm_model, args.llm_base_url, args.llm_thinking)
             llm = ChatOpenAI(
                 model=args.llm_model,
                 api_key=args.llm_api_key or "not-needed",
                 base_url=args.llm_base_url,
                 temperature=0,
+                **llm_extra,
             )
 
             # DBA

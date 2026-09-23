@@ -17,6 +17,7 @@ from alm.config import ALMConfig
 from alm.contract import AddRequest, SearchRequest
 from alm.space import MemorySpace, RetrievalStats
 from alm.tokens import TokenMeter
+from dba_pipeline.llm.provider import thinking_kwargs
 
 try:
     from langchain_openai import ChatOpenAI
@@ -87,6 +88,9 @@ class ALMEngine:
             raise RuntimeError("缺少 LLM 配置（OPENAI_MODEL）")
         if not config.llm_api_key and not config.llm_base_url:
             raise RuntimeError("缺少 LLM 凭据（OPENAI_API_KEY 或 OPENAI_API_BASE）")
+        # 思考模式默认关闭（依据见 Plan/0921——thinking档位对照实验报告.md）。该参数只有
+        # deepseek 系端点认，其它模型带上会 400，故由 provider.thinking_kwargs 统一判定。
+        body = thinking_kwargs(config.llm_model, config.llm_base_url, config.llm_thinking)
         return ChatOpenAI(
             model=config.llm_model,
             api_key=config.llm_api_key or "not-needed",
@@ -97,6 +101,7 @@ class ALMEngine:
             # 请求变成 5xx，代价远高于多试一次。
             max_retries=3,
             callbacks=[meter] if meter is not None else None,
+            **body,
         )
 
     @staticmethod

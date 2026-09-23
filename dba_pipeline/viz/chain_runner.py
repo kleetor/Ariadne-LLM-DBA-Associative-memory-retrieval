@@ -79,11 +79,19 @@ class ChainRunner:
                 api_base=os.environ.get("EMBEDDING_API_BASE") or os.environ.get("OPENAI_API_BASE") or "",
                 model=emb_model,
             )
+        # 思考模式默认关闭（与 MCP / ALM 一致，依据见 Plan/0921 报告）；
+        # OPENAI_THINKING=1 可打开。非 deepseek 模型会自动跳过该参数（否则 400）。
+        from dba_pipeline.llm.provider import thinking_kwargs
+
+        llm_extra = thinking_kwargs(os.environ.get("OPENAI_MODEL"),
+                                    os.environ.get("OPENAI_API_BASE"),
+                                    _env_flag("OPENAI_THINKING"))
         llm = ChatOpenAI(
             model=os.environ.get("OPENAI_MODEL", ""),
             api_key=os.environ.get("OPENAI_API_KEY") or "not-needed",
             base_url=os.environ.get("OPENAI_API_BASE"),
             temperature=0,
+            **llm_extra,
         )
 
         graph = load_graph(self.yaml_path)

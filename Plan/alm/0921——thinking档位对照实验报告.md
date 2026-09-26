@@ -6,7 +6,7 @@
 > **结论（决策）**：**默认使用 off（关闭思考）**。三档在质量上测不出差异，而成本差一个数量级。
 > 已落地为 `ALMConfig.llm_thinking=False`（env `ALM_LLM_THINKING`，默认 0）。
 >
-> **工具**：[eval/exp_thinking_tiers.py](../eval/exp_thinking_tiers.py)；产物 `eval/outputs/thinking_tiers/groupchat_mixed/`。
+> **工具**：[eval/exp_thinking_tiers.py](../../eval/exp_thinking_tiers.py)；产物 `eval/outputs/thinking_tiers/groupchat_mixed/`。
 > **语料**：`data/dba_eval/groupchat_mixed_dialogs.yaml`（4 段对话 / 31 回合，含显式周次与绝对日期、
 > 4 位昵称互为第三方）。
 

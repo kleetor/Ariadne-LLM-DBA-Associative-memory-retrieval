@@ -23,12 +23,13 @@
 #      平台不注入任何凭据。
 #
 # 用法（自托管）：
-#   1) 在 .env 里补齐两项，缺任一项服务都会在启动时报错而不是静默跑偏：
+#   1) 在 .env.alm 里补齐两项，缺任一项服务都会在启动时报错而不是静默跑偏：
 #      - ALM_API_KEYS：非空（即提交给平台的 Memory System Key）
 #      - EMBEDDING_MODEL：与 EMBEDDING_API_BASE 对应的模型名
-#      LLM 直接沿用 .env 的 OPENAI_*（工业榜单不限制 Add / Search 使用的模型；
-#      该限制只存在于开源方法榜）。需要单独一套时用 ALM_OPENAI_* 覆盖。
-#   2) docker compose -f docker-compose.alm.yml up -d --build
+#      LLM / embedding 的端点与密钥也都在 .env.alm（工业榜单不限制 Add / Search
+#      使用的模型；该限制只存在于开源方法榜）。给 ALM 单配一套端点就改这一个文件。
+#   2) docker compose --env-file .env.alm -f docker-compose.alm.yml up -d --build
+#      （带上 --env-file 是为了让端口插值也走同一个文件；只用 -f 时端口取默认 8770）
 #   3) 自测：python -m alm.smoke --base-url http://127.0.0.1:8770 --api-key <key>
 #   4) 前置反向代理终止 TLS，把公网域名（如 https://alm.example.com）转发到本服务
 #
@@ -47,10 +48,33 @@ services:
         # 直接透传会把 GB 级 torch + 向量模型拖进镜像。默认 false = API embedding。
         # 改为 true 时，模型在构建期预下载进镜像，运行期只读缓存（HF_HUB_OFFLINE=1）。
         EMBEDDING_LOCAL: "${ALM_EMBEDDING_LOCAL:-false}"
-        EMBEDDING_MODEL: "${ALM_EMBEDDING_MODEL:-BAAI/bge-large-zh-v1.5}"
-    image: ariadne-alm:latest
+        EMBEDDING_MODEL: "${ALM_EMBEDDING_MODEL:-BAAI/bge-m3}"
+    # 固定产品版本。用版本 tag 而非 latest：商业榜以「固定产品版本」为提交项，
+    # 且 Full 复核有一条 "Version matches"——镜像 tag 与申报版本同名，复核时
+    # `docker compose ps` 一眼可核。改动版本时这里、申报材料、镜像 tag 三处同步。
+    image: ariadne-alm:v0.1.5-alm
     container_name: ariadne-alm
     restart: unless-stopped
+
+    # 日志轮转。默认的 json-file 驱动**既无上限也无轮转**，而评测期接口要连续可访问
+    # 30 天以上（见顶部「可访问期」），不设会让容器日志无限增长。
+    #
+    # 注意这些日志**不随 alm.cleanup 删除**——清理只按 user_id 删 /data 下的图谱与
+    # 索引，碰不到 /var/lib/docker/containers/ 里的日志文件。所以留存窗口只能由这里的
+    # 轮转来界定，不能指望「30 天内删除评测数据」这条义务去覆盖它。
+    #
+    # 容量标定（0930）：开启 `ALM_TRACE_IO` 后每条检索会写**完整题面 + 选项 + 叙事**
+    # （最长的单据可达数 MB——平台上确有把整份文档当 query 送进来的轨道）。实测 smoke
+    # 量级 46 次检索 ≈ 2 MB，即**每次检索约 44 KB**；Full 的检索次数与输入长度都高一个
+    # 量级，故 10m×3=30MB 会在早期就把证据轮转掉。这里按 **100m × 10 = 1 GB** 标定：
+    # Full 一整轮足够，且给了兜底上限（不会像 30 天常驻那样无限增长）。
+    # 若不打算开留痕，或不看历史证据，可调回 10m×3——**改完必须 recreate 容器**才对
+    # 已存在的容器生效（logging 是创建期配置，`restart` 不生效）。
+    logging:
+      driver: json-file
+      options:
+        max-size: "100m"
+        max-file: "10"
 
     # 公网入口。二选一：
     #   - 前置反向代理（推荐，AML 要求 HTTPS）：只绑回环，由反代终止 TLS 并对外 —— 用下面第一行
@@ -64,34 +88,26 @@ services:
       # - "${ALM_PORT:-8770}:${ALM_PORT:-8770}"
 
     env_file:
-      - .env
+      # ALM 专属，与给 MCP / 可视化面板用的根目录 .env 完全分离（后者含
+      # ARIADNE_* / NEO4J_* / JUDGE_* 等，ALM 一个都不读）。改端点 / 密钥只改这一个文件。
+      - .env.alm
     environment:
+      # ---- 此处只保留必须由 compose 钉死的项 ----
+      # OPENAI_* / EMBEDDING_API_BASE / EMBEDDING_API_KEY / EMBEDDING_MODEL /
+      # ALM_API_KEYS / ALM_LLM_THINKING 一律由 .env.alm 提供，**不再在此透传**：
+      # environment 优先级高于 env_file，而这些值靠 ${VAR} 插值，插值源是 shell 与
+      # 项目根 .env（**不含** .env.alm）——透传会把它们插值成空串，反而清掉正确取值。
+      #
       # 容器内固定监听 0.0.0.0，否则宿主/反代无法访问
       ALM_HOST: "0.0.0.0"
       ALM_PORT: "${ALM_PORT:-8770}"
       ALM_DATA_DIR: "${ALM_DATA_DIR:-/data}"
-      # 鉴权：逗号分隔的可用 Key，支持 X-Api-Key 或 Authorization: Bearer/Token。
-      # **留空 = 不鉴权 = 放行所有请求**，且服务会拒绝以该配置在非回环地址启动
-      # （见 alm/server.py `_enforce_auth_guard`）。该值同时就是提交给平台的
-      # Memory System Key（不得写入公开仓库/URL/截图/邮件）。
-      ALM_API_KEYS: "${ALM_API_KEYS:-}"
 
-      # ---- 以下显式覆盖 .env 的开发期取值（environment 优先级高于 env_file）----
-      # 不覆盖的话，.env 里的 EMBEDDING_LOCAL=1 会让容器去找镜像中并不存在的本地模型。
+      # 无条件指向 API embedding：本地开发用的根目录 .env 里是 EMBEDDING_LOCAL=1，
+      # 一旦漏进来容器就会去找镜像中并不存在的本地向量模型。
+      # 仅在**构建期**传 --build-arg EMBEDDING_LOCAL=true 预置本地模型时，
+      # 才需在 shell 里设 ALM_EMBEDDING_LOCAL=true 覆盖此处的默认值。
       EMBEDDING_LOCAL: "${ALM_EMBEDDING_LOCAL:-false}"
-
-      # LLM：沿用 .env 的 OPENAI_*（工业榜单对 Add / Search 使用的模型**无限制**；
-      # 该限制只存在于开源方法榜）。如需给 ALM 单独一套端点/密钥，走 ALM_ 前缀变量。
-      OPENAI_MODEL: "${ALM_OPENAI_MODEL:-${OPENAI_MODEL:-}}"
-      OPENAI_API_BASE: "${ALM_OPENAI_API_BASE:-${OPENAI_API_BASE:-}}"
-      OPENAI_API_KEY: "${ALM_OPENAI_API_KEY:-${OPENAI_API_KEY:-}}"
-
-      # embedding 的模型名必须与端点匹配（例如 SiliconFlow 的模型名恰好就是 bge 的
-      # HF 仓库 id，而 OpenAI 是 text-embedding-3-small）。名字填错时 Add 仍会成功
-      # （索引落盘失败只降级），而 Search 会返回 5xx 由平台重试——不再静默返回空数组。
-      EMBEDDING_MODEL: "${ALM_EMBEDDING_MODEL:-${EMBEDDING_MODEL:-}}"
-      EMBEDDING_API_BASE: "${ALM_EMBEDDING_API_BASE:-${EMBEDDING_API_BASE:-}}"
-      EMBEDDING_API_KEY: "${ALM_EMBEDDING_API_KEY:-${EMBEDDING_API_KEY:-}}"
 
     volumes:
       # 自托管下的必需项：进程重启、镜像升级、宿主机维护都不能丢 /data
@@ -101,7 +117,12 @@ services:
     # 平台会主动探活：http://<公网域名>/health（反代需把该路径一并转发）
 
     # 合规：AML 要求评测数据仅用于本次评测，并在任务结束后 30 天内删除。
-    # 记忆只在 /data 下落盘（<user_id>.yaml + <user_id>.index/），日志不含正文。
+    # 记忆只在 /data 下落盘，共**四份**产物：
+    #   <user_id>.yaml / <user_id>.index/            —— 记忆图谱与其向量索引
+    #   <user_id>.docs.yaml / <user_id>.docs.index/  —— 非图内容区（长文档 / 未抽出的原文）
+    # 四份必须由 alm.cleanup 按**同一空间、同一轮**删除（已按 .docs 后缀归组），
+    # 否则会出现「图谱按期删了、装原文的文档区还留着」——那正是留存条款要避免的。
+    # 日志不含正文。
     #
     # ⚠️ 两条约束互相牵扯，顺序不能错：
     #   ① 规则同时要求「接口在提交后至少 30 天稳定可访问」——**不能评测一结束就停服**。

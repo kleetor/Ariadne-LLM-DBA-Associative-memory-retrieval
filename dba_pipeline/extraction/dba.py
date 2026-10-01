@@ -16,8 +16,10 @@ from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 
 from dba_pipeline.graph.memory_graph import MemoryGraph
+from dba_pipeline.core.jump_axis import NodeType
 from dba_pipeline.embedding.store import VectorStore
 from dba_pipeline.extraction.graph_builder import GraphBuilder
+from dba_pipeline.llm.roles import with_role
 from dba_pipeline.source_store import new_batch_id, save_batch
 
 logger = logging.getLogger(__name__)
@@ -41,7 +43,54 @@ _NODE_OUTPUT_EXAMPLE_EVIDENCE = (
     '{{"action":"deprecate","target_id":"n3","reason":"..."}}]}}'
 )
 
+# ---- 输出语言指令：注入到 user 消息末尾，而不是只写在 system prompt 里 ----
+#
+# 为什么必须这么做（2026-09-26 本地烟雾实测，英文输入 + 生产模型 deepseek-v4-flash）：
+# **只把语言约束写在中文 system prompt 顶部不生效**——首批（图里还没有任何「已有节点」
+# 可供上下文污染）依然输出了中文节点，如「用户是杭州一家互联网公司的后端开发工程师」。
+# 判断原因是两点叠加：① LLM 对**紧邻数据**的指令遵循度高于 system 里的规则；
+# ② 中文的指令正文与中文举例在持续"拉"它说中文，一段英文声明压不住。
+# 故改由代码判定源文语言，把一行指令拼到 user 消息的**末尾**（近因位置），
+# system prompt 里那段约束保留作为兜底。
+_CJK_RE = re.compile(r"[\u3400-\u9fff]")
+_LATIN_RE = re.compile(r"[A-Za-z]")
+
+_LANGUAGE_DIRECTIVE = """
+── 输出语言（最高优先级，覆盖以上所有规则与示例）──
+每条 `content` / `reason` 必须与**该条事实所在的原文段**同一种语言：原文是英文就写英文、
+原文是中文就写中文；同批含多种语言时**按各自原文段分别处理**，不要整批统一成一种语言
+（这与「抽取原则 7」一致）。本批以 {lang} 为主，仅供参考；判断依据是源对话本身，
+不是本提示词的语言。**禁止翻译**成任何其它语言。
+"""
+
+
+def source_language(text: str) -> str:
+    """粗判源文语言，返回注入指令里用的语言名（"中文" / "English"）。
+
+    用字符构成而非语言识别模型：这个判断只决定一行指令的措辞，判错的代价是退回改造前
+    的"跟随指令语言"行为，而引入模型会让每次 Add 多一次调用，不划算。
+
+    判据是**汉字在「汉字+拉丁字母」里的占比 ≥ 10%**，而不是简单比大小。理由是两类文本
+    的构成本来就不对称：
+      · 英文文本几乎不含汉字——占比会接近 0，判英文不会错；
+      · 中文文本经常夹英文专名（"我用 Go 和 PostgreSQL" 汉字 3 / 拉丁 12 = 20%），
+        按"比大小"会把它误判成英文，按占比则正确判中文。
+    阈值 10% 的边界：整段英文里偶尔出现一个中文词（2 汉字 / 数百字母 ≈ 0.4%）仍判英文，
+    不会被个别字带偏。
+    """
+    cjk = len(_CJK_RE.findall(text))
+    if cjk == 0:
+        return "English"
+    return "中文" if cjk / (cjk + len(_LATIN_RE.findall(text))) >= 0.10 else "English"
+
+
 NODE_EXTRACTION_PROMPT = """你是记忆图谱的「节点抽取器」：从对话中抽取独立事实——既包括关于「用户」的事实，也包括「助手」自身经历/行为的事实，只输出节点维护操作，不负责连边。
+
+[OUTPUT LANGUAGE — HARD CONSTRAINT]
+Write every `content` and `reason` string in the SAME LANGUAGE as the dialogue it came from.
+English dialogue → English output. Chinese dialogue → Chinese output. Never translate,
+never paraphrase into another language. This rule outranks the language of the instructions
+and of the examples below (which are written in Chinese merely for brevity).
 
 ## 节点类型（6）
 STATUS=客观处境 | REASON=导致状态/行为的原因 | ACTION=主动行为 | THING=物品/地点 | PERSON=社交关系人 | EMOTION=主观情绪
@@ -58,6 +107,12 @@ create(新事实) | update(事实变化) | fix_type(修正类型) | deprecate(�
 4. 保留时间维度：区分长期习惯（「用户每天晨跑半小时」）与单次事件（「用户今早跑了一次步」），不得混淆
 5. 与已有节点语义重复时用 update 更新而非新建；与已有节点矛盾时 deprecate 旧节点 + create 新节点
 6. 每条独立可读
+7. **content 必须使用源对话的语言**：原文是英文就写英文、是中文就写中文；同批含多种语言时，
+   以该条事实所在原文段的语言为准。**禁止翻译**（英文原文不得译成中文，反之亦然）——
+   译文一旦落库，检索侧会与同语言的查询向量跨语言失配，而且后续批次的「已有相关节点」
+   也全是译文，误差会逐批累积。
+
+> 上面各条举例中的中文**只是示意写法，不代表输出语言**；输出语言一律以原则 7 为准。
 
 ## 输出
 """ + _NODE_OUTPUT_EXAMPLE + """
@@ -70,6 +125,8 @@ NODE_EXTRACTION_USER_PROMPT = """── 对话上下文 ──
 ── 已有相关节点 ──
 
 {current_nodes}
+
+{language_directive}
 
 ── 请输出节点维护操作 ──"""
 
@@ -93,6 +150,9 @@ create(连边) | delete(删错误/过时的边)
 4. 边类型要准确：喜欢/偏好→PREFERENCE、自身属性→ATTRIBUTE、同场景并存→SCENARIO、先后来→SEQUENCE、因果→CAUSAL、人物关系→SOCIAL、上位类别→TAXONOMIC
 5. 保留时间维度：长期习惯与单次事件按语义连（CAUSAL/SEQUENCE）
 6. 边审计：删除已过时/被新事实覆盖的边；本轮未提到但可能仍成立的保留
+7. `reason` 等自然语言字段使用**源对话的语言**（边本体只有类型与节点 id，不受语言影响）
+
+> 下面的 few-shot 示例是中文写的，**只用于示意连边策略，不代表输出语言**。
 
 ## 输出
 严格输出 JSON：{{"edge_ops":[{{"action":"create","from":"n1","to":"n2","rel_type":"CAUSAL"}},{{"action":"delete","from":"n3","to":"n5","reason":"..."}}]}}
@@ -172,13 +232,15 @@ EDGE_LINKING_USER_PROMPT = """── 对话上下文 ──
 
 图谱概况：总节点 {total_nodes} 个，总边 {total_edges} 条
 
+{language_directive}
+
 ── 请输出边维护操作 ──"""
 
 
 # ---- 时序叙事（TEMPORAL）增强：仅在“时序叙事守卫”命中时叠加，避免常规语料过度拆分 ----
 
 NODE_TEMPORAL_EXTRA = """
-7. 时间节点单独抽取：对话中出现的明确时间/时段（如「上周一晚上」「周二」「周三凌晨」「这周」）要抽成独立的 THING 节点，content 就是该时间词本身；不要把时间写进事件 content。一个事件若发生在某个时间，需同时抽出「事件节点」和「时间节点」两个节点。"""
+8. 时间节点单独抽取：对话中出现的明确时间/时段（如「上周一晚上」「周二」「周三凌晨」「这周」）要抽成独立的 THING 节点，content 就是该时间词本身；不要把时间写进事件 content。一个事件若发生在某个时间，需同时抽出「事件节点」和「时间节点」两个节点。"""
 
 NODE_CHOICE_EXTRA = """
 ## 决策与取舍（补充规则）
@@ -302,6 +364,50 @@ NEEDED：用户的新事实、事实变化、与已有记忆矛盾、话题切�
 
 回答（NEEDED 或 SKIP）："""
 
+# triage 的判定窗口，以及"窗口结论可信"的长度上限。
+#
+# 背景（2026-09-24 线上实测，见 MemoryDBA._should_maintain 的说明）：ALM 侧单次 Add
+# 的对话长度中位 2522、最长 11196 字符，而判定只取尾部 _TRIAGE_WINDOW 字符，覆盖率
+# 低到 5%~20%，"事实在中段、头尾寒暄"的对话会被整批判 SKIP，进而落成孤立原文节点、
+# 零条边。故超过 _TRIAGE_TRUST_MAX_CHARS 的对话不再采信窗口结论，直接放行。
+#
+# ⚠️ 2026-09-25 重标：上限由 1500 下调为 **900**。依据是线上日志里 9 次 triage 判 SKIP
+# 的对话长度分布 —— 45 / 80 / 310 / 541 / 930 / 1019 / 1047 / 1381 / 1412，
+# 其中 5 次（930~1412）都落在 1500 以下，于是 triage 照跑、照 SKIP，长度闸形同不存在。
+# 1500 是按离线探测集定的，而那批对话中位 2522 —— **探针集里没有 1000~1500 这一段**，
+# 线上漏判却正好全挤在这里（取样区间没覆盖目标分布，不是阈值方向错）。
+#
+# 900 与 ALM 侧新增的分组预算 `alm.config.add_max_chars=1500` 配合后语义更清楚：
+# 单组长度中位 583、p90 1328，取 900 意味着"窗口覆盖 ≥56% 才采信 triage 结论"，
+# 覆盖率不足的组一律放行——triage 只在它确实看得清的时候说话。
+#
+# 这两个值是**设计参数**（由实测标定，非运行期旋钮）：声明版本与行为一一对应，
+# 要调整就重建镜像，避免同一版本在不同部署上行为不一致。
+_TRIAGE_WINDOW = 500
+_TRIAGE_TRUST_MAX_CHARS = 900
+
+# 边连接的单批新节点上限。超过就拆批调用（见 `_link_edges`）。
+#
+# 为什么需要：`edge_ops` 的条数与「本轮新节点 × 候选旧节点」同阶，单次输出会线性膨胀，
+# 0927 实测有一次 `out=32768` 撞顶、JSON 在数组中途断掉，该批的边整批丢。
+#
+# 取值理由：正常的 `add_batch_size=6 / add_max_chars=1500` 下一批通常只产出个位数节点
+# （0930 Full 实测单次 Add 平均 10.8 条消息、约 5.1 组，每组十几个节点），故 24 是
+# "确实异常多"的门槛——多数调用**不会**触发拆批，行为与改造前逐字一致。
+EDGE_BATCH_SIZE = 24
+
+# 节点抽取上下文的「宽召回」参数：对每条消息各做一次向量检索并取并集。
+#
+# 为什么需要：值变更句往往只占对话的一两轮，用**整段对话**去检索时会被其余内容
+# 稀释，旧值节点可能挤不进 top-k（离线实测在 224 条候选里排到第 53 / 80 名）。而
+# 旧值节点不在上下文里，LLM 就没有 target_id 可废弃——只能 create，于是新旧两值
+# 同时活跃。线上实测「覆盖机制」几乎不触发：134 批里只有 4 批发出 deprecate、
+# 2 批发出 update（合计 update 5 次 / deprecate 7 次，对 create 1962 次）。
+#
+# 按构造，并集是原 top-k 的**超集**，只可能提高旧值召回、不会更差；代价是节点
+# 步骤的输入多出至多 _WIDE_EXTRA_CAP 个节点（对话正文才是 prompt 的大头）。
+_WIDE_K_PER_MSG = 5
+_WIDE_EXTRA_CAP = 15
 
 # ---- DBA 类 ----
 
@@ -315,6 +421,8 @@ class MemoryDBA:
         vector_store: VectorStore,
         graph_builder: GraphBuilder,
         current_state_k: int = 15,
+        edge_wide: bool = True,
+        triage_enabled: bool = True,
         enable_choice_extraction: bool = False,
         enable_evidence: bool = False,
         enable_source_store: bool = False,
@@ -327,6 +435,18 @@ class MemoryDBA:
             vector_store: 向量存储
             graph_builder: GraphBuilder 实例
             current_state_k: 记忆上下文检索多少条相关节点
+            edge_wide: 边连接步骤的旧节点上下文是否也走「逐消息并集」宽召回。
+                **必须开**：提示词原则 3 早已要求「本轮新节点必须尽量接入已有图谱结构，
+                能连则连」，但实测因果/时序边仍是**批内短程**的——以节点顺序作时间代理，
+                causal/sequence 边的中位索引距离只有 8/9，而随机基线是 107；只有 42% 的
+                节点有 causal/sequence 出边，能走满 3 跳的仅 21%（B2「因果链、路径与
+                中间步骤恢复」连续 5 轮 0 分即源于此）。根因是边步骤的旧节点上下文只有
+                15 条、且按**整段对话**相似度竞争，长对话下被稀释——与节点步骤同一个
+                问题（见 _WIDE_K_PER_MSG）。
+            triage_enabled: 是否启用 triage 维护判断（"这段对话值不值得维护"）。默认 True
+                保持既有行为不变。**ALM 侧应关闭**，理由见 `_should_maintain` 的说明：
+                分批之后多数组会落回长度闸以下，triage 会重新参与判定，实测把 41% 的组
+                判成 SKIP → 内容被转出图（2026-09-26 冒烟：兜底率 11.1% → 50.7%）。
             enable_choice_extraction: 是否启用「决策与取舍」补充规则（把"被放弃的选项 /
                 选择依据"也抽成 REASON 节点）。默认关闭以保持既有抽取行为不变；
                 记忆保真任务 A 效果验证通过后再考虑对 ALM 侧开启。
@@ -342,6 +462,8 @@ class MemoryDBA:
         self.vector_store = vector_store
         self.builder = graph_builder
         self.current_state_k = current_state_k
+        self.edge_wide = edge_wide
+        self.triage_enabled = triage_enabled
         self.enable_choice_extraction = enable_choice_extraction
         self.enable_evidence = enable_evidence
         self.enable_source_store = enable_source_store
@@ -363,7 +485,7 @@ class MemoryDBA:
                 ("system", system),
                 ("human", NODE_EXTRACTION_USER_PROMPT),
             ])
-            return prompt | self.llm
+            return prompt | with_role(self.llm, "extract")
 
         self.node_chain = _node_chain()
         self.edge_prompt = ChatPromptTemplate.from_messages([
@@ -371,7 +493,7 @@ class MemoryDBA:
             ("human", EDGE_LINKING_FEWSHOT_EXAMPLE),
             ("human", EDGE_LINKING_USER_PROMPT),
         ])
-        self.edge_chain = self.edge_prompt | self.llm
+        self.edge_chain = self.edge_prompt | with_role(self.llm, "link")
 
         # 时序叙事增强链：仅当 has_temporal_signal(conversation) 命中才启用，
         # 把时间节点抽取与 TEMPORAL 连边规则叠加到标准 prompt，避免常规语料过度拆分。
@@ -380,7 +502,7 @@ class MemoryDBA:
             ("system", EDGE_LINKING_PROMPT.replace("\n## 输出", EDGE_TEMPORAL_EXTRA + "\n\n## 输出")),
             ("human", EDGE_LINKING_FEWSHOT_EXAMPLE + EDGE_TEMPORAL_EXAMPLE),
             ("human", EDGE_LINKING_USER_PROMPT),
-        ]) | self.llm
+        ]) | with_role(self.llm, "link")
 
         # 决策与取舍增强链（opt-in，见 enable_choice_extraction）；关闭时不参与任何路径
         self.node_chain_choice = _node_chain(NODE_CHOICE_EXTRA)
@@ -389,7 +511,7 @@ class MemoryDBA:
         # 维护判断前置（triage）：先用极小 prompt 判断是否值得维护
         self.triage_chain = ChatPromptTemplate.from_messages([
             ("system", DBA_TRIAGE_PROMPT),
-        ]) | self.llm
+        ]) | with_role(self.llm, "triage")
 
     # ---- 主入口 ----
 
@@ -417,7 +539,11 @@ class MemoryDBA:
         """
         # 0. 维护判断前置：明显无需维护的对话直接跳过，省掉完整 prompt
         if not self._should_maintain(conversation):
-            logger.info("DBA 维护: triage 判定跳过")
+            # 刻意用 WARNING 而非 INFO：ALM 容器把 dba_pipeline 钉在 WARNING 以上
+            # （合规需要，防止 graph_builder 在 INFO 打印节点正文），INFO 在这里永远
+            # 不可见。而「整批是否被 triage 跳过」是定位兜底率偏高的必要信号——
+            # 本行只有对话长度，不含正文，可以安全放行。
+            logger.warning("DBA 维护: triage 判定跳过（对话 %d 字符）", len(conversation))
             return {
                 "ops": {"node_ops": [], "edge_ops": []},
                 "result": {"created_ids": [], "skipped": [], "errors": []},
@@ -449,15 +575,33 @@ class MemoryDBA:
 
         # Step 2:边连接(对话 + 本轮新节点 + 相关旧节点/一跳邻居/已有边 → edge_ops → 执行)。守卫同样驱动 TEMPORAL 连边规则与示例。
         new_ids = result1.get("created_ids", [])
-        edge_context = self._build_edge_context(conversation, new_ids)
         edge_chain = self.edge_chain_temporal if temporal else self.edge_chain
-        edge_ops = self._parse_response(edge_chain.invoke(edge_context).content).get("edge_ops", [])
+        edge_ops = self._link_edges(edge_chain, conversation, new_ids)
         result2 = self.builder.apply_ops([], edge_ops)
 
         logger.info(
             f"DBA 维护完成: 节点创建 {len(result1.get('created_ids', []))} 更新 {len(node_ops)} "
             f"边创建/删除 {len(edge_ops)} (累计 {self.graph.node_count} 节点 / {self.graph.edge_count} 边)"
         )
+
+        # 跨批连边观测锚点：本批新建的边里，有多少条**一端在本轮新节点、另一端是已有记忆**。
+        # 这是 B2「因果链、路径与中间步骤恢复」的判决依据——提示词原则上要求跨批接入，
+        # 但离线实测因果/时序边仍是批内短程（中位索引距离 8/9 vs 随机基线 107），
+        # 说明跨批连边几乎没发生。只记计数，不记正文。
+        new_set = set(new_ids)
+        inner = cross = 0
+        for op in edge_ops:
+            if op.get("action") != "create":
+                continue
+            f, t = op.get("from"), op.get("to")
+            if f in new_set and t in new_set:
+                inner += 1
+            elif (f in new_set) != (t in new_set):
+                cross += 1
+        # 刻意用 WARNING 而非 INFO：ALM 容器把 dba_pipeline 钉在 WARNING 以上
+        # （合规需要，防止 graph_builder 在 INFO 打印节点正文），INFO 在这里永远不可见。
+        # 而「跨批连边有没有发生」是定位 B2 的必要信号——本行只有计数，可以安全放行。
+        logger.warning("边连边分布: 批内=%d 跨批=%d（本轮新节点 %d 个）", inner, cross, len(new_set))
 
         out = {
             "ops": {"node_ops": node_ops, "edge_ops": edge_ops},
@@ -474,6 +618,37 @@ class MemoryDBA:
             out["batch_id"] = batch_id
         return out
 
+    def _link_edges(self, edge_chain, conversation: str, new_ids: List[str]) -> List[Dict]:
+        """边连接：新节点多时**拆批**调用，避免单次输出撞上限。
+
+        `edge_ops` 的条数与「本轮新节点 × 候选旧节点」同阶，单次输出会线性膨胀——
+        0927 实测出现过一次 `out=32768` 撞顶，JSON 在数组中途断掉（`_salvage_truncated_ops`
+        只能救回完整对象），**该批的边整批丢**。拆批让单次输出有界。
+
+        代价是旧节点上下文（`current_nodes` / `current_edges` / `neighbor_info`）要按批
+        **重复发送**，所以只在确实很多时才拆：`len(new_ids) <= EDGE_BATCH_SIZE` 时行为与
+        改造前**逐字一致**（含 `new_ids` 为空时仍照常调用一次）。
+        """
+        if len(new_ids) <= EDGE_BATCH_SIZE:
+            edge_context = self._build_edge_context(conversation, new_ids)
+            return self._parse_response(edge_chain.invoke(edge_context).content).get("edge_ops", [])
+
+        batches = -(-len(new_ids) // EDGE_BATCH_SIZE)  # 向上取整
+        # 用 WARNING 而非 INFO：ALM 容器把 dba_pipeline 钉在 WARNING 以上（防节点正文
+        # 落进日志），拆批是"输出曾经撞上限"的信号，不能随之被压掉。本行只有计数。
+        logger.warning(
+            "边连接拆批: 本轮新节点 %d 个 > 上限 %d，拆成 %d 批（单次调用时输出会撞上限）",
+            len(new_ids), EDGE_BATCH_SIZE, batches,
+        )
+        merged: List[Dict] = []
+        for i in range(0, len(new_ids), EDGE_BATCH_SIZE):
+            chunk = new_ids[i:i + EDGE_BATCH_SIZE]
+            edge_context = self._build_edge_context(conversation, chunk)
+            merged.extend(
+                self._parse_response(edge_chain.invoke(edge_context).content).get("edge_ops", [])
+            )
+        return merged
+
     def _persist_source(self, batch_id, source_rounds, conversation, timestamp):
         """把本批原文落盘（opt-in）。失败只记日志，绝不影响主流程。"""
         if not self.source_dir:
@@ -485,37 +660,51 @@ class MemoryDBA:
         except Exception as e:
             logger.warning(f"原文落盘失败（批次 {batch_id}）: {e}")
 
+    def store_raw(self, conversation: str, timestamp: Optional[int] = None) -> List[str]:
+        """把未经抽取的原文兜底落库为可检索节点（MCP 侧专用）。
+
+        背景（0927 审查 B5）：`_should_maintain` 判 SKIP 时，MCP 侧内容**被直接丢弃**
+        （ALM 侧此时会经 `space._divert_raw` 转文档通道；MCP 没有文档通道）。这既造成
+        记忆缺失，又完全静默——调用方只看到"空转跳过"，无从得知内容没被存储。
+
+        本方法只为 MCP 链路补上这一步：原文**兜底落库**，并绕过去重（阈值提到 2.0），
+        保证内容一定可检索。`_should_maintain` 只在对话长度 ≤ `_TRIAGE_TRUST_MAX_CHARS`
+        时才采信 triage、才会返回 SKIP，故这里通常只是一段短文，单节点即可。
+
+        Returns: 新建节点 id 列表。
+        """
+        text = (conversation or "").strip()
+        if not text:
+            return []
+        ops = [{"action": "create", "content": text, "node_type": NodeType.THING.value}]
+        saved_threshold = self.builder.dedup_threshold
+        self.builder.dedup_threshold = 2.0  # 关闭语义去重，保证原文一定落地
+        try:
+            result = self.builder.apply_ops(ops, [], batch_timestamp=timestamp)
+        finally:
+            self.builder.dedup_threshold = saved_threshold
+        created = result.get("created_ids") or []
+        # 用 WARNING：ALM 容器把 dba_pipeline 钉在 WARNING 以上，INFO 不可见。
+        # 本行只有计数，不含正文，可安全放行。
+        logger.warning("原文兜底落库: %d 字符 → %d 个节点", len(text), len(created))
+        return created
+
     # ---- 上下文组装 ----
-
-    def _build_context(self, conversation: str) -> Dict:
-        """组装三层上下文"""
-        # 第一层：对话上下文（直接使用传入的完整对话）
-        conversation_text = conversation
-
-        # 第二层：记忆上下文（语义检索 + 已有边）
-        current_nodes_text, current_edges_text = self._build_memory_context(conversation)
-
-        # 第三层：结构上下文（一跳邻居 + 图谱统计）
-        neighbor_text = self._build_structure_context(conversation)
-
-        return {
-            "conversation": conversation_text,
-            "current_nodes": current_nodes_text,
-            "current_edges": current_edges_text,
-            "neighbor_info": neighbor_text,
-            "total_nodes": self.graph.node_count,
-            "total_edges": self.graph.edge_count,
-        }
 
     def _build_node_context(self, conversation: str) -> Dict:
         """Step 1 节点抽取上下文：对话 + 相关旧节点（用于去重/更新判断）"""
         if self.graph.node_count == 0:
             nodes_text = "（暂无已有记忆）"
         else:
-            nodes_text, _ = self._build_memory_context(conversation)
+            # wide=True：额外做逐消息并集检索，提高「旧值节点」进入上下文的概率
+            # （值变更场景的根因，见 _WIDE_K_PER_MSG 的说明）。
+            nodes_text, _ = self._build_memory_context(conversation, wide=True)
         return {
             "conversation": conversation,
             "current_nodes": nodes_text,
+            "language_directive": _LANGUAGE_DIRECTIVE.format(
+                lang=source_language(conversation)
+            ),
         }
 
     def _build_edge_context(self, conversation: str, new_ids: List[str]) -> Dict:
@@ -523,7 +712,9 @@ class MemoryDBA:
         if self.graph.node_count == 0:
             current_nodes_text = current_edges_text = "（暂无已有记忆）"
         else:
-            current_nodes_text, current_edges_text = self._build_memory_context(conversation)
+            current_nodes_text, current_edges_text = self._build_memory_context(
+                conversation, wide=self.edge_wide
+            )
         neighbor_text = self._build_structure_context(conversation)
 
         new_lines = []
@@ -538,6 +729,9 @@ class MemoryDBA:
         return {
             "conversation": conversation,
             "new_nodes": new_nodes_text,
+            "language_directive": _LANGUAGE_DIRECTIVE.format(
+                lang=source_language(conversation)
+            ),
             "current_nodes": current_nodes_text,
             "current_edges": current_edges_text,
             "neighbor_info": neighbor_text,
@@ -545,12 +739,53 @@ class MemoryDBA:
             "total_edges": self.graph.edge_count,
         }
 
-    def _build_memory_context(self, conversation: str) -> Tuple[str, str]:
-        """构建记忆上下文：语义相关节点 + 已有边"""
+    def _widen_by_message(
+        self,
+        conversation: str,
+        base: List[Tuple[str, float, dict]],
+    ) -> List[Tuple[str, float, dict]]:
+        """对对话的每条消息各检索一次，把新命中的节点并到 base 之后
+
+        消息按 _format_conversation 的约定逐行排列（每行一个 `[role] 正文`），因此
+        这里按行切分即可；正文自身含换行时该行会被切成片段，退化成一次额外的近似
+        检索，不影响正确性（并集是超集，不会挤掉原 top-k）。
+
+        向量化走一次批量调用（embed_batch），检索走本地 FAISS，不产生逐条 API 往返。
+        任何失败都静默退回原 top-k。
+        """
+        lines = [ln.strip() for ln in conversation.split("\n") if ln.strip()]
+        if not lines:
+            return base
+        try:
+            vecs = self.vector_store.embed_batch(lines)
+        except Exception as exc:
+            logger.warning("宽召回向量化失败，退回单路检索: %s", type(exc).__name__)
+            return base
+
+        seen = {mid for mid, _, _ in base}
+        extra: List[Tuple[str, float, dict]] = []
+        for vec in vecs:
+            for mid, score in self.vector_store.search_by_vector(vec, k=_WIDE_K_PER_MSG):
+                if mid in seen:
+                    continue
+                seen.add(mid)
+                extra.append((mid, float(score), {}))
+                if len(extra) >= _WIDE_EXTRA_CAP:
+                    return base + extra
+        return base + extra
+
+    def _build_memory_context(self, conversation: str, wide: bool = False) -> Tuple[str, str]:
+        """构建记忆上下文：语义相关节点 + 已有边
+
+        wide=True 时额外做「逐消息并集」宽召回（见 _WIDE_K_PER_MSG 的说明），只用于
+        节点抽取步骤；边连接步骤不做宽召回——它的输入本就很大（线上实测 in=14644）。
+        """
         if self.graph.node_count == 0:
             return "（暂无已有记忆）", "（暂无已有边）"
 
-        results = self.vector_store.search(conversation, k=self.current_state_k)
+        results = list(self.vector_store.search(conversation, k=self.current_state_k))
+        if wide:
+            results = self._widen_by_message(conversation, results)
 
         node_lines = []
         shown_ids = set()
@@ -612,8 +847,27 @@ class MemoryDBA:
     # ---- LLM 调用 ----
 
     def _should_maintain(self, conversation: str) -> bool:
-        """维护判断前置：极小 prompt 判断是否值得维护"""
-        snippet = conversation[-500:]
+        """维护判断前置：极小 prompt 判断是否值得维护。
+
+        **ALM 侧应整体关闭（`triage_enabled=False`）。** 2026-09-26 冒烟实测：写入分批
+        （`add_max_chars=1500`）把一次 Add 切成若干小组后，多数组的长度落回
+        `_TRIAGE_TRUST_MAX_CHARS=900` **以下**，于是 triage 重新参与判定——而改造前整批
+        2000~3000 字 > 1500，它是被整体放行的。后果：**421 个组里 173 个被判 SKIP（41%）**，
+        这些内容经 `space._divert_raw` 转出图，兜底率 11.1% → 50.7%，图只拿到约 59% 的内容。
+
+        为什么结论是"关"而不是"再调阈值"：错判不在窗口覆盖率上——实测有个组对话只有
+        113 字符、窗口覆盖 100%，仍把含事实的 "It's much better for my neck actually"
+        判成 SKIP。而 ALM 的数据全是评测对话，"值得存"的先验极高，分组也已经把单次输入
+        压到合理规模：triage 省下的那一次抽取，远不值"丢记忆"的代价。
+
+        保留本方法与下面的长度闸，是为了 MCP 侧（默认 `triage_enabled=True`）行为不变；
+        这段判断对**短寒暄**仍然有效，故不删。
+        """
+        if not self.triage_enabled:
+            return True
+        if len(conversation) > _TRIAGE_TRUST_MAX_CHARS:
+            return True
+        snippet = conversation[-_TRIAGE_WINDOW:]
         resp = self.triage_chain.invoke({"conversation": snippet})
         return "NEEDED" in resp.content.upper()
 
@@ -657,8 +911,68 @@ class MemoryDBA:
             except json.JSONDecodeError:
                 pass
 
+        # 截断挽救：输出撞 max_tokens 上限时 JSON 会在数组中途断掉，上面两条路都会
+        # 失败，于是**整批操作被丢弃**——线上实测边连接步骤撞 8192 上限 4 次 / 369 次
+        # 调用，其中 2 次解析失败，那一批的边全部没建。但断点之前的完整对象其实都还
+        # 在，按花括号配对捞回来，部分结果远好于全丢。
+        salvaged = self._salvage_truncated_ops(response)
+        if salvaged["node_ops"] or salvaged["edge_ops"]:
+            logger.warning(
+                "LLM 输出疑似被截断，已挽救 node_ops=%d edge_ops=%d",
+                len(salvaged["node_ops"]), len(salvaged["edge_ops"]),
+            )
+            return salvaged
+
         logger.error(f"无法从 LLM 输出中提取有效的 JSON 操作指令")
         return {"node_ops": [], "edge_ops": []}
+
+    @staticmethod
+    def _salvage_truncated_ops(response: str) -> Dict:
+        """按花括号配对，从被截断的 JSON 里捞出所有完整的操作对象
+
+        只在常规解析全部失败后调用，因此正常路径零影响。扫描时跳过字符串内部
+        （含转义处理），避免把正文里的 `{` / `}` 误当作结构。
+        """
+        out: Dict[str, List[Dict]] = {"node_ops": [], "edge_ops": []}
+        for key in ("node_ops", "edge_ops"):
+            key_pos = response.find(f'"{key}"')
+            if key_pos == -1:
+                continue
+            arr = response.find("[", key_pos)
+            if arr == -1:
+                continue
+
+            depth, obj_start, in_str, esc = 0, None, False, False
+            for i in range(arr + 1, len(response)):
+                ch = response[i]
+                if in_str:
+                    if esc:
+                        esc = False
+                    elif ch == "\\":
+                        esc = True
+                    elif ch == '"':
+                        in_str = False
+                    continue
+                if ch == '"':
+                    in_str = True
+                elif ch == "{":
+                    if depth == 0:
+                        obj_start = i
+                    depth += 1
+                elif ch == "}":
+                    if depth > 0:
+                        depth -= 1
+                        if depth == 0 and obj_start is not None:
+                            try:
+                                obj = json.loads(response[obj_start:i + 1])
+                            except json.JSONDecodeError:
+                                obj = None
+                            if isinstance(obj, dict):
+                                out[key].append(obj)
+                            obj_start = None
+                elif ch == "]" and depth == 0:
+                    break
+        return out
 
     # ---- 检查点 ----
 

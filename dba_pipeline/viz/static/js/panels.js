@@ -1010,7 +1010,8 @@
       try {
         const res = await A.api.runChainTest(query);
         this.chainResult = res;
-        this.applyActivation(res.visited_ids, res.story_nodes);
+        // 0927：后端不再返回 story_nodes（StoryRank 只回 used 计数），故只上色 PAR 经过节点。
+        this.applyActivation(res.visited_ids);
       } catch (e) {
         // 409 = 已有一次在跑 / 链路装配失败
         this.chainError = e.message || String(e);
@@ -1020,9 +1021,10 @@
       }
     },
 
-    applyActivation(visited, adopted) {
+    applyActivation(visited) {
       if (!A.graph.setActivated) return;
-      A.graph.setActivated(visited || [], { adopted: adopted || [] });
+      // 无采纳 id 列表可用（0927 起 StoryRank 只回 used 计数），金色高亮停用。
+      A.graph.setActivated(visited || [], { adopted: [] });
     },
 
     // SSE：channel="chain" 的阶段事件（装配 / 对齐 / 意图 / 每跳 / 寻峰 / 故事化）
@@ -1030,7 +1032,7 @@
       if (!evt || !evt.stage) return;
       if (evt.stage === 'done') {
         const info = evt.info || {};
-        this.applyActivation(info.visited_ids, info.story_nodes);
+        this.applyActivation(info.visited_ids);
         // done 事件带了完整轨迹：POST 响应被代理/长连接拖住时靠它收尾，
         // 否则按钮会一直停在"运行中"、结果区永远空着
         if (info.result && !this.chainResult) {
@@ -1054,15 +1056,16 @@
       const r = this.chainResult;
       if (!r) return '';
       const purpose = r.purpose || {};
-      const adopted = new Set(r.story_nodes || []);
       const hops = r.hop_history || [];
       const pr = r.params || {};
       let html = '<div class="chain-summary">' +
         chainKv('意图 / 目的', (purpose.query_type || '-') + '　·　' + ((purpose.purposes || []).join('；') || '-')) +
         chainKv('用户状态', purpose.status || '-') +
         chainKv('PAR 经过节点', (r.visited_ids || []).length + ' 个（图上保留颜色）') +
-        chainKv('StoryRank 采纳', (r.story_nodes || []).length + ' 个（金色高亮）') +
-        chainKv('被丢弃', (r.discarded_nodes || []).length + ' 个') +
+        // StoryRank 只回 used 计数（后端按正文覆盖率计算），不再回采纳 id 列表，
+        // 故这里只有条数，也没有"丢弃"（0927 审查 C1）。
+        chainKv('StoryRank 正文覆盖', (r.story_used || 0) + ' 个节点' +
+          (r.story_degraded ? '（降级拼接）' : '')) +
         chainKv('跳数 / 参数', hops.length + ' 跳　·　seed_k=' + (pr.seed_k || '-') +
           ' max_hops=' + (pr.max_hops || '-') + ' expand_k=' + (pr.expand_k || '默认')) +
         '</div>';
@@ -1082,10 +1085,10 @@
           '<th>节点</th><th>内容</th><th>组合分</th><th>目的分</th><th>跳转权重</th><th>来自</th><th>关系</th>' +
           '</tr></thead><tbody>' +
           cands.map(function (c) {
-            const act = adopted.has(c.id);
-            return '<tr' + (act ? ' class="adopted"' : '') + '>' +
+            // 0927：后端不再返回采纳 id 列表，无法逐行标出"已被 StoryRank 采纳"。
+            return '<tr>' +
               '<td><a href="#" class="chain-node" data-id="' + U.escapeHtml(c.id) + '">' +
-              U.escapeHtml(c.id) + '</a>' + (act ? ' ★' : '') + '</td>' +
+              U.escapeHtml(c.id) + '</a></td>' +
               '<td class="chain-content">' + U.escapeHtml(clip(c.content, 42)) + '</td>' +
               '<td>' + fmtScore(c.combined_score) + '</td>' +
               '<td>' + fmtScore(c.purpose_score) + '</td>' +
@@ -1333,7 +1336,7 @@
       case 'storyrank_start':
         return '交给 LLM 的路径：' + (i.nodes || 0) + ' 节点 / ' + (i.edges || 0) + ' 边';
       case 'storyrank_done':
-        return '采纳 ' + (i.adopted || 0) + ' 个　丢弃 ' + (i.discarded || 0) + ' 个';
+        return '正文覆盖 ' + (i.used || 0) + ' 个节点' + (i.degraded ? '（降级拼接）' : '');
       case 'done':
         return '经过 ' + (i.visited || 0) + ' 个节点（图上已激活）';
       default:

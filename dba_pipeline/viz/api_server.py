@@ -1125,7 +1125,7 @@ def create_app(api: MemoryGraphAPI, config: VizConfig,
             return _error(str(e), 409)
         api._log("chain_test", request={"query": query}, result={
             "visited": len(result.get("visited_ids", [])),
-            "adopted": len(result.get("story_nodes", [])),
+            "adopted": result.get("story_used", 0),
             "hops": len(result.get("hop_history", [])),
         })
         return JSONResponse(result)

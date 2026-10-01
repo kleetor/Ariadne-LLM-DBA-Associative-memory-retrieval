@@ -24,6 +24,8 @@ import logging
 import re
 from typing import Any, Dict, List, Optional
 
+from dba_pipeline.llm.roles import with_role
+
 logger = logging.getLogger(__name__)
 
 ABSTAIN_JUDGE_PROMPT = """你是记忆检索的可用性判定员。下面给你一个问题，以及检索系统召回的若干条记忆片段（已按相关度从高到低排序）。
@@ -94,7 +96,7 @@ class RelevanceJudge:
             return False  # 没有任何可展示的候选内容，等价于无信息
         prompt = ABSTAIN_JUDGE_PROMPT.format(query=query, listing=listing)
         try:
-            response = self.llm.invoke(prompt)
+            response = with_role(self.llm, "abstain").invoke(prompt)
         except Exception as exc:
             logger.warning("弃权判定调用失败，按放行处理: %s", exc)
             return None

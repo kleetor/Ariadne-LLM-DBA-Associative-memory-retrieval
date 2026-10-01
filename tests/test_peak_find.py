@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
 """寻峰终止器单元测试"""
-from dba_pipeline.core.peak_find import PeakFinder
+from dba_pipeline.core.peak_find import PeakFinder, resolve_peak_tolerance
 
 
 def test_default_params_match_usage():
@@ -9,6 +9,39 @@ def test_default_params_match_usage():
     pf = PeakFinder()
     assert pf.patience == 2
     assert pf.min_delta == 0.015
+
+
+def test_default_peak_tolerance_unchanged():
+    """0930 接入带宽参数后，**默认行为必须逐字不变**。
+
+    历史上 `retriever` 从未传 `peak_tolerance`，生效值是库默认 0.10；接入后 ALM 侧默认
+    `ratio=0` → 仍返回 `absolute`（0.10）。这条测试锁住"接入 ≠ 改行为"。
+    """
+    assert PeakFinder().peak_tolerance == 0.10
+    assert resolve_peak_tolerance(0.60, [0.60, 0.55], absolute=0.10, ratio=0.0) == 0.10
+    # ratio<=0 一律绝对模式，即使 hop_means 为空 / 为负
+    assert resolve_peak_tolerance(0.60, [], absolute=0.10, ratio=0.0) == 0.10
+    assert resolve_peak_tolerance(0.60, [0.6], absolute=0.25, ratio=-1.0) == 0.25
+
+
+def test_relative_tolerance_scales_with_spread():
+    """相对模式：带宽 = ratio × (peak_mean − min(轮均分))，**尺度无关**。
+
+    这正是"随图规模 / 同质程度自动调参"的落点：分布被压得越窄，带宽自动越小。
+    """
+    narrow = resolve_peak_tolerance(0.58, [0.58, 0.57, 0.56], absolute=0.10, ratio=0.5)
+    wide = resolve_peak_tolerance(0.80, [0.80, 0.60, 0.50], absolute=0.10, ratio=0.5)
+    assert abs(narrow - 0.5 * 0.02) < 1e-9     # 0.5 × (0.58 − 0.56)
+    assert abs(wide - 0.5 * 0.30) < 1e-9       # 0.5 × (0.80 − 0.50)
+    assert narrow < wide
+
+
+def test_relative_tolerance_never_clears_result():
+    """各轮均分全等（spread=0）→ δ=0 → 只保留峰值轮，**不会清空**容忍带。"""
+    delta = resolve_peak_tolerance(0.60, [0.60, 0.60], absolute=0.10, ratio=0.5)
+    assert delta == 0.0
+    peak_mean = 0.60
+    assert peak_mean >= peak_mean - delta      # 峰值轮仍在带内
 
 
 def test_first_round_continue():

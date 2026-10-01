@@ -3,14 +3,21 @@
 """ALM 评测数据留存清理（AML 要求 30 天内删除）。
 
 AML 要求评测数据仅用于本次评测、不得训练 / 分析 / 共享，并在任务结束后 **30 天内删除**。
-ALM 侧每个 user_id 在 `--data-dir` 下落两份产物：
+ALM 侧每个 user_id 在 `--data-dir` 下落**四份**产物（后两份是文档通道，见下）：
 
-    <escaped user_id>.yaml      # 记忆图谱（节点 / 边 / 正文）
-    <escaped user_id>.index/    # FAISS 索引 + 向量缓存 + 指纹
+    <escaped user_id>.yaml        # 记忆图谱（节点 / 边 / 正文）
+    <escaped user_id>.index/      # 图谱的 FAISS 索引 + 向量缓存 + 指纹
+    <escaped user_id>.docs.yaml   # 文档区条文（知识库式长文档的原文块）
+    <escaped user_id>.docs.index/ # 文档区的 FAISS 索引 + 向量缓存
 
-因此"删除评测数据" = 按留存期清理这两类文件。判定时间用**文件 mtime**：每次 Add 都会
+因此"删除评测数据" = 按留存期清理这四类文件。判定时间用**文件 mtime**：每次 Add 都会
 原子重写 YAML 并随后落盘索引，而 Search 不写盘，所以 mtime 就是该空间最后一次被写入的
 时间（即最后一个触及它的评测任务的时间）。
+
+⚠️ **四份产物必须按同一个空间归组、同一轮删除**（`collect_spaces` 里对 `.docs` 后缀做了
+先剥离再归组）。否则文档区会被当成一个独立空间单独计龄：文档块里装的是**原文**
+（可能是整篇论文或剧本），一旦它的 mtime 比图谱新，就会出现「图谱已按期删除、原文还留着」
+——这正是留存条款要避免的情形。
 
 安全性：默认**只报告不删除**（预演），确认无误后加 `--apply` 才真正删除；`data_dir`
 不存在或为空时直接返回，不做任何事。
@@ -44,6 +51,8 @@ from typing import Dict, List, Tuple
 
 YAML_SUFFIX = ".yaml"
 INDEX_SUFFIX = ".index"
+DOCS_YAML_SUFFIX = ".docs.yaml"
+DOCS_INDEX_SUFFIX = ".docs.index"
 
 
 def _newest_mtime(path: Path) -> float:
@@ -82,19 +91,33 @@ def collect_spaces(data_dir: Path) -> Tuple[Dict[str, List[Path]], List[Path]]:
     """把 data_dir 下的产物按 user 空间归组。
 
     返回 (spaces, ignored)：
-      spaces  —— {stem: [yaml?, index_dir?]}，stem 即转义后的 user_id
-      ignored —— 既不是 *.yaml 也不是 *.index/ 的顶层条目（不碰，只报告，避免误删）
+      spaces  —— {stem: [yaml?, index_dir?, docs_yaml?, docs_index_dir?]}，stem 即转义后的 user_id
+      ignored —— 既不是这四类产物之一的顶层条目（不碰，只报告，避免误删）
+
+    必须先把 `.docs` 后缀剥掉再归组（顺序：长后缀优先）。否则文档区会以
+    `<user>.docs` 这个**假空间**单独计龄，可能出现「图谱按 30 天删了、装原文的
+    文档区还留着」——那正是留存条款要避免的。
+
+    边界：转义后的 user_id 若本身以 `.docs` 结尾，会与本空间的文档区同名而被并组
+    （删得早、不会漏删）。ALM 的 user_id 来自平台、形如 `u_<hash>`，不会命中。
     """
     spaces: Dict[str, List[Path]] = {}
     ignored: List[Path] = []
     for entry in sorted(data_dir.iterdir()):
         name = entry.name
-        if entry.is_file() and name.endswith(YAML_SUFFIX):
-            spaces.setdefault(name[: -len(YAML_SUFFIX)], []).append(entry)
+        stem = None
+        if entry.is_file() and name.endswith(DOCS_YAML_SUFFIX):
+            stem = name[: -len(DOCS_YAML_SUFFIX)]
+        elif entry.is_dir() and name.endswith(DOCS_INDEX_SUFFIX):
+            stem = name[: -len(DOCS_INDEX_SUFFIX)]
+        elif entry.is_file() and name.endswith(YAML_SUFFIX):
+            stem = name[: -len(YAML_SUFFIX)]
         elif entry.is_dir() and name.endswith(INDEX_SUFFIX):
-            spaces.setdefault(name[: -len(INDEX_SUFFIX)], []).append(entry)
-        else:
+            stem = name[: -len(INDEX_SUFFIX)]
+        if stem is None:
             ignored.append(entry)
+        else:
+            spaces.setdefault(stem, []).append(entry)
     return spaces, ignored
 
 

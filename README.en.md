@@ -282,7 +282,7 @@ PAR retrieval produces a **causal chain** of "nodes + relations" rather than a f
 2. **Avoid polluting the chat context**: the chat model receives clean stories instead of raw `[id] content` node listings.
 3. **Semantic filtering**: when the LLM organizes stories by edge relations, nodes that are clearly incongruent or off-topic are naturally dropped.
 
-The entry point is `retrieve_with_story` (a library method); its output includes `stories`, `story_nodes` (adopted nodes), and `discarded_nodes` (dropped nodes).
+The entry point is `retrieve_with_story` (a library method); its output includes `stories` (narrative text), `story_used` (number of nodes the narrative actually covers, **computed backend-side**), and `story_degraded` (whether it fell back to concatenation).
 
 > See also the theory paper: [0828PAR检索理论文.md](0828PAR检索理论文.md) *(in Chinese)*.
 

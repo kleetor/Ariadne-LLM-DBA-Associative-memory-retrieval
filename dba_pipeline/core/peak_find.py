@@ -7,7 +7,40 @@
 不是单调的，需要在斜率转负时停止并回到峰值轮。
 """
 
-from typing import List
+from typing import List, Sequence
+
+
+def resolve_peak_tolerance(
+    peak_mean: float,
+    hop_means: Sequence[float],
+    absolute: float = 0.10,
+    ratio: float = 0.0,
+) -> float:
+    """解析本轮生效的**峰值容忍带带宽**（0930 复审新增）。
+
+    背景（为什么需要它）：容忍带判据是"轮均分 μ ≥ peak_mean − δ"。δ 是一个**绝对**常数
+    （库默认 0.10），而候选余弦的分布宽度随语料/图规模变化——当分布被压得很窄时
+    （实测线上 18 次全在 0.5497~0.5884、全距仅 0.039，而 δ=0.10 是全距的 2.5 倍），
+    这个带会吞掉几乎**全部**候选：600 次线上检索里 `峰值/候选` 中位 **0.81**（候选≥300 档 0.79），
+    即"寻峰"平均只筛掉 19%。该退化在换 embedding 之前就已存在（前后均为 ≈0.80），
+    属**判据尺度与数据尺度不匹配**，与向量模型无关。
+
+    两种模式：
+      * `ratio <= 0`（默认）：返回 `absolute` —— **现行行为，逐字不变**。
+      * `ratio > 0`：返回 `ratio × (peak_mean − min(hop_means))`，即"只保留落在观测范围
+        上半部的轮"。它是**尺度无关**的，因而**自动随场景变**：高同质（分布窄）时带宽自动
+        收窄，分散时自动放宽，无需人工按图规模分档。
+        各轮均值全等时 spread=0 → δ=0 → 只保留峰值轮（仍非空，不会把结果清空）。
+
+    注：这里的 `hop_means` 是**各跳的轮均分**（`hop_history[*]["mean_score"]`），不是节点余弦
+    ——带宽判据作用在轮均分上，故尺度也要取轮均分的尺度。
+    """
+    if ratio <= 0.0:
+        return max(0.0, float(absolute))
+    if not hop_means:
+        return max(0.0, float(absolute))
+    spread = float(peak_mean) - min(float(m) for m in hop_means)
+    return max(0.0, float(ratio) * spread)
 
 
 class PeakFinder:

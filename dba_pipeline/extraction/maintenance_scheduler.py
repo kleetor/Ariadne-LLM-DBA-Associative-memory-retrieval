@@ -275,6 +275,15 @@ class MaintenanceScheduler:
                             f"[DBA 维护] 自动跳过（连续 {self._consecutive_skips} 次空转），"
                             f"丢弃 {batch_count} 轮对话"
                         )
+                        # 自动跳过的本意是「省下一次 LLM 调用」，不是「丢内容」——
+                        # 原文兜底落库后再返回（见 0927 审查 B5）。否则这条路径同样静默丢记忆。
+                        skipped_merged = "\n\n".join(
+                            _format_round(ts, text) for ts, text in conversations
+                        )
+                        skipped_ts = next(
+                            (ts for ts, _ in reversed(conversations) if ts), None
+                        )
+                        self.dba.store_raw(skipped_merged, timestamp=skipped_ts)
                         return
 
             merged = "\n\n".join(_format_round(ts, text) for ts, text in conversations)
@@ -284,6 +293,12 @@ class MaintenanceScheduler:
             # 原文按轮次交给 DBA：开启原文落盘时保留每轮到达时间，便于溯源核对
             source_rounds = [{"ts": ts, "text": text} for ts, text in conversations]
             result = self.dba.maintain(merged, timestamp=batch_ts, source_rounds=source_rounds)
+
+            # triage 判 SKIP 时内容原本被静默丢弃（MCP 没有 ALM 的文档通道）。
+            # 补一步原文兜底落库（见 0927 审查 B5）。这**不**改变下面的空转判定——
+            # 兜底不消耗 LLM，把"跳过"算成"有效"会让连续空转保护失效。
+            if result.get("skipped"):
+                self.dba.store_raw(merged, timestamp=batch_ts)
 
             ops = result.get("ops", {})
             node_ops = ops.get("node_ops", [])

@@ -263,16 +263,38 @@ def _print_status(config: ALMConfig, engine: ALMEngine) -> None:
         "=" * 60,
         "[ALM] 运行状态",
         "=" * 60,
-        f"  LLM        : {config.llm_model}",
+        f"  LLM        : {config.llm_model} "
+        f"thinking={'开' if config.llm_thinking else '关'} "
+        f"max_tokens={config.llm_max_tokens or '端点默认'}",
         f"  Embedding  : {embedding}",
         f"  数据目录   : {config.data_dir}",
         f"  鉴权       : {auth}",
         f"  检索参数   : seed_k={config.seed_k} expand_k={config.expand_k} "
         f"max_hops={config.max_hops} max_top_k={config.max_top_k} "
-        f"render_ts={config.render_timestamps}",
+        f"max_peak_nodes="
+        f"{'不限' if not config.max_peak_nodes else ('自适应' if config.max_peak_nodes < 0 else config.max_peak_nodes)} "
+        f"purpose_thr={config.purpose_filter_threshold} "
+        # 0930：容忍带带宽此前**从未接出**（一直吃 PeakFinder 库默认 0.10），必须显式可核。
+        f"peak_tol={config.peak_tolerance}"
+        f"{'/相对ratio=' + str(config.peak_tolerance_ratio) if config.peak_tolerance_ratio > 0 else ''} "
+        f"render_ts={config.render_timestamps} scene_para={config.story_scene_paragraphs}",
         f"  弃权       : abstain_cos={config.abstain_cosine} "
         f"verify_hi={config.abstain_verify_hi} "
         f"judge_top_n={config.abstain_judge_top_n}",
+        # 写入侧的两条路由必须可见：它们决定「图建得好不好」（对话通道分批）与
+        # 「图会不会被污染」（文档通道隔离）。失效模式都是静默的，只能在启动时核。
+        f"  写入分批   : add_batch_size={config.add_batch_size or '不限'}条 "
+        f"add_max_chars={config.add_max_chars or '不限'}字 "
+        f"triage={'开' if config.triage_enabled else '关'} "
+        f"max_messages_per_add={config.max_messages_per_add}",
+        f"  文档通道   : {'开启' if config.doc_route else '关闭'} "
+        # 判据是**平均**长度（见 _classify_batch 的 total/len(texts)），不是单条——
+        # 横幅此前写"单条"，与实现不符（0927 审查 D5）。
+        f"判据=(平均≥{config.doc_chars_per_msg}字 且 ≤{config.doc_max_messages}条) "
+        f"块={config.doc_chunk_chars}字 召回={config.doc_lookup_k}±{config.doc_neighbor}",
+        # 留痕开启时把正文写进日志——自测/冒烟期需要，Full 评测期必须关。
+        # 状态页是唯一能一眼确认它没被误开的入口，故单列一行。
+        f"  输入输出留痕: {'⚠ 开启（含正文，Full 评测前必须置 0）' if config.trace_io else '关闭'}",
         f"  监听       : http://{config.host}:{config.port}",
         f"  端点       : POST /add  POST /search  GET /health",
         "=" * 60,

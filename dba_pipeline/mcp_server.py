@@ -413,7 +413,13 @@ class DBAServer:
                 # 跨进程写临界区：先重载面板等外部改动，再抽取落盘，避免相互覆盖
                 with self.write_guard():
                     # 无外部时间戳来源，按「实际落库时刻」注入（Unix 毫秒）
-                    result = self.dba.maintain(conversation, timestamp=int(time.time() * 1000))
+                    ts = int(time.time() * 1000)
+                    result = self.dba.maintain(conversation, timestamp=ts)
+                    # triage 判 SKIP 时内容原本被直接丢弃（MCP 没有 ALM 的文档通道）。
+                    # 补一步原文兜底，保证「已存储且可检索」（见 0927 审查 B5）。
+                    if result.get("skipped"):
+                        raw_ids = self.dba.store_raw(conversation, timestamp=ts)
+                        result.setdefault("result", {}).setdefault("created_ids", []).extend(raw_ids)
                     self._save()
                 out = {
                     "maintained": True,
@@ -469,8 +475,9 @@ class DBAServer:
                 stories = stories[:rerank_k]
             return {
                 "stories": stories,
-                "story_nodes": result.get("story_nodes", []),
-                "discarded_nodes": result.get("discarded_nodes", []),
+                # 0927：StoryRank 只回 `used` 计数，不再回采纳/丢弃的 id 列表
+                # （理由见 InferenceEngine.story_rank 的 Returns）。
+                "story_used": result.get("story_used", 0),
                 "total_matched": result.get("total_candidates", 0),
                 "returned": len(stories),
                 "query": query,
@@ -541,8 +548,7 @@ class DBAServer:
             "peak_scores": result.get("peak_scores", {}),
             "visited_ids": visited,
             "stories": stories,
-            "story_nodes": result.get("story_nodes", []),
-            "discarded_nodes": result.get("discarded_nodes", []),
+            "story_used": result.get("story_used", 0),
             "total_candidates": result.get("total_candidates", 0),
             "method": "story_rank",
             "params": {"seed_k": seed_k, "max_hops": max_hops, "expand_k": expand_k},
@@ -1063,7 +1069,9 @@ TOOL_SCHEMAS = [
         "description": (
             "当用户在对话中透露新的个人信息、状态、偏好、经历、人际关系、"
             "计划等值得长期记忆的事实时，自动调用此工具记录，无需用户明确要求。"
-            "纯寒暄、客套、追问细节等无新信息的内容不需要调用。"
+            "纯寒暄、客套、追问细节等无新信息的内容不需要调用。\n"
+            "存储保证：传入的对话文本会被持久化且可被检索——即便其被判为无需抽取"
+            "（triage 跳过）或批量缓冲触发自动跳过，也会以原文形式兜底落库，不会静默丢失。"
         ),
         "inputSchema": {
             "type": "object",
@@ -1638,7 +1646,7 @@ def main():
                 print("错误: 需要配置 LLM API Key（--llm-api-key 或环境变量 OPENAI_API_KEY）"
                       "或指定 --llm-base-url（本地模型）", file=sys.stderr)
                 sys.exit(1)
-            # 思考模式默认关闭（依据见 Plan/0921——thinking档位对照实验报告.md）。该参数只有
+            # 思考模式默认关闭（依据见 Plan/alm/0921——thinking档位对照实验报告.md）。该参数只有
             # deepseek 系端点认，其它模型带上会 400，故统一由 provider.thinking_kwargs 判定。
             llm_extra = thinking_kwargs(args.llm_model, args.llm_base_url, args.llm_thinking)
             llm = ChatOpenAI(

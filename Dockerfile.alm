@@ -75,7 +75,7 @@ RUN pip install --no-cache-dir .
 # false（默认）→ API embedding：镜像小、构建快，运行期需能访问 embedding 端点。
 # true         → 构建期把模型下载进镜像缓存，运行期配合 HF_HUB_OFFLINE=1 只读缓存。
 ARG EMBEDDING_LOCAL=false
-ARG EMBEDDING_MODEL=BAAI/bge-large-zh-v1.5
+ARG EMBEDDING_MODEL=BAAI/bge-m3
 
 RUN if [ "$EMBEDDING_LOCAL" = "true" ]; then \
       pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu \

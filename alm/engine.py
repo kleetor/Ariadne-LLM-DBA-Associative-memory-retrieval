@@ -88,9 +88,22 @@ class ALMEngine:
             raise RuntimeError("缺少 LLM 配置（OPENAI_MODEL）")
         if not config.llm_api_key and not config.llm_base_url:
             raise RuntimeError("缺少 LLM 凭据（OPENAI_API_KEY 或 OPENAI_API_BASE）")
-        # 思考模式默认关闭（依据见 Plan/0921——thinking档位对照实验报告.md）。该参数只有
+        # 思考模式默认关闭（依据见 Plan/alm/0921——thinking档位对照实验报告.md）。该参数只有
         # deepseek 系端点认，其它模型带上会 400，故由 provider.thinking_kwargs 统一判定。
         body = thinking_kwargs(config.llm_model, config.llm_base_url, config.llm_thinking)
+        # 输出上限必须显式给：deepseek 端点在 thinking disabled 时不传 max_tokens 就只有
+        # 8192，StoryRank 在最难的题上会被截断（0926 实测见 config.llm_max_tokens 注释）。
+        #
+        # ⚠️ 必须走 `extra_body`，**不能**用 `ChatOpenAI(max_tokens=...)`：langchain-openai
+        # 会把该参数**改名成 `max_completion_tokens`**（OpenAI o 系的名字），而 deepseek
+        # 端点不认它，于是静默退回自带的 8192 上限——表现为 banner 显示 max_tokens=32768
+        # 却依旧 `out=8192` + `finish_reason=length`。实测依据（0926，本地复现）：
+        #   ChatOpenAI(max_tokens=32768)._get_request_payload() →
+        #     {'model':…, 'stream':False, 'temperature':0.0, 'max_completion_tokens':32768}
+        #   同一 prompt 实际 invoke 仍返回 out_tokens=8192 / finish_reason=length。
+        # `extra_body` 是**逐字透传**到请求体的，故放在这里。
+        if config.llm_max_tokens > 0:
+            body.setdefault("extra_body", {})["max_tokens"] = config.llm_max_tokens
         return ChatOpenAI(
             model=config.llm_model,
             api_key=config.llm_api_key or "not-needed",
@@ -100,6 +113,9 @@ class ALMEngine:
             # 429 较常见，而 Add/Search 各自只允许一次上游重试机会：这里失败会把整个
             # 请求变成 5xx，代价远高于多试一次。
             max_retries=3,
+            # 单次请求超时（默认 120s，见 config.llm_timeout）。**不设会吃 SDK 默认的 600s**，
+            # 配上上面 3 次重试，一个挂死的上游能把 /search 拖住 40 分钟并一直占着空间锁。
+            timeout=config.llm_timeout,
             callbacks=[meter] if meter is not None else None,
             **body,
         )

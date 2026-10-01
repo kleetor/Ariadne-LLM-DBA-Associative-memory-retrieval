@@ -16,10 +16,14 @@ from langchain_core.embeddings import Embeddings
 
 from dba_pipeline.core.jump_axis import get_jump_weight, NodeType, RelationType
 from dba_pipeline.core.purpose import PurposeModel
-from dba_pipeline.core.peak_find import PeakFinder
+from dba_pipeline.core.peak_find import PeakFinder, resolve_peak_tolerance
 from dba_pipeline.graph.memory_graph import MemoryGraph
-from dba_pipeline.llm.inference import InferenceEngine
+from dba_pipeline.llm.inference import InferenceEngine, _STORY_MAX_CHARS
 from dba_pipeline.embedding.store import VectorStore
+
+# `max_peak_nodes` 的哨兵值：**-1 = 按叙事篇幅预算自适应条数**（精确证据路由用）。
+# 0 仍表示"不限"（历史语义，见 `retrieve()` 的 docstring）。
+PEAK_NODES_AUTO = -1
 
 # 阶段观测回调：on_stage(stage, info)，供面板「调用测试」把链路每一段展示出来。
 StageHook = Optional[Callable[[str, Dict[str, Any]], None]]
@@ -233,7 +237,14 @@ TOOL_TIME_ANCHOR_RE = re.compile("|".join(
 
 
 class PurposeDrivenRetriever:
-    """目的驱动的联想记忆检索器（完整链路）"""
+    """目的驱动的联想记忆检索器（完整链路）
+
+    关于 `purpose_filter_threshold`：它是**余弦阈值**，与 embedding 模型强绑定，不是通用常数。
+    0.2 是 bge-large-zh-v1.5 时代的标定值（0828 检索理论文 §3.3.2：该模型下「缓解 vs 喝咖啡」
+    余弦落在 0.2–0.3，取 0.3 会误杀功能等价候选）。0925 换 bge-m3 后实测「必须放过」的那类
+    样本最低余弦升到 0.404，故默认值上移到 0.30（保留同构安全余量）。换模型必须重标——
+    见 eval/probe_threshold_retune.py。
+    """
 
     def __init__(
         self,
@@ -245,8 +256,10 @@ class PurposeDrivenRetriever:
         distance_decay: float = 0.85,
         jump_weight_coef: float = 0.5,
         purpose_weight_coef: float = 0.5,
-        purpose_filter_threshold: float = 0.2,
+        purpose_filter_threshold: float = 0.30,
         purpose_filter_decay: float = 0.0,
+        peak_tolerance: float = 0.10,
+        peak_tolerance_ratio: float = 0.0,
         path_tracker=None,
     ):
         self.llm = llm
@@ -256,7 +269,17 @@ class PurposeDrivenRetriever:
         self.inference = inference
 
         self.purpose_model = PurposeModel(llm, self._embed)
-        self.peak_finder = PeakFinder(patience=2, min_delta=0.015)
+        # 0930 复审：`peak_tolerance` 此前**从未被显式传入**，生效值一直是 PeakFinder 的库默认
+        # 0.10（0815——debugPlan 已记录）。现接出入口（ALM 侧可配），并支持**相对带宽**
+        # `peak_tolerance_ratio > 0`（见 core.peak_find.resolve_peak_tolerance）。
+        # 默认值与旧行为逐字一致：absolute=0.10、ratio=0（走绝对模式）。
+        self.peak_finder = PeakFinder(
+            patience=2, min_delta=0.015, peak_tolerance=peak_tolerance
+        )
+        self.peak_tolerance_ratio = peak_tolerance_ratio
+        # 观测（只读，来自最近一次 retrieve）；由 _build_result 透出给上层日志
+        self._band_stats: Dict[str, Any] = {}
+        self._purpose_stats: List[Dict[str, Any]] = []
 
         self.distance_decay = distance_decay
         self.jump_weight_coef = jump_weight_coef
@@ -453,6 +476,7 @@ class PurposeDrivenRetriever:
         expand_k: int = None,
         purpose: Optional[List[str]] = None,
         on_stage: StageHook = None,
+        max_peak_nodes: Optional[int] = None,
     ) -> Dict:
         """执行完整的目的驱动联想检索
 
@@ -466,6 +490,10 @@ class PurposeDrivenRetriever:
                      在对话上下文理解中给出；None 时退化到系统内部推断。
             on_stage: 可选，阶段观测回调 on_stage(stage, info)。面板「调用测试」靠它把
                       意图识别 / 种子 / 每一跳 / 寻峰逐段展示；None 时零开销。
+            max_peak_nodes: 可选，峰值容忍带的输出条数上限（None / 0 = 不限；
+                `PEAK_NODES_AUTO`(-1) = 按叙事篇幅预算反推条数）。
+                     容忍带是"整轮并集"，在大图上会把读出量顶到全图六成（实测 200 节点
+                     → 124 条 / 62%），远超设计区间 5–37（见 0828 检索理论文）。
 
         Returns:
             {
@@ -476,6 +504,10 @@ class PurposeDrivenRetriever:
                 "total_candidates": int,
             }
         """
+        # 观测复位（本次 retrieve 的读数；上层从 result 的 peak_band / purpose_pass 取）
+        self._band_stats = {}
+        self._purpose_stats = []
+
         # Step 1: 推断状态和目的（可注入：主 LLM 提供则跳过独立推断）
         emit_stage(on_stage, "intent_start", injected=purpose is not None, query=query)
         if purpose is not None:
@@ -524,7 +556,13 @@ class PurposeDrivenRetriever:
         if decision == "peak_found":
             emit_stage(on_stage, "peak_found", hop=0, mean_score=round(mu_0, 4),
                        reason="种子轮即达峰值")
-            return self._build_result(seed_ids, purpose_info, [])
+            # 种子轮同样受输出上限约束，否则纯种子查询会绕过上限
+            # （`PEAK_NODES_AUTO` 也要在这里解析，否则哨兵在早退路径上会退化成"不限"）
+            if max_peak_nodes == PEAK_NODES_AUTO:
+                max_peak_nodes = self._auto_peak_cap(seed_ids)
+            return self._build_result(
+                seed_ids[:max_peak_nodes] if (max_peak_nodes or 0) > 0 else seed_ids,
+                purpose_info, [])
 
         # Step 3-6: 循环扩展
         current_ids = list(seed_ids)
@@ -591,6 +629,16 @@ class PurposeDrivenRetriever:
                     "purpose_score": ps,
                 }
 
+            # 观测（仅记录，不改判定）：目的过滤的**通过率**此前完全不可见——阈值 0.30 是否像
+            # 容忍带那样在窄分布上退化（放过几乎全部 / 或误杀几乎全部），无从判断。有了 in/out
+            # 才能为"按场景调参"提供读数。
+            self._purpose_stats.append({
+                "hop": hop,
+                "in": len(candidate_ids),
+                "out": len(filtered),
+                "thr": round(float(hop_threshold), 4),
+            })
+
             if not filtered:
                 emit_stage(on_stage, "hop", hop=hop, expanded=len(expanded), kept=0,
                            stop="目的回归过滤后为空")
@@ -638,7 +686,7 @@ class PurposeDrivenRetriever:
                 emit_stage(on_stage, "peak_found", hop=hop, mean_score=round(mu_hop, 4),
                            peak_index=self.peak_finder.peak_index,
                            tolerance=self.peak_finder.peak_tolerance)
-                result_ids = self._collect_peak_tolerance(hop_history)
+                result_ids = self._collect_peak_tolerance(hop_history, max_peak_nodes)
                 break
 
             # 当前轮候选用作下一轮扩展
@@ -655,26 +703,90 @@ class PurposeDrivenRetriever:
         else:
             # 达到 max_hops 仍未找到峰值，用峰值容忍带
             emit_stage(on_stage, "hop", hop=max_hops, stop="达到最大跳数")
-            result_ids = self._collect_peak_tolerance(hop_history)
+            result_ids = self._collect_peak_tolerance(hop_history, max_peak_nodes)
 
         emit_stage(on_stage, "peak_collected", count=len(result_ids), ids=result_ids)
         return self._build_result(result_ids, purpose_info, hop_history)
 
-    def _collect_peak_tolerance(self, hop_history: List[Dict]) -> List[str]:
-        """峰值容忍带：取 μ ≥ peak_mean - tolerance 的所有轮候选"""
+    def _collect_peak_tolerance(
+        self, hop_history: List[Dict], max_nodes: Optional[int] = None
+    ) -> List[str]:
+        """峰值容忍带：取 μ ≥ peak_mean - tolerance 的所有轮候选
+
+        max_nodes 为可选的输出条数上限（None / 0 表示不限）。**必须按 combined_score
+        降序截断，不能按收集顺序截断**：容忍带是"整轮并集"，收集顺序是 hop 优先
+        （种子轮在最前），直接切片等于只留早期轮，会把后期轮里得分更高的候选一起丢掉。
+
+        按分数截断不会切断 StoryRank 的路径：`select_core_nodes` 回溯 parent 时会把
+        被截掉的祖先节点补回分组（见其 `while nid is not None` 分支），故叙事仍成链。
+        """
         peak_mean = self.peak_finder.history[self.peak_finder.peak_index]
-        threshold = peak_mean - self.peak_finder.peak_tolerance
+        # 带宽解析：绝对（默认，= 现行 0.10，行为不变）/ 相对（ratio>0，随轮均分的观测范围自适应）
+        hop_means = [float(h.get("mean_score", 0)) for h in hop_history]
+        delta = resolve_peak_tolerance(
+            peak_mean,
+            hop_means,
+            absolute=self.peak_finder.peak_tolerance,
+            ratio=self.peak_tolerance_ratio,
+        )
+        threshold = peak_mean - delta
         result_ids = []
         seen = set()
+        band_rounds = 0
+        cand_total = 0
         for h in hop_history:
             mu = h.get("mean_score", 0)
+            cand_total += len(h.get("candidates") or [])
             if mu >= threshold:
+                band_rounds += 1
                 for c in h.get("candidates", []):
                     cid = c.get("id", "")
                     if cid not in seen:
                         seen.add(cid)
                         result_ids.append(cid)
+        # 观测：把"寻峰到底筛掉了多少"直接记下来。此前只能事后用日志里的 `峰值/候选` 反推，
+        # 而线上该比值恒 ≈0.80（几乎不筛）。有了 mode/delta/band_ratio 才能判断相对带宽是否真的
+        # 起了作用，也才能为"按场景调参"提供读数。
+        self._band_stats = {
+            "peak_mean": round(float(peak_mean), 4),
+            "delta": round(float(delta), 4),
+            "mode": ("相对" if self.peak_tolerance_ratio > 0 else "绝对"),
+            "rounds_total": len(hop_history),
+            "rounds_in_band": band_rounds,
+            "cand_total": cand_total,
+            "cand_in_band": len(result_ids),
+            "band_ratio": round(len(result_ids) / cand_total, 3) if cand_total else 0.0,
+        }
+        if max_nodes == PEAK_NODES_AUTO:
+            max_nodes = self._auto_peak_cap(result_ids)
+        if max_nodes and len(result_ids) > max_nodes:
+            score: Dict[str, float] = {}
+            for h in hop_history:
+                for c in h.get("candidates", []):
+                    cid = c.get("id", "")
+                    cs = c.get("combined_score", 0)
+                    if cid not in score or cs > score[cid]:
+                        score[cid] = cs
+            # 同分时按 id 兜底排序，保证结果可复现
+            result_ids.sort(key=lambda cid: (-score.get(cid, 0), cid))
+            result_ids = result_ids[:max_nodes]
         return result_ids
+
+    def _auto_peak_cap(self, ids: List[str]) -> int:
+        """按**叙事篇幅预算**反推读出条数（精确证据路由用）。
+
+        标定依据：叙事产出与输入长度约 1:1（实测 148 条节点 → 10,543 字 ≈ 71 字/条），
+        而篇幅上限是 `_STORY_MAX_CHARS`。让输入字符数 ≈ 预算时，"写满"恰好等于"写完"，
+        证据密度最高，也不会撞上"超预算 → 强制压缩重试 → 仍超 → 硬截断"这条链。
+        样本取前 40 条（容忍带按轮收集、种子轮在最前）的正文长度，避免全图均值被长尾拉偏。
+        **空/缺失正文不计入平均**：它们的长度是 0，混进来会把均值拉低、反而把上限顶到最大值，
+        与"控制篇幅"相反。
+        """
+        lens = [len(c) for c in (self.graph.get_content(nid) or "" for nid in ids[:40]) if c]
+        avg = (sum(lens) / len(lens)) if lens else 0.0
+        if avg <= 0:
+            return 24
+        return max(4, min(40, int(_STORY_MAX_CHARS / avg)))
 
     def _build_result(
         self,
@@ -707,6 +819,10 @@ class PurposeDrivenRetriever:
             "purpose": purpose_info,
             "hop_history": hop_history,
             "total_candidates": len(memories),
+            # 观测（0930）：寻峰带读数 + 目的过滤逐跳通过率，供上层日志/复算使用。
+            # 用 getattr 兜底：部分测试/工具用 `__new__` 绕过 `__init__` 构造实例。
+            "peak_band": getattr(self, "_band_stats", {}),
+            "purpose_pass": getattr(self, "_purpose_stats", []),
         }
 
     # ---- StoryRank：链路理解 → 故事片段 ----
@@ -750,6 +866,10 @@ class PurposeDrivenRetriever:
 
         每个结果节点沿 from 回溯到种子（根），共享根的结果归为一组；
         组内节点按 hop 顺序（根 → 叶）排列。
+
+        注意：这里返回的是**按根组分块**的顺序；真正交给 StoryRank 的序列由 `_build_path`
+        用 `_order_by_level` 重排为全局层次序（先所有根，再所有第二层……），以免某个
+        长子树把后面更重要的根推后。
 
         Returns:
             List[List[str]]：每个元素是一个片段的核心节点 id（从根到叶）
@@ -797,6 +917,44 @@ class PurposeDrivenRetriever:
 
         return core_groups
 
+    @staticmethod
+    def _order_by_level(group: List[str], parent: Dict[str, str]) -> List[str]:
+        """把节点序列重排成**全局层次序**：先所有根，再所有第二层，依此类推。
+
+        为什么不能按"根组"整块排：`select_core_nodes` 交出来的是「根组1 的 hop 序 →
+        根组2 的 hop 序」首尾相接。只要某个根组的子树长，**后面那些更重要的根就被整体
+        推后**；而 StoryRank 是按这个顺序写的，篇幅预算一紧就只覆盖前缀。
+
+        排序键 = `(层深, 根组首次出现的次序)`，`sorted` 保证稳定 → 同层同根组内保持原有
+        相对顺序（即原来的 hop 序），只在「层」与「根组」两个维度上做交错。"根"的判据与
+        `select_core_nodes` 一致：沿 parent 回溯到没有父节点的那个节点。
+        """
+        root_rank: Dict[str, int] = {}
+
+        def root_of(nid: str) -> str:
+            seen = set()
+            while nid in parent and nid not in seen:
+                seen.add(nid)
+                nid = parent[nid]
+            return nid
+
+        def depth_of(nid: str) -> int:
+            depth, seen = 0, set()
+            while nid in parent and nid not in seen:
+                seen.add(nid)
+                nid = parent[nid]
+                depth += 1
+            return depth
+
+        keyed: List[Tuple[str, int, int]] = []
+        for nid in group:
+            root = root_of(nid)
+            if root not in root_rank:
+                root_rank[root] = len(root_rank)
+            keyed.append((nid, depth_of(nid), root_rank[root]))
+        keyed.sort(key=lambda t: (t[1], t[2]))
+        return [t[0] for t in keyed]
+
     def _build_path(
         self,
         group: List[str],
@@ -807,6 +965,12 @@ class PurposeDrivenRetriever:
         parent = trace["parent"]
         content = trace["content"]
         edge = trace["edge"]
+        score_map = trace.get("score") or {}
+        # 全局层次序：先所有根，再所有第二层……（详见 `_order_by_level` 的注释）。
+        # 实测依据（scriptMem-enemy，剥离选项后）：种子第 1 名的证据节点 n385 在原
+        # "根组整块排"下落在 path 第 187 位、累计 14,702 字，而正文只写到 1,793 字 →
+        # 该证据在正文里 0 命中；层次序把根提到最前，长子树不再挤掉别的根。
+        group = self._order_by_level(group, parent)
         group_set = set(group)
 
         nodes = []
@@ -820,9 +984,14 @@ class PurposeDrivenRetriever:
                 # 记录时间（Unix 毫秒）。仅在调用方开启 render_timestamps 时进入 prompt，
                 # 默认不渲染，保证 ALM 侧的叙事文本与既有行为完全一致。
                 "timestamp": self.graph.graph.nodes[nid].get("timestamp"),
+                # combined_score。唯一用途是 StoryRank JSON 解析失败时**按相关度降级拼接**
+                # ——`group` 的顺序是全局层次序而非分数序，兜底必须自己重排。
+                # 不进入 prompt（格式化函数只读 id/node_type/content/timestamp）。
+                "score": float(score_map.get(nid) or 0.0),
             })
 
         edges = []
+        covered = set()
         for nid in group:
             p = parent.get(nid)
             if p is not None and p in group_set:
@@ -834,8 +1003,76 @@ class PurposeDrivenRetriever:
                     "rel_type": rel_val,
                     "is_reverse": is_reverse,
                 })
+                covered.add((p, nid))
+
+        edges.extend(self._augment_edges_from_graph(group, group_set, covered))
 
         return {"nodes": nodes, "edges": edges}
+
+    # 补边预算的下限与上限（条）。实际预算随组规模伸缩——**固定预算在大空间里等于
+    # 没补**：峰值容忍带可采纳 260+ 个节点（线上实测 峰值=263 / 291），而固定 60
+    # 条边在 263 个节点上覆盖率只有 23%。上限 300 是为了不把 StoryRank 的 prompt
+    # 灌爆（每条约 30 个字符）。
+    _AUGMENT_EDGE_MIN = 60
+    _AUGMENT_EDGE_MAX = 300
+
+    # 补边时的关系优先级：**有向**关系是 StoryRank 能铺成链条的语义
+    # （因果/时序/偏好/时间/分类），双向关系（场景/社交/属性）只表达并列。
+    # 预算不足时优先保留前者——否则被砍掉的恰好是 B2「因果链恢复」所需的那批边。
+    _DIRECTIONAL_RELS = ("causal", "sequence", "preference", "temporal", "taxonomic")
+
+    def _augment_edges_from_graph(
+        self,
+        group: List[str],
+        group_set: set,
+        covered: set,
+    ) -> List[Dict]:
+        """把 group 内部真实存在的图边补进 StoryRank 的 path
+
+        为什么必须有这一步：`_collect_trace_nodes` 的 parent 只来自 `hop_history`，
+        即**跳转树**的父子关系。而检索停在种子层时（跳=1）根本没有父子关系——线上
+        实测该情形占 69.6%，且与图规模强相关（节点 ≤37 的空间 27 次检索 100% 跳=1，
+        ≥100 节点的 11 次检索 0% 跳=1；成因见 MemorySpace._effective_seed_k 的
+        「小图全量取种子」分支与 MemoryGraph.expand_with_trace 的「不回访」）。
+
+        此时 edges 为空 → StoryRank 收到一堆**无边节点** → 因果链无从表达 →
+        「因果链、路径与中间步骤恢复」项连续多轮 0 分。但关系一直在图里，只是
+        没被取出来：小图上节点往往已全部进入 group，**根本不需要靠跳转获得关系**。
+
+        只为「两端都在 group 内」的边补，保证不引入本次检索未采纳的节点。
+        """
+        # 预算 = 平均每个节点补 2 条边（足以让因果链有连续边可依），夹在上下限之间；
+        # 再被"组内实际可补的边数"封顶。
+        cap = max(self._AUGMENT_EDGE_MIN, min(self._AUGMENT_EDGE_MAX, 2 * len(group)))
+        budget = min(cap, max(0, 2 * len(group) - len(covered)))
+        if budget <= 0:
+            return []
+
+        candidates = []
+        seen = set(covered)
+        for nid in group:
+            for nb, rel_type, is_reverse in self.graph.get_neighbors(nid):
+                if nb == nid or nb not in group_set:
+                    continue
+                # **按真实方向输出**：`get_neighbors` 对同一条边给出两个方向——出边
+                # （is_reverse=False）表示 nid→nb，入边（is_reverse=True）表示 nb→nid。
+                # 此前硬编码 `from=nid, to=nb, is_reverse=False` 会随遍历顺序把有向边
+                # （尤其因果/时序）整条讲反，直接命中 B2「因果链恢复」（见 0927 审查 B1）。
+                frm, to = (nb, nid) if is_reverse else (nid, nb)
+                # 同一对节点只补一条：任一方向已在跳转树里出现过就跳过。
+                # 用"无序对"去重（顺序不敏感），保证两个方向都命中同一判定。
+                if (frm, to) in seen or (to, frm) in seen:
+                    continue
+                seen.add((frm, to))
+                rel_val = rel_type.value if hasattr(rel_type, "value") else str(rel_type)
+                candidates.append((rel_val, frm, to))
+
+        # 优先级：有向关系在前；同优先级内按 id 排序，保证结果可复现
+        candidates.sort(key=lambda x: (x[0] not in self._DIRECTIONAL_RELS, x[1], x[2]))
+        return [
+            {"from": frm, "to": to, "rel_type": rel_val, "is_reverse": False}
+            for rel_val, frm, to in candidates[:budget]
+        ]
 
     def retrieve_with_story(
         self,
@@ -847,6 +1084,11 @@ class PurposeDrivenRetriever:
         render_timestamps: bool = False,
         on_stage: StageHook = None,
         purpose: Optional[List[str]] = None,
+        condense: bool = False,
+        state: bool = False,
+        scene: bool = False,
+        max_peak_nodes: Optional[int] = None,
+        extra_nodes: Optional[List[Dict]] = None,
     ) -> Dict:
         """检索 → 连通性粗筛 → StoryRank 故事化 →（可选）生成回复
 
@@ -858,6 +1100,15 @@ class PurposeDrivenRetriever:
             调用方须自行保证 purposes 已推断完毕，见 retrieve() 的 purpose 说明）；
             None 时行为与改造前完全一致（内部自行推断）。
         on_stage: 可选阶段观测回调，透传给 retrieve() 并补充故事化两段（面板「调用测试」）。
+        max_peak_nodes: 可选，峰值容忍带输出条数上限（透传给 retrieve()，
+                含 `PEAK_NODES_AUTO`）；None 时
+            与改造前逐字一致。**上限作用在检索侧，早于连通性粗筛**——被截掉的节点
+            不再进入 all_nodes，但 `select_core_nodes` 仍会把它们的祖先补回分组，
+            故叙事链不缺环（见 _collect_peak_tolerance 说明）。
+        extra_nodes: 可选，**不在图中**的额外内容（ALM 文档通道取回的原文摘录），
+            形如 {"id","content","node_type","timestamp"}，直接并入 StoryRank 的
+            path.nodes，**不进 edges**——它们没有图内关系，文档的"边"是块序，
+            已由调用方在取回时用邻块扩展体现。None 时行为与改造前逐字一致。
         """
         retrieve_kwargs: Dict[str, Any] = {"seed_k": seed_k, "on_stage": on_stage}
         if max_hops is not None:
@@ -866,6 +1117,8 @@ class PurposeDrivenRetriever:
             retrieve_kwargs["expand_k"] = expand_k
         if purpose is not None:
             retrieve_kwargs["purpose"] = purpose
+        if max_peak_nodes:
+            retrieve_kwargs["max_peak_nodes"] = max_peak_nodes
         result = self.retrieve(query, **retrieve_kwargs)
         peak_memories = result.get("peak_memories", [])
         hop_history = result.get("hop_history", [])
@@ -886,26 +1139,53 @@ class PurposeDrivenRetriever:
         emit_stage(on_stage, "core_nodes", groups=len(core_groups), nodes=len(all_nodes))
 
         stories = []
-        story_nodes = []
-        discarded_nodes = []
-        if all_nodes:
-            path = self._build_path(all_nodes, hop_history)
+        story_used = 0
+        story_degraded = False
+        path_nodes = path_edges = 0
+        edge_types: Dict[str, int] = {}
+        if all_nodes or extra_nodes:
+            path = self._build_path(all_nodes, hop_history) if all_nodes else {"nodes": [], "edges": []}
+            if extra_nodes:
+                # 原文摘录只进 nodes、不进 edges（它们没有图内关系）。
+                # 放在图节点**之后**：先交代记忆链路，再补原文证据。
+                path["nodes"] = list(path.get("nodes", [])) + list(extra_nodes)
+            path_nodes = len(path.get("nodes", []))
+            path_edges = len(path.get("edges", []))
+            for e in path.get("edges", []):
+                key = str(e.get("rel_type") or "-")
+                edge_types[key] = edge_types.get(key, 0) + 1
             emit_stage(on_stage, "storyrank_start", nodes=len(path.get("nodes", [])),
                        edges=len(path.get("edges", [])))
-            out = self.inference.story_rank(query, path, render_timestamps=render_timestamps)
+            out = self.inference.story_rank(query, path, render_timestamps=render_timestamps,
+                                            condense=condense, state=state, scene=scene)
             story = out.get("story", "")
-            adopted = out.get("adopted_ids", [])
             if story:
                 stories.append(story)
-            story_nodes = adopted
-            discarded_nodes = [nid for nid in all_nodes if nid not in adopted]
-            emit_stage(on_stage, "storyrank_done", adopted=len(story_nodes),
-                       discarded=len(discarded_nodes), story=story,
-                       adopted_ids=list(story_nodes))
+            # 0927：StoryRank 不再回 id 列表，只回 `used` 计数（理由见
+            # InferenceEngine.story_rank 的 Returns）。`discarded_nodes` 随之无法再
+            # 由"候选 − 采纳"推出，一并去掉——保留一个恒为空或恒等于候选的字段
+            # 比去掉更糟：它会被读成"这批节点全被丢弃"。
+            story_used = int(out.get("used") or 0)
+            # 降级必须透传：解析失败时 `story` 是按相关度拼接的节点原文，与"合成叙事"
+            # 在下游完全是两种东西，而聚合指标看不出差别——0926 线上 7 次降级就是
+            # 这样被掩盖的，只能靠 WARNING 行计数才能发现。
+            story_degraded = bool(out.get("degraded"))
+            emit_stage(on_stage, "storyrank_done", used=story_used, story=story,
+                       degraded=story_degraded)
 
         result["stories"] = stories
-        result["story_nodes"] = story_nodes
-        result["discarded_nodes"] = discarded_nodes
+        result["story_used"] = story_used
+        result["story_degraded"] = story_degraded
+        # 实际送入 StoryRank 的点/边数量（**只记计数，不记正文**）。这是 B2「因果链、
+        # 路径与中间步骤恢复」的判决依据：边数为 0 或远小于节点数，说明 StoryRank
+        # 拿到的是一堆孤立节点，规则 4「只有边类型为 CAUSAL 的两点之间才写成因果」
+        # 无从触发。
+        result["path_nodes"] = path_nodes
+        result["path_edges"] = path_edges
+        # 送入 StoryRank 的边**类型构成**（同样只有计数）。仅知道边数不够用：边数达标
+        # 但全是被动关系（scenario/social/attribute）时，规则 4 要的因果链依然无从表达
+        # ——这是"补边补了很多、B2 仍是 0"的必要观测。
+        result["path_edge_types"] = edge_types
 
         # 生成回复：聊天 LLM 只接收干净故事，替代 [id] content 列举
         if with_response:

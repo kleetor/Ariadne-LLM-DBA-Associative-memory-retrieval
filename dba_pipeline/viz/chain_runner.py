@@ -70,7 +70,7 @@ class ChainRunner:
         from dba_pipeline.mcp_server import DBAServer
         from dba_pipeline.retrieval.retriever import PurposeDrivenRetriever
 
-        emb_model = os.environ.get("EMBEDDING_MODEL", "BAAI/bge-large-zh-v1.5")
+        emb_model = os.environ.get("EMBEDDING_MODEL", "BAAI/bge-m3")
         if _env_flag("EMBEDDING_LOCAL"):
             embeddings = LocalEmbeddings(model_name=emb_model)
         else:
@@ -79,7 +79,7 @@ class ChainRunner:
                 api_base=os.environ.get("EMBEDDING_API_BASE") or os.environ.get("OPENAI_API_BASE") or "",
                 model=emb_model,
             )
-        # 思考模式默认关闭（与 MCP / ALM 一致，依据见 Plan/0921 报告）；
+        # 思考模式默认关闭（与 MCP / ALM 一致，依据见 Plan/alm/0921 报告）；
         # OPENAI_THINKING=1 可打开。非 deepseek 模型会自动跳过该参数（否则 400）。
         from dba_pipeline.llm.provider import thinking_kwargs
 
@@ -182,9 +182,10 @@ class ChainRunner:
             # （长连接/代理下 POST 响应可能迟迟不到，那时面板会一直卡在"运行中"）
             emit("done", {
                 "visited": len(result.get("visited_ids", [])),
-                "adopted": len(result.get("story_nodes", [])),
+                # 0927：StoryRank 只回 `used` 计数，不再回采纳/丢弃的 id 列表
+                "adopted": result.get("story_used", 0),
+                "story_used": result.get("story_used", 0),
                 "visited_ids": result.get("visited_ids", []),
-                "story_nodes": result.get("story_nodes", []),
                 "result": result,
             })
             return result

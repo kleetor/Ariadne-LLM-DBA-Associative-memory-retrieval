@@ -4,7 +4,7 @@
 目前只有一项：请求体 ``thinking`` 参数是否受支持。
 
 为什么要判定：deepseek 系端点**默认开启思考**（effort=high），关闭必须走请求体
-``extra_body={"thinking": {"type": "disabled"}}``（见 Plan/0921 报告实测）。但 OpenAI 兼容
+``extra_body={"thinking": {"type": "disabled"}}``（见 Plan/alm/0921 报告实测）。但 OpenAI 兼容
 端点收到未知参数会直接 400 —— 实测 api.gpt.ge 的 gpt-4o-mini 报
 ``Unrecognized request argument supplied: thinking``。
 

@@ -72,10 +72,30 @@ class OpenAIEmbeddings(Embeddings):
         self.api_base = api_base.rstrip("/")
         self.model = model
 
-    # bge 系列最大序列 512 token（本地 sentence-transformers 会自动截断，API 不会）。
-    # 为与本地行为一致并避免长输入 400，发送前先截断到保守字符预算；
-    # 若仍返回 400（数字/符号密集文本 token 偏多），渐进减半重试。
+    # 单条文本送进 embedding 前的字符预算（超限的**尾部会被丢弃**，只嵌前缀）。
+    #
+    # 语义要说清：这不是"切块"，是**静默截断**——超过它的部分不参与向量，也就检索不到。
+    #
+    # 历史：这个值随模型上限变过两次。
+    #   · bge-large-zh-v1.5（512 token）时代标定为 **500**（实测 500/550 字符 → 200，
+    #     600 字符 → 400 code=20015；512 token ≈ 550 汉字，取 500 留余量）。
+    #     当时还刻意收窄过：写 2000 时每个长文本要走 2000(400)→1000(400)→500(200)
+    #     三次往返，而 `_call` 是按批重试，同批短文本被迫跟着重嵌，成本成倍放大。
+    #   · 改用 `BAAI/bge-m3`（8192 token）后，**实测端点真实上限**
+    #     （eval/probe_m3_limit.py，SiliconFlow，直接打 API 绕过本截断）：
+    #       英文 16000 字符 → 200；中文 8000 字符 → 200、16000 字符 → 400。
+    #     故 500 已严重过窄，取 **2000**：对中英都安全（中文 2000 字 ≈ 1333 token，
+    #     离 8192 上限很远），且**高于 `space.doc_chunk_chars=1800`**——文档块必须
+    #     整块进向量，否则"放大块以保留语义完整性"这个设计会被这一步静默截掉一半。
+    #
+    # 为什么不再等于 500：500 时会连带伤害两处
+    #   ① 文档块（1800 字）只嵌了前 500 字，尾部永远检索不到；
+    #   ② 抽取出的长节点（节点膨胀时可能 >500 字）向量只覆盖前缀，语义被截。
+    #
+    # 若仍返回 400（数字/符号密集文本 token 偏多），下面的渐进减半会兜住。
+    # 注意：改本值会改变长文本的向量，故已纳入 space 的索引指纹（换值即自动重建索引）。
     _MAX_CHARS = 2000
+
 
     def _call(self, input_texts: List[str]) -> List[List[float]]:
         url = f"{self.api_base}/embeddings"
@@ -129,7 +149,13 @@ SiliconFlowEmbeddings = OpenAIEmbeddings
 class LocalEmbeddings(Embeddings):
     """本地 Embedding 模型（sentence-transformers），消除 API 依赖"""
 
-    def __init__(self, model_name: str = "BAAI/bge-large-zh-v1.5", device: str = None):
+    # 与远端 `OpenAIEmbeddings` 对齐的"单条预算"字段：`space._index_digest()` 会读它，
+    # 用于判断"改预算后落盘向量是否还与新查询同语义"。本类此前**没有该属性**，指纹里
+    # 该字段恒为 None，与远端路径不一致（0927 审查 D6）。本地路径不按字符截断（交给
+    # 模型的序列上限），故这里用模型的 token 上限作代理值：换模型即指纹变化 → 自动重建。
+    _MAX_CHARS = 8192
+
+    def __init__(self, model_name: str = "BAAI/bge-m3", device: str = None):
         from sentence_transformers import SentenceTransformer
         self.model_name = model_name
         if device is None:
@@ -141,6 +167,11 @@ class LocalEmbeddings(Embeddings):
         except Exception:
             # 网络不通时降级为仅用缓存
             self.model = SentenceTransformer(model_name, device=device, local_files_only=True)
+        # 覆写为模型自身的序列上限：换模型 → 指纹变化 → 索引自动重建
+        try:
+            self._MAX_CHARS = int(self.model.max_seq_length)
+        except Exception:
+            pass
 
     def embed_documents(self, texts: List[str]) -> List[List[float]]:
         embeddings = self.model.encode(
@@ -153,6 +184,29 @@ class LocalEmbeddings(Embeddings):
             text, normalize_embeddings=True,
         )
         return embedding.tolist()
+
+
+# ---- 向量落盘：追加式分片（2026-10-01 改）----
+#
+# 为什么不再走 LangChain 的 `save_local` / `load_local`：
+#   ① `save_local` 会把 **docstore 里的全部正文**一并 pickle 到 `index.pkl`，而正文在
+#      YAML / docs.yaml 里已有一份 → 每个空间在**盘上存两份**；`save` 里又把 `_contents`
+#      写进 npz，是第三份。线上实测单空间索引 33~131 MB。
+#   ② 它是**全量重写**：每次 Add 都要重写整个索引 + 整个向量缓存，而一次 Add 通常只新增
+#      个位数向量 —— 线上实测 BLOCK I/O 14 GB / 12% 进度。
+#   ③ docstore 走 pickle 反序列化，攻击面比只含数组的 npz 大。
+#
+# 改为：**索引一律不落盘**，只把向量的**变更**按 append-only 分片落盘；`load` 时用分片
+# 里的向量在内存里重建索引（重建是 O(N) 的内存拷贝，3 万×1024 float32 ≈ 120 MB，毫秒级）。
+# 检索仍是 IndexFlat 精确检索，recall 不变。
+#
+# 分片是**日志**不是快照：删除写墓碑（`deleted=1`），更新写新行，同 id **后写覆盖先写**。
+# 分片文件数超过 `_VEC_SHARD_MAX_FILES` 时 compact 成一个，避免碎片无限增长。
+_VEC_SUBDIR = "vectors"
+_VEC_SHARD_SIZE = 2048
+_VEC_SHARD_MAX_FILES = 16
+# 旧格式（LangChain save_local 落下的压缩包 + 前几版的 npz）文件名，仅用于一次性迁移
+_LEGACY_NPZ = "content_vectors.npz"
 
 
 class VectorStore:
@@ -178,10 +232,26 @@ class VectorStore:
         self._content_vectors: dict = {}
         # 内容缓存: {memory_id: content}，用于全量重建 FAISS 索引
         self._contents: dict = {}
+        # 待落盘的**向量变更日志**：[(memory_id, vec 或 None)]，None 表示删除（墓碑）。
+        # 只记"自上次 save 以来"的变更，故 save 的写量与本次变更条数成正比，
+        # 而不是与全库条数成正比（原来每次 Add 都全量重写）。
+        self._vec_log: list = []
+        # clear_vectors() 之后必须把盘上分片整体作废，否则 load 会把旧向量"复活"
+        self._cleared: bool = False
         # 串行化对内部状态（缓存字典 + FAISS store）的访问。
         # 检索读线程与 DBA 维护写线程（maintenance_scheduler）共享同一实例，
         # FAISS 为 C++ 原生实现，读写并发不受 GIL 保护，须加锁避免竞态/崩溃。
         self._lock = threading.RLock()
+
+    def _log_vec(self, mid: str, vec) -> None:
+        """登记一次向量变更，供 `save` 增量落盘。调用方须持有 `_lock`。
+
+        统一转 float32：分片落盘只需要单精度（与 FAISS 内部一致），存双精度等于
+        白白多占一倍磁盘与内存。
+        """
+        self._vec_log.append(
+            (mid, None if vec is None else np.asarray(vec, dtype=np.float32))
+        )
 
     def _embed(self, text: str) -> np.ndarray:
         """获取文本的向量表示"""
@@ -235,6 +305,7 @@ class VectorStore:
         with self._lock:
             for mid, vec in vec_map.items():
                 self._content_vectors[mid] = vec
+                self._log_vec(mid, vec)
             # 同步内容映射（用于全量重建）
             for mid, content in zip(memory_ids, contents):
                 self._contents[mid] = content
@@ -289,8 +360,9 @@ class VectorStore:
         vectors = self.embed_batch(contents)
         with self._lock:
             for mid, content, vec in zip(memory_ids, contents, vectors):
-                self._content_vectors[mid] = vec
+                self._content_vectors[mid] = np.asarray(vec, dtype=np.float32)
                 self._contents[mid] = content
+                self._log_vec(mid, vec)
 
             self._rebuild_index()
 
@@ -301,6 +373,7 @@ class VectorStore:
             for mid in memory_ids:
                 if mid in self._content_vectors:
                     del self._content_vectors[mid]
+                    self._log_vec(mid, None)
                     changed = True
                 if mid in self._contents:
                     del self._contents[mid]
@@ -346,9 +419,11 @@ class VectorStore:
             for mid in to_remove:
                 self._content_vectors.pop(mid, None)
                 self._contents.pop(mid, None)
+                self._log_vec(mid, None)
             for mid, vec in zip(need, vectors):
-                self._content_vectors[mid] = np.asarray(vec)
+                self._content_vectors[mid] = np.asarray(vec, dtype=np.float32)
                 self._contents[mid] = desired[mid]
+                self._log_vec(mid, vec)
             if to_remove or need:
                 self._rebuild_index()
         return {"added": len(to_add), "updated": len(to_update), "removed": len(to_remove)}
@@ -359,6 +434,9 @@ class VectorStore:
             self._content_vectors.clear()
             self._contents.clear()
             self.store = None
+            # 盘上分片必须整体作废：否则下次 load 会把"已清空"的向量又读回来
+            self._vec_log.clear()
+            self._cleared = True
 
     def _rebuild_index(self):
         """从权威映射（_content_vectors + _contents）全量重建 FAISS 索引"""
@@ -373,7 +451,8 @@ class VectorStore:
             doc_metadatas = []
             for mid, vec in self._content_vectors.items():
                 content = self._contents.get(mid, "")
-                text_embeddings.append((content, np.asarray(vec).tolist()))
+                # 统一 float32：与 faiss 内部精度一致，避免每次重建都做一次 float64→float32
+                text_embeddings.append((content, np.asarray(vec, dtype=np.float32).tolist()))
                 doc_metadatas.append({"memory_id": mid})
             self.store = FAISS.from_embeddings(
                 text_embeddings, self.embeddings, metadatas=doc_metadatas,
@@ -406,12 +485,17 @@ class VectorStore:
         vector: np.ndarray,
         k: int = 5,
     ) -> List[Tuple[str, float]]:
-        """按向量检索（用于目的向量匹配）
+        """按向量检索（用于目的向量匹配 / 文档通道）
 
-        返回相关性分数，由距离换算：relevance = 1 / (1 + distance)，
-        距离 0 → 1.0，越远越趋近 0，保持「越大越相关」的语义。
+        返回**真余弦**（`_relevance`），与图侧的 `_cosine()` 同一把尺，保证
+        `max(图余弦, 文档分)` 是合法比较。
 
-        注：本版本 FAISS 没有 similarity_search_by_vector_with_relevance_scores，
+        0927 审查 B2：此前返回 `1 / (1 + distance)`。FAISS 返回的是**平方 L2 距离**，
+        故那个公式等价于 `1/(3−2cos)`——与余弦**不是同一把尺**，且在 cos≈0.5 处交叉
+        （cos<0.5 被高估、cos>0.5 被低估），两方向都会错。原因是文档通道的分数会与图
+        余弦一起进入 `best_cos`，进而污染弃权阈值标定。
+
+        注：本版本 FAISS 没有 similarity_search_by_vector_with_relevance_scores；
         历史上在此处降级为占位分 1.0，使该分数不可用（调用方只能依赖返回顺序）。
         """
         with self._lock:
@@ -431,13 +515,29 @@ class VectorStore:
                     (doc.metadata.get("memory_id", ""), 1.0)
                     for doc in self.store.similarity_search_by_vector(vec, k=k)
                 ]
+            query_vec = np.asarray(vec, dtype=float)
             return [
                 (
                     doc.metadata.get("memory_id", ""),
-                    1.0 / (1.0 + max(0.0, float(score))),
+                    self._relevance(query_vec, doc.metadata.get("memory_id", ""),
+                                    float(score)),
                 )
                 for doc, score in docs_with_scores
             ]
+
+    def _relevance(self, query_vec: np.ndarray, mid: str, distance: float) -> float:
+        """把一次向量命中换算成**与图侧同尺度的余弦**（0927 审查 B2）。
+
+        优先用缓存向量精确计算余弦（与 embedding 提供方是否归一化无关）；缓存缺失时
+        退回距离换算——仅当向量已归一化时 `cos = 1 − 平方L2/2` 才等价。
+        """
+        stored = self._content_vectors.get(mid)
+        if stored is not None:
+            s = np.asarray(stored, dtype=float)
+            denom = float(np.linalg.norm(query_vec) * np.linalg.norm(s))
+            if denom > 1e-12:
+                return float(np.dot(query_vec, s) / denom)
+        return float(1.0 - max(0.0, distance) / 2.0)
 
     @property
     def embedding_dim(self) -> int:
@@ -463,63 +563,177 @@ class VectorStore:
     # ---- P3b: 快照持久化 ----
 
     def save(self, path: str):
-        """将 FAISS 索引和向量缓存保存到磁盘"""
+        """把**本次变更的向量**追加成新分片（不再全量重写索引）
+
+        `path` 是索引目录，分片落在 `path/vectors/{seq:04d}.npz`。无变更时不写任何文件
+        —— 原来每次 Add 都要重写整个索引（含 docstore 里的全部正文）与整个向量缓存。
+
+        分片是**日志**：行格式 `ids / vectors / deleted`，删除写墓碑（`deleted=1`），
+        更新写新行，同 id 后写覆盖先写，故只要按文件名升序回放就能得到权威状态。
+        """
         with self._lock:
-            if self.store is None or self.backend != "faiss":
+            if self.backend != "faiss":
                 logger.warning("无可保存的 FAISS 索引")
                 return
-            import os
-            os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-            self.store.save_local(path)
-            # 保存 _content_vectors 缓存到 .npz（与 FAISS 索引同目录）
-            if self._content_vectors:
-                import numpy as np
-                vec_path = os.path.join(os.path.dirname(path) or ".", "content_vectors.npz")
-                ids = list(self._content_vectors.keys())
-                vectors = np.stack([self._content_vectors[k] for k in ids])
-                contents = np.array([self._contents.get(k, "") for k in ids])
-                # 实测：此处压缩是索引落盘的主要成本——163 节点 / 1024 维下
-                # savez_compressed 耗时 0.325s，savez 仅 0.006s（54 倍差距），
-                # 代价是体积 711KB → 1323KB。该文件每次写入都会重写，故取速度。
-                np.savez(vec_path, ids=np.array(ids), vectors=vectors, contents=contents)
-                logger.info(f"向量缓存已保存: {len(ids)} 个向量")
-            logger.info(f"FAISS 索引已保存: {path} ({self.store.index.ntotal} 向量)")
+            shard_dir = os.path.join(path, _VEC_SUBDIR)
+            if self._cleared:
+                # 全量重建过 → 旧分片整体作废，否则 load 会把已清空的向量读回来
+                self._wipe_shards(shard_dir)
+                self._cleared = False
+            if not self._vec_log:
+                return
+            os.makedirs(shard_dir, exist_ok=True)
+            pending = list(self._vec_log)
+            for i in range(0, len(pending), _VEC_SHARD_SIZE):
+                self._write_shard(shard_dir, self._next_shard_seq(shard_dir),
+                                  pending[i:i + _VEC_SHARD_SIZE])
+            self._vec_log.clear()
+            self._compact_if_needed(shard_dir)
+            logger.info(
+                "向量分片已落盘: 本次变更 %d 条 → %s（共 %d 个分片）",
+                len(pending), shard_dir, len(self._shard_files(shard_dir)),
+            )
+
+    # ---- 分片读写辅助 ----
+
+    @staticmethod
+    def _shard_files(shard_dir: str) -> List[str]:
+        """按序号升序返回分片文件名（回放顺序即权威顺序）"""
+        if not os.path.isdir(shard_dir):
+            return []
+        return sorted(f for f in os.listdir(shard_dir) if f.endswith(".npz"))
+
+    def _next_shard_seq(self, shard_dir: str) -> int:
+        files = self._shard_files(shard_dir)
+        if not files:
+            return 0
+        try:
+            return int(os.path.splitext(files[-1])[0]) + 1
+        except ValueError:  # 文件名被外部改过：退回按个数续号，不崩
+            return len(files)
+
+    @staticmethod
+    def _wipe_shards(shard_dir: str) -> None:
+        for name in VectorStore._shard_files(shard_dir):
+            try:
+                os.remove(os.path.join(shard_dir, name))
+            except OSError:
+                pass
+
+    def _known_dim(self) -> int:
+        for vec in self._content_vectors.values():
+            return int(np.asarray(vec).shape[0])
+        return 0
+
+    def _write_shard(self, shard_dir: str, seq: int, chunk: list) -> None:
+        """原子写一个分片。`chunk` 为 [(memory_id, vec 或 None)]。
+
+        墓碑行没有向量，用等长零向量占位 —— npz 是定长数组，不能跳行。
+        正文随行落盘（而不是另存 docstore pickle）：这样盘上正文只有
+        「YAML / docs.yaml」与分片两份，去掉了 `index.pkl` 这第三份。
+        """
+        dim = next((np.asarray(v).shape[0] for _, v in chunk if v is not None), 0) or self._known_dim()
+        ids = np.array([mid for mid, _ in chunk], dtype=object).astype(str)
+        vectors = np.stack([
+            np.asarray(v, dtype=np.float32) if v is not None
+            else np.zeros(dim, dtype=np.float32)
+            for _, v in chunk
+        ]) if chunk else np.zeros((0, dim), dtype=np.float32)
+        deleted = np.array([v is None for _, v in chunk], dtype=bool)
+        contents = np.array([self._contents.get(mid, "") for mid, _ in chunk], dtype=str)
+
+        target = os.path.join(shard_dir, f"{seq:04d}.npz")
+        tmp = target + ".tmp"
+        # 用文件对象交给 savez：传路径时 numpy 会自作主张补 `.npz` 后缀
+        with open(tmp, "wb") as f:
+            np.savez(f, ids=ids, vectors=vectors, deleted=deleted, contents=contents)
+        os.replace(tmp, target)
+
+    def _compact_if_needed(self, shard_dir: str) -> None:
+        """碎片过多时把权威状态合并成单文件，避免分片与墓碑无限累积。
+
+        **只在碎片占比高时才合并**：合并本身是一次全量重写，若分片里大多是存活行，
+        合并比继续追加更贵。
+        """
+        files = self._shard_files(shard_dir)
+        if len(files) <= _VEC_SHARD_MAX_FILES:
+            return
+        total = 0
+        for name in files:
+            try:
+                with open(os.path.join(shard_dir, name), "rb") as f:
+                    total += int(np.load(f, allow_pickle=False)["ids"].shape[0])
+            except Exception:
+                return  # 读不动就别动，宁可留碎片
+        if total < 2 * len(self._content_vectors):
+            return
+        self._wipe_shards(shard_dir)
+        live = [(mid, np.asarray(vec, dtype=np.float32))
+                for mid, vec in self._content_vectors.items()]
+        for i in range(0, len(live), _VEC_SHARD_SIZE):
+            self._write_shard(shard_dir, i // _VEC_SHARD_SIZE, live[i:i + _VEC_SHARD_SIZE])
+        logger.info("向量分片已合并: %d 条存活（合并前 %d 行）→ %s",
+                    len(live), total, shard_dir)
 
     def load(self, path: str, embeddings: "Embeddings" = None):
-        """从磁盘加载 FAISS 索引和向量缓存"""
+        """从分片恢复向量，并**在内存里重建索引**
+
+        **索引不落盘**是这次改动的核心：盘上只需要存向量本身，索引结构与 docstore
+        都不必重复存。重建是 O(N) 的内存拷贝（3 万 × 1024 float32 ≈ 120 MB，毫秒级），
+        换来的是"每次 Add 不再全量重写"。
+        """
         with self._lock:
             if self.backend != "faiss":
                 raise ValueError("仅 FAISS 支持加载")
-            import os
-            if not os.path.exists(path):
-                raise FileNotFoundError(f"FAISS 索引文件不存在: {path}")
-            emb = embeddings or self.embeddings
-            # 注意：FAISS 索引基于 pickle 反序列化，仅应从可信的本地 checkpoint 加载
-            self.store = FAISS.load_local(
-                path, emb, allow_dangerous_deserialization=True,
-            )
-            # 恢复 _content_vectors 缓存
-            vec_path = os.path.join(os.path.dirname(path) or ".", "content_vectors.npz")
-            if os.path.exists(vec_path):
-                import numpy as np
-                # 缓存仅含常规 dtype 数组，禁用 pickle 以降低反序列化风险
-                data = np.load(vec_path, allow_pickle=False)
-                ids = data["ids"]
-                vectors = data["vectors"]
-                self._content_vectors = {str(k): v for k, v in zip(ids, vectors)}
-                # 恢复内容映射（兼容旧格式：无 contents 字段时尝试从 docstore 补全）
-                if "contents" in data:
-                    contents = data["contents"]
-                    self._contents = {str(k): str(v) for k, v in zip(ids, contents)}
+            if embeddings is not None:
+                self.embeddings = embeddings
+            shard_dir = os.path.join(path, _VEC_SUBDIR)
+            if self._shard_files(shard_dir):
+                self._load_shards(shard_dir)
+                return
+            # 旧格式一次性迁移入口：老版本把 `content_vectors.npz` 放在索引目录的**上级**
+            legacy = os.path.join(os.path.dirname(path) or ".", _LEGACY_NPZ)
+            if os.path.exists(legacy):
+                self._load_legacy_npz(legacy)
+                logger.info(
+                    "向量缓存已按旧格式恢复: %d 条（下次 save 即转为分片）",
+                    len(self._content_vectors),
+                )
+                return
+            raise FileNotFoundError(f"向量分片目录不存在: {shard_dir}")
+
+    def _load_shards(self, shard_dir: str) -> None:
+        """按序号回放所有分片（后写覆盖先写，墓碑即删）"""
+        self._content_vectors = {}
+        self._contents = {}
+        files = self._shard_files(shard_dir)
+        for name in files:
+            with open(os.path.join(shard_dir, name), "rb") as f:
+                data = np.load(f, allow_pickle=False)
+                ids, vectors = data["ids"], data["vectors"]
+                deleted = data["deleted"] if "deleted" in data else np.zeros(len(ids), dtype=bool)
+                contents = data["contents"] if "contents" in data else None
+            for i, (mid, vec, dead) in enumerate(zip(ids, vectors, deleted)):
+                mid = str(mid)
+                if bool(dead):
+                    self._content_vectors.pop(mid, None)
+                    self._contents.pop(mid, None)
                 else:
-                    self._contents = {}
-                    try:
-                        docstore = self.store.docstore
-                        for doc in docstore._dict.values():
-                            mid = doc.metadata.get("memory_id")
-                            if mid in self._content_vectors:
-                                self._contents[mid] = doc.page_content
-                    except Exception:
-                        pass
-            logger.info(f"向量缓存已恢复: {len(self._content_vectors)} 个向量")
-        logger.info(f"FAISS 索引已加载: {path} ({self.store.index.ntotal} 向量)")
+                    self._content_vectors[mid] = np.asarray(vec, dtype=np.float32)
+                    if contents is not None:
+                        self._contents[mid] = str(contents[i])
+        self._rebuild_index()
+        logger.info("向量分片已恢复: %d 条向量 / %d 个分片", len(self._content_vectors), len(files))
+
+    def _load_legacy_npz(self, vec_path: str) -> None:
+        """读取旧格式 `content_vectors.npz`（含 ids/vectors/contents），仅为兼容存量数据"""
+        data = np.load(vec_path, allow_pickle=False)
+        ids, vectors = data["ids"], data["vectors"]
+        self._content_vectors = {
+            str(k): np.asarray(v, dtype=np.float32) for k, v in zip(ids, vectors)
+        }
+        if "contents" in data:
+            self._contents = {str(k): str(v) for k, v in zip(ids, data["contents"])}
+        else:
+            self._contents = {}
+        self._rebuild_index()

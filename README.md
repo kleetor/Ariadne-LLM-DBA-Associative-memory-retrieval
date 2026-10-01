@@ -305,7 +305,7 @@ PAR 检索产出的是由「节点 + 关系」构成的**因果链路**，而非
 2. **避免污染聊天上下文**：聊天模型只接收干净故事，而非 `[id] content` 节点列举。
 3. **语义过滤**：LLM 按边关系组织故事时，明显突兀、与主线无关的节点被自然舍弃。
 
-入口为 `retrieve_with_story`（库内方法），产物含 `stories`、`story_nodes`（采纳节点）、`discarded_nodes`（舍弃节点）。
+入口为 `retrieve_with_story`（库内方法），产物含 `stories`（叙事文本）、`story_used`（正文实际覆盖的节点数，**后端计算**）、`story_degraded`（是否为降级拼接）。
 
 > 详见 [0828PAR检索理论文.md](0828PAR检索理论文.md)
 

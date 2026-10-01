@@ -2,11 +2,13 @@
 
 """边连接拆批的单元测试（`MemoryDBA._link_edges`）。
 
-拆批要同时守住两件事，本文件各测一半：
+拆批要同时守住三件事，本文件各测一部分：
 
 1. **异常批次被拆开**：新节点多于 `EDGE_BATCH_SIZE` 时按批调用，边不因单次输出撞上限而丢；
 2. **正常批次一字不改**：`len(new_ids) <= EDGE_BATCH_SIZE`（含 0）时只调用一次，
-   与改造前行为逐字一致——否则每次 Add 都会多花几倍输入 token 而不自知。
+   与改造前行为逐字一致——否则每次 Add 都会多花几倍输入 token 而不自知；
+3. **上下文要一并返回**：拆批后 `maintain` 的调试字段没有"唯一的那份上下文"，
+   签名返回 `(edge_ops, contexts)`；漏了它就只能在链路级测试里才发现。
 
 用最小替身而不是构造完整 `MemoryDBA`：后者要图、向量库、GraphBuilder 三件套，而
 拆批逻辑只依赖 `_build_edge_context` 与 `_parse_response` 两处。
@@ -56,11 +58,12 @@ def test_small_batch_is_single_call():
     stub = _EdgeStub()
     chain, state = _chain([_ops_payload(3)])
 
-    out = stub._link_edges(chain, "conversation", ["n1", "n2", "n3"])
+    out, contexts = stub._link_edges(chain, "conversation", ["n1", "n2", "n3"])
 
     assert state["n"] == 1
     assert stub.seen == [["n1", "n2", "n3"]]
     assert len(out) == 3
+    assert contexts == [{"new_nodes": ["n1", "n2", "n3"]}]
 
 
 def test_empty_new_ids_still_calls_once():
@@ -68,11 +71,12 @@ def test_empty_new_ids_still_calls_once():
     stub = _EdgeStub()
     chain, state = _chain([_ops_payload(0)])
 
-    out = stub._link_edges(chain, "conversation", [])
+    out, contexts = stub._link_edges(chain, "conversation", [])
 
     assert state["n"] == 1
     assert stub.seen == [[]]
     assert out == []
+    assert len(contexts) == 1
 
 
 def test_at_threshold_is_single_call():
@@ -80,10 +84,11 @@ def test_at_threshold_is_single_call():
     chain, state = _chain([_ops_payload(1)])
     ids = ["n%d" % i for i in range(EDGE_BATCH_SIZE)]
 
-    stub._link_edges(chain, "conversation", ids)
+    _, contexts = stub._link_edges(chain, "conversation", ids)
 
     assert state["n"] == 1
     assert stub.seen == [ids]
+    assert len(contexts) == 1
 
 
 def test_large_batch_is_split_and_merged():
@@ -93,7 +98,7 @@ def test_large_batch_is_split_and_merged():
     ids = ["n%d" % i for i in range(n)]
 
     chain, state = _chain([_ops_payload(2), _ops_payload(4), _ops_payload(1)])
-    out = stub._link_edges(chain, "conversation", ids)
+    out, contexts = stub._link_edges(chain, "conversation", ids)
 
     assert state["n"] == 3
     # 每批的 id 段：前 EDGE_BATCH_SIZE / 次 EDGE_BATCH_SIZE / 余下的 3
@@ -101,6 +106,9 @@ def test_large_batch_is_split_and_merged():
     # 三批的 id 拼起来必须等于原序列——分批不能丢节点、也不能重复
     assert [i for c in stub.seen for i in c] == ids
     assert len(out) == 2 + 4 + 1
+    # 上下文必须逐批返回（maintain 的调试字段靠它回填）
+    assert len(contexts) == 3
+    assert contexts[0]["new_nodes"] == ids[:EDGE_BATCH_SIZE]
 
 
 def test_split_every_batch_is_actually_invoked():
@@ -110,6 +118,7 @@ def test_split_every_batch_is_actually_invoked():
     ids = ["n%d" % i for i in range(n)]
     chain, state = _chain([_ops_payload(0)])
 
-    stub._link_edges(chain, "conversation", ids)
+    _, contexts = stub._link_edges(chain, "conversation", ids)
 
     assert state["n"] == 6
+    assert len(contexts) == 6

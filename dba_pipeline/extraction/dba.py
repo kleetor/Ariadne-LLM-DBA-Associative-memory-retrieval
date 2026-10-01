@@ -28,19 +28,25 @@ logger = logging.getLogger(__name__)
 # ---- Step 1：节点抽取 Prompt（2026-08-22 起，节点抽取与边连接拆成两步）----
 
 # 输出形状（单一来源，便于按开关替换；注意 `{{` 是交给 ChatPromptTemplate 的转义）
+#
+# ⚠️ **不要给 create 写 `action`**（P1-2 输出瘦身，见 版本变更记录 §4.26）：
+# 实测 99.8% 的节点 op / 100% 的边 op 都是 create，把它做成默认值后
+# 每次输出都少写十几个 token。解析侧已加默认（`graph_builder._apply_*_op`）。
 _NODE_OUTPUT_EXAMPLE = (
-    '严格输出 JSON：{{"node_ops":[{{"action":"create","content":"...","node_type":"ACTION"}},'
+    '严格输出 JSON：{{"node_ops":[{{"content":"...","node_type":"ACTION"}},'
     '{{"action":"update","target_id":"n3","content":"...","reason":"..."}},'
     '{{"action":"fix_type","target_id":"n7","node_type":"STATUS","reason":"..."}},'
     '{{"action":"deprecate","target_id":"n3","reason":"..."}}]}}'
+    '\n`action` 省略即视为 `create`；**只有非 create 操作才写 `action`**。'
 )
 
 # 开启 evidence 时的输出形状：每条 create/update 额外带 evidence（原文支撑片段）
 _NODE_OUTPUT_EXAMPLE_EVIDENCE = (
-    '严格输出 JSON：{{"node_ops":[{{"action":"create","content":"...","node_type":"ACTION","evidence":"..."}},'
+    '严格输出 JSON：{{"node_ops":[{{"content":"...","node_type":"ACTION","evidence":"..."}},'
     '{{"action":"update","target_id":"n3","content":"...","evidence":"...","reason":"..."}},'
     '{{"action":"fix_type","target_id":"n7","node_type":"STATUS","reason":"..."}},'
     '{{"action":"deprecate","target_id":"n3","reason":"..."}}]}}'
+    '\n`action` 省略即视为 `create`；**只有非 create 操作才写 `action`**。'
 )
 
 # ---- 输出语言指令：注入到 user 消息末尾，而不是只写在 system prompt 里 ----
@@ -155,7 +161,8 @@ create(连边) | delete(删错误/过时的边)
 > 下面的 few-shot 示例是中文写的，**只用于示意连边策略，不代表输出语言**。
 
 ## 输出
-严格输出 JSON：{{"edge_ops":[{{"action":"create","from":"n1","to":"n2","rel_type":"CAUSAL"}},{{"action":"delete","from":"n3","to":"n5","reason":"..."}}]}}
+严格输出 JSON：{{"edge_ops":[{{"from":"n1","to":"n2","rel_type":"CAUSAL"}},{{"action":"delete","from":"n3","to":"n5"}}]}}
+`action` 省略即视为 `create`；**只有 delete 才写 `action`**。
 无需连边时返回空 edge_ops。只输出 JSON。"""
 
 EDGE_LINKING_FEWSHOT_EXAMPLE = """参考示例（激进连边模式）：
@@ -176,16 +183,7 @@ user(09:10): 同事小王跟我一样惨，天天一起加班，不过他有时�
 [n8 PERSON] 同事小王经常和用户一起加班
 
 正确输出（场景内全连 + 跨场景桥接）：
-{{"edge_ops":[
-  {{"action":"create","from":"n1","to":"n2","rel_type":"CAUSAL"}},
-  {{"action":"create","from":"n1","to":"n8","rel_type":"SOCIAL"}},
-  {{"action":"create","from":"n1","to":"n3","rel_type":"CAUSAL"}},
-  {{"action":"create","from":"n2","to":"n3","rel_type":"CAUSAL"}},
-  {{"action":"create","from":"n2","to":"n5","rel_type":"CAUSAL"}},
-  {{"action":"create","from":"n2","to":"n8","rel_type":"SOCIAL"}},
-  {{"action":"create","from":"n5","to":"n6","rel_type":"PREFERENCE"}},
-  {{"action":"create","from":"n3","to":"n5","rel_type":"SCENARIO"}}
-]}}
+{{"edge_ops":[{{"from":"n1","to":"n2","rel_type":"CAUSAL"}},{{"from":"n1","to":"n8","rel_type":"SOCIAL"}},{{"from":"n1","to":"n3","rel_type":"CAUSAL"}},{{"from":"n2","to":"n3","rel_type":"CAUSAL"}},{{"from":"n2","to":"n5","rel_type":"CAUSAL"}},{{"from":"n2","to":"n8","rel_type":"SOCIAL"}},{{"from":"n5","to":"n6","rel_type":"PREFERENCE"}},{{"from":"n3","to":"n5","rel_type":"SCENARIO"}}]}}
 
 示例 2 —— 跨场景大胆桥接：
 
@@ -203,13 +201,7 @@ user(20:07): 就是戒不掉烧烤，那家店的烤羊排真是我的最爱。
 [e0 STATUS] 用户今天心情很低落
 
 正确输出（晨跑接入工作/情绪/饮食多个场景）：
-{{"edge_ops":[
-  {{"action":"create","from":"n2","to":"e0","rel_type":"CAUSAL"}},
-  {{"action":"create","from":"n20","to":"n27","rel_type":"CAUSAL"}},
-  {{"action":"create","from":"n2","to":"n20","rel_type":"SEQUENCE"}},
-  {{"action":"create","from":"n20","to":"e0","rel_type":"CAUSAL"}},
-  {{"action":"create","from":"n20","to":"n40","rel_type":"SCENARIO"}}
-]}}"""
+{{"edge_ops":[{{"from":"n2","to":"e0","rel_type":"CAUSAL"}},{{"from":"n20","to":"n27","rel_type":"CAUSAL"}},{{"from":"n2","to":"n20","rel_type":"SEQUENCE"}},{{"from":"n20","to":"e0","rel_type":"CAUSAL"}},{{"from":"n20","to":"n40","rel_type":"SCENARIO"}}]}}"""
 
 EDGE_LINKING_USER_PROMPT = """── 对话上下文 ──
 
@@ -321,14 +313,7 @@ user(周三 01:20): 周三凌晨上线，结果出了个 P0 故障。
 [t3 THING] 上周三凌晨
 
 正确输出（事件→时间用 TEMPORAL；事件之间先后用 SEQUENCE；因果用 CAUSAL）：
-{{"edge_ops":[
-  {{"action":"create","from":"e0","to":"t1","rel_type":"TEMPORAL"}},
-  {{"action":"create","from":"e1","to":"t2","rel_type":"TEMPORAL"}},
-  {{"action":"create","from":"e2","to":"t3","rel_type":"TEMPORAL"}},
-  {{"action":"create","from":"e0","to":"e1","rel_type":"SEQUENCE"}},
-  {{"action":"create","from":"e1","to":"e2","rel_type":"SEQUENCE"}},
-  {{"action":"create","from":"e0","to":"e2","rel_type":"CAUSAL"}}
-]}}"""
+{{"edge_ops":[{{"from":"e0","to":"t1","rel_type":"TEMPORAL"}},{{"from":"e1","to":"t2","rel_type":"TEMPORAL"}},{{"from":"e2","to":"t3","rel_type":"TEMPORAL"}},{{"from":"e0","to":"e1","rel_type":"SEQUENCE"}},{{"from":"e1","to":"e2","rel_type":"SEQUENCE"}},{{"from":"e0","to":"e2","rel_type":"CAUSAL"}}]}}"""
 
 
 TIME_PERIOD_RE = re.compile(
@@ -427,6 +412,7 @@ class MemoryDBA:
         enable_evidence: bool = False,
         enable_source_store: bool = False,
         source_dir=None,
+        variant_tail: bool = False,
     ):
         """
         Args:
@@ -468,16 +454,36 @@ class MemoryDBA:
         self.enable_evidence = enable_evidence
         self.enable_source_store = enable_source_store
         self.source_dir = source_dir
+        # 变体增量的落点。False（默认，现行行为）= 插到 `## 输出` **之前**；
+        # True = **追加到 system 末尾**。
+        #
+        # 为什么要试末尾：`_node_chain` 的 4 个变体（base/temporal/choice/choice+temporal）
+        # 在"插入点之前"共享前缀，插在中间会把 base 系统切成两半——实测跨变体调用的
+        # 前缀缓存命中只有 **512 tok**，而 base 系统本身约 1,088 tok，于是节点抽取链的
+        # 缓存命中率上限被压到 **37.8%**（见 版本变更记录 §4.25.2）。
+        # 挪到末尾后，基础系统成为公共前缀，上限可望接近 80%。
+        #
+        # ⚠️ 但它同时改变了"规则 vs 输出格式"的相对位置，**会动质量**，
+        # 故默认关；须先过 `alm.tools.alm_cache_probe`（上限）+ `alm.tools.alm_batch_quality_exp`（质量）两道。
+        self.variant_tail = variant_tail
 
         # 组装 Prompt 链：节点抽取与边连接拆成两步（2026-08-22）
         def _node_chain(*extras):
-            """把增强规则插入到 `## 输出` 之前，组装节点抽取链。"""
+            """把增强规则并入节点抽取链。
+
+            `variant_tail=False`（默认）：插到 `## 输出` 之前 —— 现行行为。
+            `variant_tail=True`：**追加到 system 末尾** —— 让基础系统成为变体间的公共前缀，
+            换取缓存命中率（理由与代价见 `self.variant_tail` 的注释）。
+            """
             parts = [e for e in extras if e]
             if enable_evidence:
                 parts.append(NODE_EVIDENCE_EXTRA)
             system = NODE_EXTRACTION_PROMPT
             if parts:
-                system = system.replace("\n## 输出", "".join(parts) + "\n\n## 输出")
+                if self.variant_tail:
+                    system = system + "\n" + "".join(parts)
+                else:
+                    system = system.replace("\n## 输出", "".join(parts) + "\n\n## 输出")
             if enable_evidence:
                 # evidence 改变的是输出形状，替换示例而不是追加规则，避免两套 schema 打架
                 system = system.replace(_NODE_OUTPUT_EXAMPLE, _NODE_OUTPUT_EXAMPLE_EVIDENCE)
@@ -498,8 +504,13 @@ class MemoryDBA:
         # 时序叙事增强链：仅当 has_temporal_signal(conversation) 命中才启用，
         # 把时间节点抽取与 TEMPORAL 连边规则叠加到标准 prompt，避免常规语料过度拆分。
         self.node_chain_temporal = _node_chain(NODE_TEMPORAL_EXTRA)
+        _edge_sys_temporal = (
+            EDGE_LINKING_PROMPT + "\n" + EDGE_TEMPORAL_EXTRA
+            if self.variant_tail
+            else EDGE_LINKING_PROMPT.replace("\n## 输出", EDGE_TEMPORAL_EXTRA + "\n\n## 输出")
+        )
         self.edge_chain_temporal = ChatPromptTemplate.from_messages([
-            ("system", EDGE_LINKING_PROMPT.replace("\n## 输出", EDGE_TEMPORAL_EXTRA + "\n\n## 输出")),
+            ("system", _edge_sys_temporal),
             ("human", EDGE_LINKING_FEWSHOT_EXAMPLE + EDGE_TEMPORAL_EXAMPLE),
             ("human", EDGE_LINKING_USER_PROMPT),
         ]) | with_role(self.llm, "link")
@@ -576,7 +587,7 @@ class MemoryDBA:
         # Step 2:边连接(对话 + 本轮新节点 + 相关旧节点/一跳邻居/已有边 → edge_ops → 执行)。守卫同样驱动 TEMPORAL 连边规则与示例。
         new_ids = result1.get("created_ids", [])
         edge_chain = self.edge_chain_temporal if temporal else self.edge_chain
-        edge_ops = self._link_edges(edge_chain, conversation, new_ids)
+        edge_ops, edge_contexts = self._link_edges(edge_chain, conversation, new_ids)
         result2 = self.builder.apply_ops([], edge_ops)
 
         logger.info(
@@ -591,7 +602,10 @@ class MemoryDBA:
         new_set = set(new_ids)
         inner = cross = 0
         for op in edge_ops:
-            if op.get("action") != "create":
+            # `action` 省略即 create（P1-2 输出瘦身后模型不再写 create）。
+            # 这里若仍直接比 `!= "create"`，统计会**静默归零**——功能不受影响，
+            # 但"跨批连边有没有发生"这个判决依据会断掉（见 版本变更记录 §4.26）。
+            if (op.get("action") or "create") != "create":
                 continue
             f, t = op.get("from"), op.get("to")
             if f in new_set and t in new_set:
@@ -610,7 +624,13 @@ class MemoryDBA:
                 "skipped": result1.get("skipped", []) + result2.get("skipped", []),
                 "errors": result1.get("errors", []) + result2.get("errors", []),
             },
-            "context": {"node": node_context, "edge": edge_context},
+            "context": {
+                "node": node_context,
+                # 拆批后"边上下文"不再唯一：这里给的是**第一批**，批数见 `edge_batches`。
+                # 不给出批数的话，读日志的人会把这批的 new_nodes 误当成本轮全部。
+                "edge": edge_contexts[0],
+                "edge_batches": len(edge_contexts),
+            },
         }
         if evidence_stats is not None:
             out["evidence_stats"] = evidence_stats
@@ -618,7 +638,7 @@ class MemoryDBA:
             out["batch_id"] = batch_id
         return out
 
-    def _link_edges(self, edge_chain, conversation: str, new_ids: List[str]) -> List[Dict]:
+    def _link_edges(self, edge_chain, conversation: str, new_ids: List[str]):
         """边连接：新节点多时**拆批**调用，避免单次输出撞上限。
 
         `edge_ops` 的条数与「本轮新节点 × 候选旧节点」同阶，单次输出会线性膨胀——
@@ -628,10 +648,16 @@ class MemoryDBA:
         代价是旧节点上下文（`current_nodes` / `current_edges` / `neighbor_info`）要按批
         **重复发送**，所以只在确实很多时才拆：`len(new_ids) <= EDGE_BATCH_SIZE` 时行为与
         改造前**逐字一致**（含 `new_ids` 为空时仍照常调用一次）。
+
+        Returns:
+            ``(edge_ops, contexts)`` —— `contexts` 是**实际用过**的上下文列表（拆批时多条）。
+            必须一并返回：`maintain` 的调试字段要回填它，而拆批后已经没有"唯一的那份上下文"。
+            这正是本方法签名从 `-> List[Dict]` 改成返回二元组的原因。
         """
         if len(new_ids) <= EDGE_BATCH_SIZE:
             edge_context = self._build_edge_context(conversation, new_ids)
-            return self._parse_response(edge_chain.invoke(edge_context).content).get("edge_ops", [])
+            ops = self._parse_response(edge_chain.invoke(edge_context).content).get("edge_ops", [])
+            return ops, [edge_context]
 
         batches = -(-len(new_ids) // EDGE_BATCH_SIZE)  # 向上取整
         # 用 WARNING 而非 INFO：ALM 容器把 dba_pipeline 钉在 WARNING 以上（防节点正文
@@ -641,13 +667,14 @@ class MemoryDBA:
             len(new_ids), EDGE_BATCH_SIZE, batches,
         )
         merged: List[Dict] = []
+        contexts: List[Dict] = []
         for i in range(0, len(new_ids), EDGE_BATCH_SIZE):
-            chunk = new_ids[i:i + EDGE_BATCH_SIZE]
-            edge_context = self._build_edge_context(conversation, chunk)
+            edge_context = self._build_edge_context(conversation, new_ids[i:i + EDGE_BATCH_SIZE])
+            contexts.append(edge_context)
             merged.extend(
                 self._parse_response(edge_chain.invoke(edge_context).content).get("edge_ops", [])
             )
-        return merged
+        return merged, contexts
 
     def _persist_source(self, batch_id, source_rounds, conversation, timestamp):
         """把本批原文落盘（opt-in）。失败只记日志，绝不影响主流程。"""

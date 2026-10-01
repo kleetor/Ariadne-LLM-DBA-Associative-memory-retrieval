@@ -316,12 +316,14 @@ class MaintenanceScheduler:
                     self._consecutive_skips = 0
                     self.stats["total_maintenances"] += 1
                     self._meaningful_count += 1
-                    creates = sum(1 for op in node_ops if op.get("action") == "create")
+                    # `action` 省略即 create（与 graph_builder._apply_*_op 同口径）
+                    creates = sum(1 for op in node_ops
+                                  if (op.get("action") or "create") == "create")
                     deprecates = sum(1 for op in node_ops if op.get("action") == "deprecate")
                     logger.info(
                         f"[DBA 维护] 有效 ({self._meaningful_count}/{self.config.proactive_entry_threshold}): "
                         f"+{creates}节点 -{deprecates}废弃 "
-                        f"+{len([o for o in edge_ops if o.get('action')=='create'])}边 "
+                        f"+{len([o for o in edge_ops if (o.get('action') or 'create')=='create'])}边 "
                         f"-{len([o for o in edge_ops if o.get('action')=='delete'])}边"
                     )
 

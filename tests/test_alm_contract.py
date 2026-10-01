@@ -11,7 +11,7 @@ from alm.contract import (
     parse_add_request,
     parse_search_request,
 )
-from alm.engine import space_filename
+from alm.engine import space_dirname
 from alm.space import (
     MemorySpace, _clip_for_log, _has_answer_instruction, _is_precision_query,
     _is_qa_feedback, _qa_feedback_summary, _retrieval_text, _strip_option_block,
@@ -304,41 +304,42 @@ class TestPrecisionRoute:
         assert _retrieval_text(only_opts) == only_opts
 
 
-class TestSpaceFilename:
-    """user_id → YAML 文件名映射：可读、可逆、无碰撞，且不含路径分隔符"""
+class TestSpaceDirname:
+    """user_id → 空间**目录名**映射：可读、可逆、无碰撞，且不含路径分隔符
+
+    空间产物现在都在这个目录里（见 `engine.GRAPH_FILENAME`），故目录名必须同时满足
+    "能当路径分量用"与"能反查回 user_id"。
+    """
 
     SAFE = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-")
 
     def test_readable_mapping(self):
-        assert space_filename("eval:run_abc:locomo:conv-0") == (
-            "eval%3Arun_abc%3Alocomo%3Aconv-0.yaml"
+        assert space_dirname("eval:run_abc:locomo:conv-0") == (
+            "eval%3Arun_abc%3Alocomo%3Aconv-0"
         )
 
     def test_only_safe_characters(self):
-        name = space_filename('a/b\\c:d*e?f"g<h>i|j k')
-        assert name.endswith(".yaml")
-        stem = name[: -len(".yaml")]
-        assert all(ch in self.SAFE or ch == "%" for ch in stem)
+        name = space_dirname('a/b\\c:d*e?f"g<h>i|j k')
+        assert all(ch in self.SAFE or ch == "%" for ch in name)
         assert "/" not in name and "\\" not in name
 
     def test_no_path_traversal(self):
-        name = space_filename("../../etc/passwd")
+        name = space_dirname("../../etc/passwd")
         assert "/" not in name and "\\" not in name
         assert ".." not in name
 
     def test_dot_only_id_is_escaped(self):
-        assert space_filename("..") == "%2E%2E.yaml"
-        assert space_filename(".") == "%2E.yaml"
+        assert space_dirname("..") == "%2E%2E"
+        assert space_dirname(".") == "%2E"
 
     def test_trailing_dot_is_escaped(self):
-        # Windows 不允许文件名以点结尾
-        assert space_filename("abc.") == "abc%2E.yaml"
+        # Windows 不允许路径分量以点结尾
+        assert space_dirname("abc.") == "abc%2E"
 
     def test_non_ascii_is_escaped(self):
-        name = space_filename("用户1")
-        stem = name[: -len(".yaml")]
-        assert all(ch in self.SAFE or ch == "%" for ch in stem)
-        assert name.endswith("1.yaml")
+        name = space_dirname("用户1")
+        assert all(ch in self.SAFE or ch == "%" for ch in name)
+        assert name.endswith("1")
 
     def test_no_collision_between_distinct_ids(self):
         ids = [
@@ -349,8 +350,25 @@ class TestSpaceFilename:
             "eval%3Arun",
             "eval:run",
         ]
-        names = [space_filename(i) for i in ids]
+        names = [space_dirname(i) for i in ids]
         assert len(set(names)) == len(ids)
+
+    def test_graph_lives_inside_the_space_directory(self, tmp_path):
+        """一空间一目录：图谱在 `<data_dir>/<转义 user_id>/graph.yaml`。
+
+        空间的全部产物都由 `yaml_path.parent` 派生（索引 / 文档区），故这一条错了
+        等于整个空间都写到了别处：Add 落盘、Search 载入全部静默失效。
+        """
+        from types import SimpleNamespace
+
+        from alm.engine import ALMEngine, GRAPH_FILENAME
+
+        stub = SimpleNamespace(config=SimpleNamespace(data_dir=tmp_path))
+        user_id = "eval:run:locomo:conv-0"
+        graph = ALMEngine._graph_path(stub, user_id)
+
+        assert graph == tmp_path / space_dirname(user_id) / GRAPH_FILENAME
+        assert graph.parent.parent == tmp_path, "空间目录必须直接位于 data_dir 下"
 
 
 class TestTokenMeterTruncation:
@@ -422,3 +440,40 @@ class TestTraceClip:
     def test_exact_limit_not_clipped(self):
         text = "x" * 100
         assert _clip_for_log(text, 100) == text
+
+
+class TestUnknownFieldsArePreserved:
+    """契约外字段必须**保留**，不能静默丢弃。
+
+    为什么这是关键项：写侧路由（"这个语料属于哪个数据集"）需要的判据，
+    官方契约里**没有**对应字段——只能从 `user_id` / `request_id` 的格式里取，
+    或者看平台是否多送了字段。原来的写法是 `body.get(...)` 只挑 4 个键，
+    其余**无声吃掉**：平台就算送了 `dataset`，我们也连"它存在"都不知道，
+    于是"该不该建图"这个决策只能靠猜内容（而内容判据已被证明不可靠）。
+    """
+
+    def test_add_extra_fields_kept(self):
+        req = parse_add_request({
+            "request_id": "r1", "user_id": "u1", "session_id": "s1",
+            "messages": [{"role": "user", "content": "hi"}],
+            "dataset": "locomo_refined", "task_type": "qa", "chunk_index": 3,
+        })
+        assert req.extra == {"dataset": "locomo_refined", "task_type": "qa",
+                             "chunk_index": 3}
+        # 已知字段不能被顺带抄进 extra
+        assert "messages" not in req.extra and "user_id" not in req.extra
+
+    def test_add_without_extra_fields(self):
+        req = parse_add_request({
+            "request_id": "r1", "user_id": "u1", "session_id": "s1",
+            "messages": [{"role": "user", "content": "hi"}],
+        })
+        assert req.extra == {}
+
+    def test_search_extra_fields_kept(self):
+        req = parse_search_request({
+            "query": "q", "user_id": "u1", "top_k": 5,
+            "qa_id": "locomo1:q0000:step01", "method": "locomo_llm_judge",
+        })
+        assert req.extra == {"qa_id": "locomo1:q0000:step01",
+                             "method": "locomo_llm_judge"}

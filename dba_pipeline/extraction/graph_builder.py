@@ -255,7 +255,9 @@ class GraphBuilder:
 
     def _apply_node_op(self, op: Dict, id_mapping: Dict[str, str], txn: _WriteTransaction) -> Optional[str]:
         """执行单个节点操作，返回新创建的节点 ID（或 None）"""
-        action = op.get("action")
+        # `action` 省略即 create（P1-2 输出瘦身：实测 99.8% 的节点 op 都是 create，
+        # 让它成为默认值可省掉约 5% 的输出 token，见 版本变更记录 §4.26）
+        action = op.get("action") or "create"
         txn.snapshot_stats(self.stats)
 
         if action == "create":
@@ -387,7 +389,9 @@ class GraphBuilder:
 
     def _apply_edge_op(self, op: Dict, txn: _WriteTransaction):
         """执行单个边操作"""
-        action = op.get("action")
+        # 同 `_apply_node_op`：省略 `action` 即 create
+        # （实测 100% 的边 op 都是 create，见 版本变更记录 §4.26）
+        action = op.get("action") or "create"
 
         if action == "create":
             self._create_edge(op, txn)

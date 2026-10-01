@@ -60,12 +60,12 @@ def test_save_load_roundtrip_contents(tmp_path):
 def test_two_spaces_do_not_share_vector_cache(tmp_path):
     """两个空间各自落盘索引时，向量分片必须互不覆盖。
 
-    ALM 侧每个空间有自己独立的 `<user>.index/` 子目录（见 `MemorySpace._index_paths`），
+    ALM 侧每个空间有自己独立的目录 `<user_id>/graph.index/`（见 `MemorySpace._index_paths`），
     所以两个空间必须各写各的。若退化成固定路径，后写的空间会覆盖先写的，load 回来的
     就是**别人空间**的向量——检索结果张冠李戴且完全静默。
     """
-    a_dir = tmp_path / "space_a.index" / "faiss"
-    b_dir = tmp_path / "space_b.index" / "faiss"
+    a_dir = tmp_path / "space_a" / "graph.index" / "faiss"
+    b_dir = tmp_path / "space_b" / "graph.index" / "faiss"
 
     va = _store()
     va.add_memories(["a1"], ["aaa"])
@@ -204,6 +204,31 @@ def test_compact_merges_fragmented_shards(tmp_path):
     vs2.load(path)
     assert set(vs2._content_vectors) == {prev}
     assert vs2._contents[prev] == "x" * 20
+
+
+def test_compaction_triggers_on_file_count_without_tombstones(tmp_path):
+    """追加型负载（无墓碑）到硬上限也必须合并，否则文件数无上限 → 每 Add 全目录扫描
+
+    这一档此前会**抛 NameError**：墓碑占比那条判据只定义在 (16, 64] 区间内，
+    超过硬上限时 `total` 未赋值就被日志行引用。所以本用例同时钉两件事：
+    合并发生了，且没有异常。
+    """
+    from dba_pipeline.embedding import store as store_mod
+
+    path = str(tmp_path / "idx" / "faiss")
+    shard_dir = tmp_path / "idx" / "faiss" / "vectors"
+
+    vs = _store()
+    for i in range(store_mod._VEC_SHARD_HARD_MAX + 5):
+        vs.add_memories([f"n{i}"], ["x" * (i + 1)])
+        vs.save(path)  # 每次只追加一行，全程没有墓碑
+
+    files = list(shard_dir.glob("*.npz"))
+    assert len(files) <= store_mod._VEC_SHARD_HARD_MAX, f"分片数无上限：{len(files)}"
+
+    vs2 = _store()
+    vs2.load(path)
+    assert set(vs2._content_vectors) == {f"n{i}" for i in range(store_mod._VEC_SHARD_HARD_MAX + 5)}
 
 
 def test_load_legacy_npz_format(tmp_path):

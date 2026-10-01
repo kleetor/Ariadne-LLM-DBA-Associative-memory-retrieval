@@ -22,6 +22,14 @@ class FakeVectorStore:
     def remove_memories(self, memory_ids):
         pass
 
+    def reconcile(self, desired):
+        """与真实 VectorStore.reconcile 同形：以图谱为权威做对账
+
+        替身缺这个方法会让 `reconcile_vectors()` 抛 AttributeError——
+        那是**替身没跟上接口**，不是被测逻辑坏了（真 VectorStore 有 reconcile）。
+        """
+        return {"added": 0, "updated": 0, "removed": 0}
+
 
 def _server(tmp_path, vector_store=None):
     return DBAServer(

@@ -204,7 +204,11 @@ class LocalEmbeddings(Embeddings):
 # 分片文件数超过 `_VEC_SHARD_MAX_FILES` 时 compact 成一个，避免碎片无限增长。
 _VEC_SUBDIR = "vectors"
 _VEC_SHARD_SIZE = 2048
+# 超过这个数就"值得考虑"合并（但还要看墓碑占比）
 _VEC_SHARD_MAX_FILES = 16
+# **硬上限**：超过就无条件合并。分片是"每次 save 一个"，追加型负载没有墓碑，
+# 只看存活性的话文件数会随 Add 次数无限增长（见 _compact_if_needed）。
+_VEC_SHARD_HARD_MAX = 64
 # 旧格式（LangChain save_local 落下的压缩包 + 前几版的 npz）文件名，仅用于一次性迁移
 _LEGACY_NPZ = "content_vectors.npz"
 
@@ -652,8 +656,24 @@ class VectorStore:
     def _compact_if_needed(self, shard_dir: str) -> None:
         """碎片过多时把权威状态合并成单文件，避免分片与墓碑无限累积。
 
-        **只在碎片占比高时才合并**：合并本身是一次全量重写，若分片里大多是存活行，
-        合并比继续追加更贵。
+        **两条独立判据，缺一不可**（这是第一版漏掉的那条）：
+          ① 墓碑占比高（`total >= 2 × 存活行`）→ 合并划得来；
+          ② **分片数超过硬上限** → 无条件合并。
+
+        为什么必须有 ②：分片是"每次 save 写一个"，而 `space` 在**每次 Add** 都
+        `save()`。追加型负载（绝大多数）没有墓碑，于是 ① 永远不成立 →
+        **文件数随 Add 次数线性增长**（一轮 full 4,378 次 Add 可攒上千个分片），
+        而 `load()` 要**逐个打开**、`_shard_files()` 每次 save 都要重扫目录——
+        O(n log n) 每 Add → O(n² log n)。文件数必须有与"存活性"无关的上限。
+
+        合并本身是一次全量重写，故 ② 只在超过 `_VEC_SHARD_HARD_MAX` 时触发，
+        摊到每次 save 约 1/64 次全量写——相比改造前的"每次 save 全量写"仍是两个量级的改善。
+
+        ⚠️ **顺序是"先写新分片、后删旧分片"，不是"先清空再重写"**：回放规则是
+        「文件名升序、后写覆盖先写」，新分片**续号**排在旧分片之后，故中途崩溃时旧
+        分片仍在，`load` 仍还原出正确状态（墓碑照常生效、存活行被新快照覆盖）。
+        若反过来先清空，崩溃就是整个向量库归零——虽然理论上能从图谱 `_reindex()`
+        重建，但那要把整个空间重新 embedding 一遍，是真实开销。
         """
         files = self._shard_files(shard_dir)
         if len(files) <= _VEC_SHARD_MAX_FILES:
@@ -665,15 +685,23 @@ class VectorStore:
                     total += int(np.load(f, allow_pickle=False)["ids"].shape[0])
             except Exception:
                 return  # 读不动就别动，宁可留碎片
-        if total < 2 * len(self._content_vectors):
+        # ① 墓碑占比高（划得来）  ② 超硬上限（追加型负载：没有墓碑，必须靠计数兜底）
+        if len(files) <= _VEC_SHARD_HARD_MAX and total < 2 * len(self._content_vectors):
             return
-        self._wipe_shards(shard_dir)
+        start = self._next_shard_seq(shard_dir)
         live = [(mid, np.asarray(vec, dtype=np.float32))
                 for mid, vec in self._content_vectors.items()]
         for i in range(0, len(live), _VEC_SHARD_SIZE):
-            self._write_shard(shard_dir, i // _VEC_SHARD_SIZE, live[i:i + _VEC_SHARD_SIZE])
-        logger.info("向量分片已合并: %d 条存活（合并前 %d 行）→ %s",
-                    len(live), total, shard_dir)
+            self._write_shard(shard_dir, start + i // _VEC_SHARD_SIZE,
+                              live[i:i + _VEC_SHARD_SIZE])
+        # 新快照写完才删旧分片：删到一半崩溃也无妨（旧分片被新快照覆盖，幂等）
+        for name in files:
+            try:
+                os.remove(os.path.join(shard_dir, name))
+            except OSError:
+                pass
+        logger.info("向量分片已合并: %d 条存活（合并前 %d 行 / %d 个分片）→ %s",
+                    len(live), total, len(files), shard_dir)
 
     def load(self, path: str, embeddings: "Embeddings" = None):
         """从分片恢复向量，并**在内存里重建索引**

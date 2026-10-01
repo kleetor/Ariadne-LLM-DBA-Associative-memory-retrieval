@@ -24,6 +24,9 @@ from typing import Optional
 # 单条日志消息的最大长度，避免异常堆栈撑爆缓冲区
 _MAX_MESSAGE = 4000
 
+# 并发 SSE 日志订阅上限：防止大量连接耗尽内存/事件循环
+MAX_SUBSCRIBERS = 500
+
 # 这些 logger 噪声大且无助于排查业务链路，直接忽略
 _IGNORED_LOGGERS = ("uvicorn.access",)
 
@@ -98,8 +101,10 @@ class LogBus:
     # ---- 订阅 ----
 
     def subscribe(self, maxsize: int = 2000) -> asyncio.Queue:
-        queue: asyncio.Queue = asyncio.Queue(maxsize=maxsize)
         with self._lock:
+            if len(self._subscribers) >= MAX_SUBSCRIBERS:
+                raise RuntimeError(f"日志订阅数已达上限（{MAX_SUBSCRIBERS}）")
+            queue: asyncio.Queue = asyncio.Queue(maxsize=maxsize)
             self._subscribers.add(queue)
         return queue
 
@@ -176,6 +181,8 @@ class JsonlTailer(threading.Thread):
     - 文件不存在时等待其出现（服务进程稍后启动也能接上）。
     """
 
+    _SEED_MAX_BYTES = 2 * 1024 * 1024  # 预读历史只取尾部这一段，避免整份日志扫描
+
     def __init__(self, bus: LogBus, path: str, channel: str,
                  interval: float = 0.8, seed: int = 0, name: str = "jsonl-tailer"):
         super().__init__(daemon=True, name=name)
@@ -204,13 +211,20 @@ class JsonlTailer(threading.Thread):
             return 0
 
     def _seed(self, count: int) -> None:
-        """把文件末尾 count 行读入缓冲（历史记录，供面板首屏展示）。"""
+        """把文件末尾 count 行读入缓冲（历史记录，供面板首屏展示）。
+
+        只从尾部读取一段（`_SEED_MAX_BYTES`），避免日志长期增长时启动即整文件扫描。
+        """
         try:
-            with open(self.path, "r", encoding="utf-8") as f:
-                for line in deque(f, maxlen=count):
-                    self._publish_line(line)
+            with open(self.path, "rb") as f:
+                f.seek(0, os.SEEK_END)
+                size = f.tell()
+                f.seek(max(0, size - self._SEED_MAX_BYTES))
+                chunk = f.read()
         except OSError:
-            pass
+            return
+        for line in chunk.decode("utf-8", "replace").splitlines()[-count:]:
+            self._publish_line(line)
 
     def _poll(self) -> None:
         try:

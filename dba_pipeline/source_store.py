@@ -29,6 +29,12 @@ _EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.]+")
 _MOBILE_RE = re.compile(r"(?<!\d)1[3-9]\d{9}(?!\d)")
 _LONG_DIGITS_RE = re.compile(r"(?<!\d)\d{8,}(?!\d)")
 _AT_ID_RE = re.compile(r"@\d{4,}")
+# 批次 ID 白名单：只允许字母数字与 . _ -，且不得为 ..（配合下面的显式排除防路径穿越）
+_BATCH_ID_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def _valid_batch_id(batch_id: str) -> bool:
+    return bool(batch_id) and bool(_BATCH_ID_RE.match(batch_id)) and ".." not in batch_id
 
 
 def source_store_enabled() -> bool:
@@ -72,6 +78,9 @@ def save_batch(source_dir, batch_id: str, rounds: List[Dict],
     """
     if not batch_id or not rounds:
         return None
+    # batch_id 会拼进文件名：非法/带路径分隔符的值直接拒绝，防目录穿越
+    if not _valid_batch_id(batch_id):
+        raise ValueError(f"非法批次 ID: {batch_id!r}")
     target_dir = Path(source_dir)
     target_dir.mkdir(parents=True, exist_ok=True)
     payload = {
@@ -97,7 +106,7 @@ def save_batch(source_dir, batch_id: str, rounds: List[Dict],
 
 
 def load_batch(source_dir, batch_id: str) -> Optional[Dict]:
-    if not batch_id:
+    if not _valid_batch_id(batch_id):
         return None
     path = Path(source_dir) / f"{batch_id}.json"
     if not path.exists():
@@ -160,6 +169,10 @@ def render_batch_text(batch: Dict) -> str:
     lines = []
     for r in batch.get("rounds") or []:
         ts = r.get("ts")
-        stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts / 1000)) if ts else "时间未知"
+        # ts 若被误写成字符串，ts / 1000 会抛 TypeError；非数值一律按"时间未知"处理
+        if isinstance(ts, bool) or not isinstance(ts, (int, float)):
+            stamp = "时间未知"
+        else:
+            stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts / 1000)) if ts else "时间未知"
         lines.append(f"[{stamp}] {r.get('text') or ''}")
     return "\n".join(lines)

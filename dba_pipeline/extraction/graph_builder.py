@@ -89,6 +89,18 @@ class _WriteTransaction:
         if self._stats_snapshot:
             for key, val in self._stats_snapshot.items():
                 builder.stats[key] = val
+        # 同步回滚向量库：只删图不清向量会留下「图已删、向量仍在」的脏数据
+        vs = getattr(builder, "vector_store", None)
+        if vs is not None:
+            try:
+                if self._created_nodes:
+                    vs.remove_memories(list(self._created_nodes))
+                if self._updated_nodes:
+                    vs.update_memories(
+                        list(self._updated_nodes), list(self._updated_nodes.values())
+                    )
+            except Exception as e:  # 向量回滚失败不应掩盖原始错误
+                logger.warning("事务回滚同步向量库失败: %s", e)
         logger.warning(
             f"事务回滚: 撤销 {len(self._created_nodes)} 节点, "
             f"{len(self._created_edges)} 边, {len(self._updated_nodes)} 更新, "
@@ -135,6 +147,9 @@ class GraphBuilder:
         # 孤立节点追踪: {node_id: consecutive_orphan_count}
         self._orphan_tracker: Dict[str, int] = {}
 
+        # 下一个节点 ID 的下限缓存：避免每次创建节点都重建节点全集（O(N)）
+        self._next_id_hint: Optional[int] = None
+
         # 统计
         self.stats = {
             "nodes_created": 0,
@@ -155,6 +170,7 @@ class GraphBuilder:
         edge_ops: List[Dict],
         batch_timestamp=None,
         batch_id: str = None,
+        check_orphans: bool = True,
     ) -> Dict:
         """执行 LLM DBA 输出的操作指令（带事务保护 + 锁保护）
 
@@ -163,6 +179,9 @@ class GraphBuilder:
         元数据确定性注入，避免幻觉与门控遗漏。
         batch_id: 本批对话的批次标识（opt-in，见 MemoryDBA.enable_source_store），
         写入节点的 source_ref，供溯源巡检反查原文。
+        check_orphans: 是否在本批结束后做孤立节点检查。`MemoryDBA.maintain`
+        把节点步与边步拆成两次调用，只在**边步之后**检查一次即可；否则每轮
+        维护会被计数两次，孤立节点被过早遗忘。
         """
         prev_ts = getattr(self, "_batch_timestamp", None)
         prev_id = getattr(self, "_batch_id", None)
@@ -170,9 +189,9 @@ class GraphBuilder:
         self._batch_id = batch_id
         try:
             if self._lock is None:
-                return self._apply_ops_impl(node_ops, edge_ops)
+                return self._apply_ops_impl(node_ops, edge_ops, check_orphans)
             with self._lock:
-                return self._apply_ops_impl(node_ops, edge_ops)
+                return self._apply_ops_impl(node_ops, edge_ops, check_orphans)
         finally:
             self._batch_timestamp = prev_ts
             self._batch_id = prev_id
@@ -181,6 +200,7 @@ class GraphBuilder:
         self,
         node_ops: List[Dict],
         edge_ops: List[Dict],
+        check_orphans: bool = True,
     ) -> Dict:
         """apply_ops 实际实现（在锁内调用）
 
@@ -239,8 +259,8 @@ class GraphBuilder:
                     txn.rollback(self)
                     break
 
-        # 孤立节点检查（仅在无致命错误时执行）
-        if not errors:
+        # 孤立节点检查（仅在无致命错误时执行）；拆分节点/边两步调用时只在边步后检查一次
+        if not errors and check_orphans:
             self._check_orphans()
 
         txn.commit()
@@ -275,8 +295,12 @@ class GraphBuilder:
 
     def _create_node(self, op: Dict, id_mapping: Dict[str, str], txn: _WriteTransaction) -> Optional[str]:
         """创建新节点（带去重 + 事务追踪）"""
-        content = op["content"]
-        node_type_str = op["node_type"]
+        content = op.get("content")
+        node_type_str = op.get("node_type")
+        # 缺字段属"可容忍的坏数据"：抛 ValueError 只会丢弃该条（进 skipped），
+        # 绝不能让它变成 KeyError——那会落进 except Exception → 回滚整批。
+        if not content or not node_type_str:
+            raise ValueError("节点操作缺少 content 或 node_type 字段")
 
         node_type = self._parse_node_type(node_type_str)
 
@@ -320,8 +344,10 @@ class GraphBuilder:
 
     def _update_node(self, op: Dict, txn: _WriteTransaction):
         """更新已有节点内容（带事务追踪）"""
-        target_id = op["target_id"]
-        new_content = op["content"]
+        target_id = op.get("target_id")
+        new_content = op.get("content")
+        if not target_id or not new_content:
+            raise ValueError("更新操作缺少 target_id 或 content 字段")
         reason = op.get("reason", "")
 
         node = self.graph.get_node(target_id)
@@ -354,8 +380,10 @@ class GraphBuilder:
 
     def _fix_node_type(self, op: Dict, txn: _WriteTransaction):
         """修正节点类型"""
-        target_id = op["target_id"]
-        new_type_str = op["node_type"]
+        target_id = op.get("target_id")
+        new_type_str = op.get("node_type")
+        if not target_id or not new_type_str:
+            raise ValueError("修正类型操作缺少 target_id 或 node_type 字段")
         reason = op.get("reason", "")
 
         node = self.graph.get_node(target_id)
@@ -372,7 +400,9 @@ class GraphBuilder:
 
     def _deprecate_node(self, op: Dict, txn: _WriteTransaction):
         """标记节点失效"""
-        target_id = op["target_id"]
+        target_id = op.get("target_id")
+        if not target_id:
+            raise ValueError("deprecate 操作缺少 target_id 字段")
         reason = op.get("reason", "")
 
         node = self.graph.get_node(target_id)
@@ -402,9 +432,11 @@ class GraphBuilder:
 
     def _create_edge(self, op: Dict, txn: _WriteTransaction):
         """创建边（带校验 + 去重 + 事务追踪）"""
-        from_id = op["from"]
-        to_id = op["to"]
-        rel_type_str = op["rel_type"]
+        from_id = op.get("from")
+        to_id = op.get("to")
+        rel_type_str = op.get("rel_type")
+        if not from_id or not to_id or not rel_type_str:
+            raise ValueError("边操作缺少 from/to/rel_type 字段")
 
         # 校验节点存在
         if self.graph.get_node(from_id) is None:
@@ -460,8 +492,10 @@ class GraphBuilder:
 
     def _delete_edge(self, op: Dict, txn: _WriteTransaction):
         """删除边"""
-        from_id = op["from"]
-        to_id = op["to"]
+        from_id = op.get("from")
+        to_id = op.get("to")
+        if not from_id or not to_id:
+            raise ValueError("删边操作缺少 from/to 字段")
         reason = op.get("reason", "")
 
         if not self.graph.graph.has_edge(from_id, to_id):
@@ -497,7 +531,7 @@ class GraphBuilder:
         if self.vector_store.store is None:
             for nid in self.graph.graph.nodes():
                 node = self.graph.get_node(nid)
-                if (node and not node.get("deprecated")
+                if (node and not node.get("deprecated") and not node.get("forgotten")
                         and node.get("content") == content):
                     logger.info(
                         f"节点精确去重: '{content[:40]}...' → 已有节点 {nid}"
@@ -512,7 +546,8 @@ class GraphBuilder:
         best_id, best_sim = None, 0.0
         for mid, _ in candidates:
             node = self.graph.get_node(mid)
-            if node is None or node.get("deprecated"):
+            # 已遗忘/废弃节点不参与去重：否则命中的新事实既不新建也不更新，被静默吞掉
+            if node is None or node.get("deprecated") or node.get("forgotten"):
                 continue
             cand_vec = self.vector_store._content_vectors.get(mid)
             if cand_vec is None:
@@ -581,11 +616,22 @@ class GraphBuilder:
             raise ValueError(f"无效的边类型: '{type_str}'，有效值: {[t.name for t in RelationType]}")
 
     def _next_node_id(self) -> str:
-        """生成下一个节点 ID"""
-        existing = set(self.graph.graph.nodes())
-        idx = 1
-        while f"n{idx}" in existing:
+        """生成下一个节点 ID
+
+        用一次全量扫描初始化计数器后**只做增量 +1**，避免每建一个节点就重建
+        一次节点全集（O(N)）。生成时仍逐值跳到未被占用的 id，兼容外部（MCP CRUD）
+        新建的节点。
+        """
+        if self._next_id_hint is None:
+            max_idx = 0
+            for nid in self.graph.graph.nodes():
+                if isinstance(nid, str) and len(nid) > 1 and nid[0] == "n" and nid[1:].isdigit():
+                    max_idx = max(max_idx, int(nid[1:]))
+            self._next_id_hint = max_idx + 1
+        idx = self._next_id_hint
+        while f"n{idx}" in self.graph.graph:
             idx += 1
+        self._next_id_hint = idx + 1
         return f"n{idx}"
 
     def _resolve_edge_ids(

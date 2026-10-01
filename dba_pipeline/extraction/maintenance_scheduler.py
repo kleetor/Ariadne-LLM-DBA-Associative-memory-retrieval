@@ -264,27 +264,37 @@ class MaintenanceScheduler:
         try:
             if batch_count > self.config.max_batch_rounds:
                 logger.warning(f"截断 {batch_count} → {self.config.max_batch_rounds} 轮")
+                dropped = conversations[:-self.config.max_batch_rounds]
                 conversations = conversations[-self.config.max_batch_rounds:]
+                # 被截断丢弃的早期轮次同样要兜底落库，否则是静默丢内容
+                # （与下面的自动跳过分支同口径，见 0927 审查 B5）
+                dropped_merged = "\n\n".join(_format_round(ts, text) for ts, text in dropped)
+                dropped_ts = next((ts for ts, _ in reversed(dropped) if ts), None)
+                self.dba.store_raw(dropped_merged, timestamp=dropped_ts)
 
             # P3a: 自动跳过 — 连续空转太多，不再调用 LLM
+            auto_skip = False
             if reason not in (TriggerReason.SESSION_END, TriggerReason.MANUAL):
                 with self._lock:
                     if self._consecutive_skips >= self.config.auto_skip_threshold:
                         self.stats["total_auto_skipped"] += 1
-                        logger.info(
-                            f"[DBA 维护] 自动跳过（连续 {self._consecutive_skips} 次空转），"
-                            f"丢弃 {batch_count} 轮对话"
-                        )
-                        # 自动跳过的本意是「省下一次 LLM 调用」，不是「丢内容」——
-                        # 原文兜底落库后再返回（见 0927 审查 B5）。否则这条路径同样静默丢记忆。
-                        skipped_merged = "\n\n".join(
-                            _format_round(ts, text) for ts, text in conversations
-                        )
-                        skipped_ts = next(
-                            (ts for ts, _ in reversed(conversations) if ts), None
-                        )
-                        self.dba.store_raw(skipped_merged, timestamp=skipped_ts)
-                        return
+                        auto_skip = True
+            if auto_skip:
+                logger.info(
+                    f"[DBA 维护] 自动跳过（连续 {self._consecutive_skips} 次空转），"
+                    f"丢弃 {batch_count} 轮对话"
+                )
+                # 自动跳过的本意是「省下一次 LLM 调用」，不是「丢内容」——原文兜底
+                # 落库后再返回（见 0927 审查 B5）。store_raw 内含网络嵌入，必须在
+                # self._lock **之外**调用，否则会长时间阻塞所有需要该锁的公共入口。
+                skipped_merged = "\n\n".join(
+                    _format_round(ts, text) for ts, text in conversations
+                )
+                skipped_ts = next(
+                    (ts for ts, _ in reversed(conversations) if ts), None
+                )
+                self.dba.store_raw(skipped_merged, timestamp=skipped_ts)
+                return
 
             merged = "\n\n".join(_format_round(ts, text) for ts, text in conversations)
             # 节点时间戳按批次注入（取本批最后一轮到达时间）：抽取不产出"节点↔轮次"

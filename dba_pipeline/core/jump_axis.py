@@ -119,16 +119,16 @@ def get_jump_weight(
 
 def expand_weights(
     source_type: NodeType,
-    relations: Dict[RelationType, bool],  # {relation_type: is_reverse}
+    relations: Dict[str, Tuple[RelationType, bool]],  # {edge_id: (relation_type, is_reverse)}
 ) -> Dict[str, float]:
     """计算一次扩展中各候选边的权重
-    
+
     Args:
         source_type: 当前节点的类型
-        relations: 各条出边的类型和方向
-        
+        relations: {edge_id: (relation_type, is_reverse)}，各条出边的类型与方向
+
     Returns:
-        {edge_id: weight}
+        {edge_id: weight}（权重为 0 的方向不包含在内）
     """
     weights = {}
     for edge_id, (rel_type, is_reverse) in relations.items():

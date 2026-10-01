@@ -82,9 +82,13 @@ class PeakFinder:
         curr = self.history[-1]
         delta = curr - prev
 
+        # 峰值索引跟踪历史最大值：若只在"显著上升"时更新，小幅上升/平台期的轮次
+        # 永远成不了峰值，peak_index 会停在种子轮，容忍带退化成"全收"。
+        if curr >= self.history[self.peak_index]:
+            self.peak_index = len(self.history) - 1
+
         # 显著上升 → 重置下降计时
         if delta > self.min_delta:
-            self.peak_index = len(self.history) - 1
             self.seen_decline = False
             self.extra_rounds = 0
             return "continue"
@@ -103,8 +107,10 @@ class PeakFinder:
         return "continue"
 
     def get_peak_values(self, rounds_data: list) -> list:
-        """返回峰值轮对应的数据"""
-        return rounds_data[self.peak_index]
+        """返回峰值轮对应的数据（带越界保护）"""
+        if not rounds_data:
+            return []
+        return rounds_data[min(self.peak_index, len(rounds_data) - 1)]
 
     def reset(self):
         """重置状态"""

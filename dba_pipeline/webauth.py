@@ -186,6 +186,9 @@ class AuthStore:
         self.key_id = key_id
         self.must_change = must_change
         self._mtime = 0
+        # 保护凭据字段的成组读写：refresh 逐字段覆盖时，并发校验可能读到
+        # "新盐 + 旧 hash" 的组合，把正确密码误判为失败
+        self._lock = threading.RLock()
 
     # ---- 读取 ----
 
@@ -239,13 +242,14 @@ class AuthStore:
             record = _read_record(self.path)
         except (OSError, ValueError):
             return
-        self.user = record["user"]
-        self.salt = record["salt"]
-        self.password_hash = record["hash"]
-        self.iterations = record["iterations"]
-        self.key_id = record["key_id"]
-        self.must_change = record["must_change"]
-        self._mtime = mtime
+        with self._lock:
+            self.user = record["user"]
+            self.salt = record["salt"]
+            self.password_hash = record["hash"]
+            self.iterations = record["iterations"]
+            self.key_id = record["key_id"]
+            self.must_change = record["must_change"]
+            self._mtime = mtime
 
     # ---- 校验 / 写入 ----
 
@@ -256,33 +260,42 @@ class AuthStore:
 
     def check_password(self, password: str) -> bool:
         self.refresh()
-        if not self.key_ok:
+        # 一次性取一致的凭据快照，避免 refresh 并发逐字段覆盖造成读写撕裂
+        with self._lock:
+            key_id = self.key_id
+            salt_hex = self.salt
+            iterations = self.iterations
+            password_hash = self.password_hash
+        if key_id != _pepper_id(_pepper()):
             return False
         try:
-            salt = bytes.fromhex(self.salt)
+            salt = bytes.fromhex(salt_hex)
         except ValueError:
             return False
-        derived = _derive(password, salt, self.iterations, _pepper())
-        return constant_time_eq(derived, self.password_hash)
+        derived = _derive(password, salt, iterations, _pepper())
+        return constant_time_eq(derived, password_hash)
 
     def verify(self, user: str, password: str) -> bool:
         """校验账号密码；用户名不匹配也照算散列，避免按用户名短路泄漏时序。"""
         self.refresh()
         password_ok = self.check_password(password)
-        return bool(password_ok and constant_time_eq(user, self.user))
+        with self._lock:
+            current_user = self.user
+        return bool(password_ok and constant_time_eq(user, current_user))
 
     def set_password(self, password: str, user: Optional[str] = None) -> None:
         """改密（可同时改名），并清除「必须改密」标记。"""
         self.refresh()
         salt = secrets.token_bytes(16)
         pepper = _pepper()
-        if user:
-            self.user = user
-        self.salt = salt.hex()
-        self.iterations = PBKDF2_ITERATIONS
-        self.password_hash = _derive(password, salt, self.iterations, pepper)
-        self.key_id = _pepper_id(pepper)
-        self.must_change = False
+        with self._lock:
+            if user:
+                self.user = user
+            self.salt = salt.hex()
+            self.iterations = PBKDF2_ITERATIONS
+            self.password_hash = _derive(password, salt, self.iterations, pepper)
+            self.key_id = _pepper_id(pepper)
+            self.must_change = False
         self.save()
 
     def save(self) -> None:
@@ -596,7 +609,12 @@ def clear_cookie() -> str:
 
 
 def client_key(scope) -> str:
-    """限速用的来源标识（优先取代理透传的真实 IP）。"""
+    """限速用的来源标识（取直连对端 IP）。
+
+    注意：只读取 ``scope["client"]``，**不解析** ``X-Forwarded-For``——该头可被伪造，
+    误用会让限速形同虚设。若部署在反向代理之后且需要按真实客户端限速，应由代理
+    统一改写对端信息，或在此按可信代理白名单解析 XFF。
+    """
     client = scope.get("client")
     if client:
         return str(client[0])

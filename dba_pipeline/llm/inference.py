@@ -441,13 +441,16 @@ class InferenceEngine:
         import json
         chain = STATUS_INFERENCE_PROMPT | with_role(self.llm, "status")
         response = chain.invoke({"query": query})
+        # 归一化为字符串：个别模型返回结构化 content（list/dict），直接 json.loads 会抛
+        # TypeError 而绕过下面的兜底
+        content = response.content if isinstance(response.content, str) else ""
         try:
-            return json.loads(response.content)
-        except json.JSONDecodeError:
+            return json.loads(content)
+        except (json.JSONDecodeError, TypeError):
             # 只记长度，不记原文：原始响应由 query 派生，落进日志即等于落评测正文
             # （合规要求日志不含记忆内容）。用模块 logger 而非 root，才能被
             # server._configure_logging 对 dba_pipeline 的级别闸统一管控。
-            logger.warning("状态推断 JSON 解析失败（响应长度 %d），按未知处理", len(response.content or ""))
+            logger.warning("状态推断 JSON 解析失败（响应长度 %d），按未知处理", len(content))
             return {"status": "unknown", "emotion": "中性"}
 
     def infer_purpose(self, query: str) -> dict:
@@ -461,7 +464,8 @@ class InferenceEngine:
         import json
         chain = PURPOSE_INFERENCE_PROMPT | with_role(self.llm, "purpose")
         for attempt in (1, 2):
-            content = chain.invoke({"query": query}).content or ""
+            raw = chain.invoke({"query": query}).content
+            content = raw if isinstance(raw, str) else ""
             parsed = None
             # 过短响应（如 3 字符）一律判失败：正常输出是一个带 purposes/condense/state
             # 的完整 JSON，长度远大于此阈值；把它当成功会让残缺 JSON 混过解析。
@@ -479,7 +483,9 @@ class InferenceEngine:
                 attempt, len(content), "，重试一次" if attempt == 1 else "，按默认目的处理",
             )
         self.purpose_failures += 1
-        return {"status": "unknown", "purposes": ["理解"], "condense": False, "state": False}
+        # 补齐与正常输出一致的键（temporal / query_type 缺失会让按固定键读取的调用方 KeyError）
+        return {"status": "unknown", "purposes": ["理解"], "condense": False,
+                "state": False, "temporal": False, "query_type": "information"}
 
     def story_rank(self, query: str, path: dict, render_timestamps: bool = False,
                    condense: bool = False, state: bool = False,
@@ -679,7 +685,8 @@ class InferenceEngine:
 
         chain = SOURCE_AUDIT_PROMPT | with_role(self.llm, "audit")
         response = chain.invoke({"batch_text": batch_text, "nodes_text": nodes_text})
-        raw = (response.content or "").strip()
+        raw = response.content if isinstance(response.content, str) else ""
+        raw = raw.strip()
         # 容错：模型可能套 ```json 代码块
         if raw.startswith("```"):
             raw = raw.strip("`")
@@ -688,8 +695,10 @@ class InferenceEngine:
         try:
             data = json.loads(raw.strip())
         except json.JSONDecodeError:
-            logging.warning(f"溯源核对 JSON 解析失败，原始响应: {raw[:200]}")
-            return {"error": "JSON 解析失败", "raw": raw[:500]}
+            # 只记长度，不记原文：响应由批次原文派生，落进日志即等于落评测正文（合规要求
+            # 日志不含记忆内容）；返回值同样不带 raw，避免把正文上抛给调用方
+            logger.warning("溯源核对 JSON 解析失败（响应长度 %d）", len(raw))
+            return {"error": "JSON 解析失败"}
 
         out = {}
         for key in ("unsupported", "missing", "granularity"):

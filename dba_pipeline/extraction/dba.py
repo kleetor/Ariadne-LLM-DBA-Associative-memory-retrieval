@@ -394,6 +394,21 @@ EDGE_BATCH_SIZE = 24
 _WIDE_K_PER_MSG = 5
 _WIDE_EXTRA_CAP = 15
 
+
+def _normalize_ops(obj) -> Optional[Dict]:
+    """把解析出的 JSON 归一化为 {node_ops, edge_ops}；结构不符返回 None。
+
+    放模块级（而非方法）：`_parse_response` 在单测里常被最小替身直接复用（见
+    tests/test_dba_edge_batch.py），不应依赖实例上的其它方法。
+    """
+    if not isinstance(obj, dict):
+        return None
+    node_ops = obj.get("node_ops", [])
+    edge_ops = obj.get("edge_ops", [])
+    if not isinstance(node_ops, list) or not isinstance(edge_ops, list):
+        return None
+    return {"node_ops": node_ops, "edge_ops": edge_ops}
+
 # ---- DBA 类 ----
 
 class MemoryDBA:
@@ -579,7 +594,8 @@ class MemoryDBA:
             evidence_stats = {"kept": ev_kept, "dropped": ev_dropped}
             if ev_dropped:
                 logger.info(f"evidence 校验: 保留 {ev_kept} 条, 丢弃 {ev_dropped} 条非法片段")
-        result1 = self.builder.apply_ops(node_ops, [], batch_timestamp=timestamp, batch_id=batch_id)
+        result1 = self.builder.apply_ops(node_ops, [], batch_timestamp=timestamp, batch_id=batch_id,
+                                         check_orphans=False)
         # 原文落盘（opt-in）：只在本批确实产出了操作时存，避免把 triage 空转的对话堆到磁盘
         if batch_id and node_ops:
             self._persist_source(batch_id, source_rounds, conversation, timestamp)
@@ -896,7 +912,9 @@ class MemoryDBA:
             return True
         snippet = conversation[-_TRIAGE_WINDOW:]
         resp = self.triage_chain.invoke({"conversation": snippet})
-        return "NEEDED" in resp.content.upper()
+        text = (getattr(resp, "content", "") or "").upper()
+        # 必须先排除 "NOT NEEDED"：单用 `"NEEDED" in text` 会把否定回答也判为需要维护
+        return "NEEDED" in text and "NOT NEEDED" not in text
 
     # ---- 响应解析 ----
 
@@ -917,15 +935,18 @@ class MemoryDBA:
 
         try:
             ops = json.loads(cleaned)
-            return {
-                "node_ops": ops.get("node_ops", []),
-                "edge_ops": ops.get("edge_ops", []),
-            }
         except json.JSONDecodeError:
             logger.warning(f"LLM 输出 JSON 解析失败，原始响应前 200 字符: {response[:200]}")
-
             # 尝试提取 JSON 片段
             return self._extract_json_fallback(response)
+
+        normalized = _normalize_ops(ops)
+        if normalized is None:
+            # 合法 JSON 但不是预期的 {node_ops, edge_ops} 结构（如模型直接吐数组）：
+            # 若在这里调 .get 会抛 AttributeError → 整个维护请求失败、本批不落库
+            logger.warning("LLM 输出非预期的操作对象结构，尝试从响应中挽救")
+            return self._extract_json_fallback(response)
+        return normalized
 
     def _extract_json_fallback(self, response: str) -> Dict:
         """从非标准格式的 LLM 输出中尝试提取 JSON"""
@@ -934,7 +955,9 @@ class MemoryDBA:
         end = response.rfind("}")
         if start != -1 and end != -1 and end > start:
             try:
-                return json.loads(response[start:end + 1])
+                normalized = _normalize_ops(json.loads(response[start:end + 1]))
+                if normalized is not None:
+                    return normalized
             except json.JSONDecodeError:
                 pass
 
@@ -1050,9 +1073,8 @@ class MemoryDBA:
         # 1. 图谱
         graph_path = os.path.join(save_dir, "memory_graph.yaml")
         if os.path.exists(graph_path):
-            restored = MemoryGraph.from_dict(
-                yaml.safe_load(open(graph_path, encoding="utf-8"))
-            )
+            with open(graph_path, encoding="utf-8") as f:
+                restored = MemoryGraph.from_dict(yaml.safe_load(f))
             self.graph.graph = restored.graph  # 替换内部 nx 图
             logger.info(f"图谱已恢复: {self.graph.node_count} 节点, {self.graph.edge_count} 边")
         else:

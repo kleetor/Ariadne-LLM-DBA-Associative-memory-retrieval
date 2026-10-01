@@ -99,15 +99,21 @@ def params_path_for(yaml_path: str) -> str:
     return os.path.join(directory, PARAMS_FILENAME)
 
 
-def default_weights() -> Dict[str, Dict[str, list]]:
-    """默认权重矩阵：直接取自 jump_axis.JUMP_AXIS_RULES（单一事实来源）"""
-    return {
-        node_type.value: {
-            rel.value: [float(pair[0]), float(pair[1])]
-            for rel, pair in rules.items()
-        }
-        for node_type, rules in JUMP_AXIS_RULES.items()
+# 出厂默认权重快照（import 时固定）。
+# `apply_weights` 会**就地改写** JUMP_AXIS_RULES 让读取方立即可见；若默认值实时读它，
+# 运行期调参后 `default_params()` 返回的就不再是出厂值——面板「恢复默认」会写回当前值。
+_FACTORY_WEIGHTS: Dict[str, Dict[str, list]] = {
+    node_type.value: {
+        rel.value: [float(pair[0]), float(pair[1])]
+        for rel, pair in rules.items()
     }
+    for node_type, rules in JUMP_AXIS_RULES.items()
+}
+
+
+def default_weights() -> Dict[str, Dict[str, list]]:
+    """默认权重矩阵：取 import 时固定的出厂快照，不受运行期就地改写影响"""
+    return copy.deepcopy(_FACTORY_WEIGHTS)
 
 
 def default_params() -> dict:

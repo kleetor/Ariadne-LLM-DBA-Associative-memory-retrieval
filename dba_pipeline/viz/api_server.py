@@ -49,7 +49,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 import yaml
 import uvicorn
@@ -75,6 +75,10 @@ NODE_TYPES = {t.value.upper(): t for t in NodeType}
 REL_TYPES = {t.value: t for t in RelationType}
 
 STATIC_DIR = Path(__file__).parent / "static"
+
+# 请求体大小上限（字节）：starlette/uvicorn 默认不限，导入 YAML 等接口可被用来撑爆内存
+_MAX_JSON_BODY = 5 * 1024 * 1024
+_BODY_TOO_LARGE_MSG = f"请求体过大（上限 {_MAX_JSON_BODY // (1024 * 1024)} MB）"
 
 # /api/config 中需要脱敏的环境变量关键字
 _SECRET_HINTS = ("KEY", "PASS", "SECRET", "TOKEN", "CREDENTIAL")
@@ -145,8 +149,13 @@ class MemoryGraphAPI:
         self.graph = graph
         self.yaml_path = yaml_path
         self._lock = threading.RLock()
-        # 跨进程写锁：与 MCP 共用同一把 <yaml>.lock，串行化「读-改-写」
-        self._file_lock = filelock.FileLock(filelock.lock_path_for(yaml_path)) if yaml_path else None
+        # 跨进程写锁：与 MCP 共用同一把 <yaml>.lock，串行化「读-改-写」。
+        # 超时与 MCP 对齐（300s）：MCP 的维护含 LLM 调用可能很久，若这里只有默认 30s，
+        # 维护期间面板的任何写操作都会超时→503。
+        self._file_lock = (
+            filelock.FileLock(filelock.lock_path_for(yaml_path), timeout=300.0)
+            if yaml_path else None
+        )
         self._next_node_id = self._compute_next_id()
         # 记录初始文件 mtime，用于检测 YAML 被外部（如 MCP）修改后自动重载
         self._last_mtime = self._yaml_mtime()
@@ -257,27 +266,31 @@ class MemoryGraphAPI:
 
     def get_graph_data(self) -> dict:
         """导出完整图数据（同 exporter 格式）"""
-        self._reload_if_changed()
         from dba_pipeline.viz.exporter import to_3dforcegraph
-        return to_3dforcegraph(self.graph)
+        self._reload_if_changed()
+        # 在锁内完成「重载 + 遍历 + 序列化」：CRUD 经 to_thread 真并发执行，
+        # 锁外遍历共享图会被写线程改图（dictionary changed size during iteration）
+        with self._lock:
+            return to_3dforcegraph(self.graph)
 
     def get_stats(self) -> dict:
         """图谱统计概览（指标/状态栏用）"""
         self._reload_if_changed()
-        graph = self.graph.graph
-        deprecated = sum(1 for _, d in graph.nodes(data=True) if d.get("deprecated"))
-        forgotten = sum(1 for _, d in graph.nodes(data=True) if d.get("forgotten"))
-        orphans = sum(1 for nid, d in graph.nodes(data=True) if graph.degree(nid) == 0)
-        n, e = graph.number_of_nodes(), graph.number_of_edges()
-        density = (e / (n * (n - 1))) if n > 1 else 0.0
-        return {
-            "nodes": n,
-            "edges": e,
-            "deprecated": deprecated,
-            "forgotten": forgotten,
-            "orphans": orphans,
-            "density": round(density, 6),
-        }
+        with self._lock:
+            graph = self.graph.graph
+            deprecated = sum(1 for _, d in graph.nodes(data=True) if d.get("deprecated"))
+            forgotten = sum(1 for _, d in graph.nodes(data=True) if d.get("forgotten"))
+            orphans = sum(1 for nid, d in graph.nodes(data=True) if graph.degree(nid) == 0)
+            n, e = graph.number_of_nodes(), graph.number_of_edges()
+            density = (e / (n * (n - 1))) if n > 1 else 0.0
+            return {
+                "nodes": n,
+                "edges": e,
+                "deprecated": deprecated,
+                "forgotten": forgotten,
+                "orphans": orphans,
+                "density": round(density, 6),
+            }
 
     @_guarded_write
     def create_node(self, node_type: str, content: str) -> dict:
@@ -322,13 +335,17 @@ class MemoryGraphAPI:
 
         with self._lock:
             node = self.graph.graph.nodes[nid]
+            # 先全部校验通过再落地：否则 content 已就地改、node_type 校验失败 return，
+            # 会跳过 _save（mtime 未变又不会重载）→ 内存与磁盘静默不一致
+            new_type = None
+            if "node_type" in data:
+                new_type = NODE_TYPES.get(str(data["node_type"]).upper())
+                if not new_type:
+                    raise ValueError(f"无效的节点类型: {data['node_type']}")
             if "content" in data:
                 node["content"] = data["content"]
-            if "node_type" in data:
-                nt = NODE_TYPES.get(data["node_type"].upper())
-                if not nt:
-                    raise ValueError(f"无效的节点类型: {data['node_type']}")
-                node["node_type"] = nt
+            if new_type is not None:
+                node["node_type"] = new_type
             if "deprecated" in data:
                 node["deprecated"] = bool(data["deprecated"])
             if "forgotten" in data:
@@ -737,6 +754,8 @@ def create_app(api: MemoryGraphAPI, config: VizConfig,
         finally:
             oplog_tailer.stop()
             applog_tailer.stop()
+            # 移除本次挂载的捕获 handler：多次 create_app（如测试/重复装配）时不会累积
+            logging.getLogger().removeHandler(handler)
 
     # ---- 基础页面 ----
 
@@ -897,7 +916,10 @@ def create_app(api: MemoryGraphAPI, config: VizConfig,
         return JSONResponse({"logs": rows, "count": len(rows)})
 
     async def stream(request: Request) -> StreamingResponse:
-        queue = bus.subscribe()
+        try:
+            queue = bus.subscribe()
+        except RuntimeError as e:
+            return _error(str(e), 503)
 
         async def event_source():
             try:
@@ -906,6 +928,9 @@ def create_app(api: MemoryGraphAPI, config: VizConfig,
                     try:
                         item = await asyncio.wait_for(queue.get(), timeout=15)
                     except asyncio.TimeoutError:
+                        # 心跳前也检测断连：否则已断开的客户端要等到下一次真实事件才被清理
+                        if await request.is_disconnected():
+                            break
                         yield ": ping\n\n"  # 心跳，避免代理断链
                         continue
                     if await request.is_disconnected():
@@ -922,12 +947,17 @@ def create_app(api: MemoryGraphAPI, config: VizConfig,
 
     async def metrics_view(request: Request) -> JSONResponse:
         stats = await asyncio.to_thread(api.get_stats)
+        # 日志概览要全量扫描文件，放进线程池，避免阻塞事件循环
+        oplog_overview, applog_overview = await asyncio.gather(
+            asyncio.to_thread(_oplog_overview, config.oplog_path),
+            asyncio.to_thread(_oplog_overview, config.log_file_path),
+        )
         return JSONResponse({
             "uptime_seconds": round(time.time() - metrics.started_at, 1),
             "started_at": config.started_at,
             "graph": stats,
-            "oplog": _oplog_overview(config.oplog_path),
-            "applog": _oplog_overview(config.log_file_path),
+            "oplog": oplog_overview,
+            "applog": applog_overview,
             "logs": {
                 "buffered": bus.buffered_count,
                 "subscribers": bus.subscriber_count,
@@ -954,12 +984,12 @@ def create_app(api: MemoryGraphAPI, config: VizConfig,
             checks["graph"] = {"ok": False, "error": str(e)}
 
         yaml_exists = bool(api.yaml_path) and os.path.exists(api.yaml_path)
-        checks["yaml"] = {"ok": yaml_exists, "path": api.yaml_path}
+        # 免鉴权端点，不回传服务器上的文件路径（信息泄露），只给状态
+        checks["yaml"] = {"ok": yaml_exists}
 
         oplog_dir = os.path.dirname(os.path.abspath(config.oplog_path)) if config.oplog_path else ""
         checks["oplog"] = {
             "ok": bool(oplog_dir) and os.path.isdir(oplog_dir) and os.access(oplog_dir, os.W_OK),
-            "path": config.oplog_path,
         }
         healthy = all(c["ok"] for c in checks.values())
         return JSONResponse(
@@ -1048,7 +1078,7 @@ def create_app(api: MemoryGraphAPI, config: VizConfig,
             filename = "memory_graph.yaml"
         return Response(
             data, media_type="application/x-yaml; charset=utf-8",
-            headers={"Content-Disposition": f"attachment; filename={filename}"},
+            headers={"Content-Disposition": _content_disposition(filename)},
         )
 
     async def export_oplog(request: Request) -> Response:
@@ -1071,7 +1101,7 @@ def create_app(api: MemoryGraphAPI, config: VizConfig,
     params_path = params_mod.params_path_for(config.yaml_path)
 
     async def params_view(request: Request) -> JSONResponse:
-        current = params_mod.load(params_path)
+        current = await asyncio.to_thread(params_mod.load, params_path)
         exists = os.path.exists(params_path)
         return JSONResponse({
             "path": params_path,
@@ -1158,7 +1188,8 @@ def create_app(api: MemoryGraphAPI, config: VizConfig,
             # 面板的运行期锚点：config 供 /api/config 与 MCP 片段展示；
             # 调用测试链路必须重建，否则它还在跑旧图。
             config.yaml_path = result["yaml_path"]
-            chain.rebind(config.yaml_path)
+            # rebind 内部会等在跑的调用测试结束（普通 Lock），放线程池避免阻塞事件循环
+            await asyncio.to_thread(chain.rebind, config.yaml_path)
             # 记进共享指针：重启后回到面板上次选的那份（与 MCP 的切换请求分字段）
             await asyncio.to_thread(
                 graphlib.patch_pointer, config.yaml_path, **{graphlib.PANEL_FIELD: name}
@@ -1312,9 +1343,25 @@ def _write_text_atomic(path: str, text: str) -> None:
         raise
 
 
+def _content_disposition(filename: str) -> str:
+    """构造安全的 Content-Disposition：ASCII 回退名 + RFC 5987 UTF-8 名。
+
+    直接把原始文件名拼进响应头，遇到 `"` / `;` 等会破坏 header 语法。
+    """
+    ascii_name = "".join(
+        c if (c.isascii() and (c.isalnum() or c in "._-")) else "_" for c in filename
+    ) or "download"
+    return f"attachment; filename={ascii_name}; filename*=UTF-8''{quote(filename)}"
+
+
 async def _json_body(request: Request) -> dict:
     """解析 JSON 请求体；空体返回 {}，非法 JSON 抛 ValueError（→400）。"""
+    cl = request.headers.get("content-length")
+    if cl is not None and cl.isdigit() and int(cl) > _MAX_JSON_BODY:
+        raise ValueError(_BODY_TOO_LARGE_MSG)
     raw = await request.body()
+    if len(raw) > _MAX_JSON_BODY:  # 无 Content-Length（分块传输）时兜底
+        raise ValueError(_BODY_TOO_LARGE_MSG)
     if not raw:
         return {}
     try:

@@ -34,10 +34,10 @@ def to_3dforcegraph(graph: MemoryGraph) -> dict:
     Returns:
         {"nodes": [...], "links": [...], "stats": {...}}
     """
-    precompute_degrees(graph)
-    nodes = _export_nodes(graph)
+    degrees = precompute_degrees(graph)
+    nodes = _export_nodes(graph, degrees)
     links = _export_links(graph)
-    stats = _export_stats(graph)
+    stats = _export_stats(graph, degrees)
 
     return {"nodes": nodes, "links": links, "stats": stats}
 
@@ -49,20 +49,25 @@ def to_3dforcegraph_json(graph: MemoryGraph, indent: int = 2) -> str:
 
 # ---- 内部 ----
 
-def precompute_degrees(graph: MemoryGraph):
-    """预计算每个节点的入度和出度，写入 metadata"""
-    for nid in graph.graph.nodes():
-        node = graph.graph.nodes[nid]
-        node.setdefault("metadata", {})
-        node["metadata"]["_in_degree"] = graph.graph.in_degree(nid)
-        node["metadata"]["_out_degree"] = graph.graph.out_degree(nid)
+def precompute_degrees(graph: MemoryGraph) -> dict:
+    """计算每个节点的入/出度并**返回**，不修改图本身。
+
+    早期实现把这些度写进 `node["metadata"]`，等于在"只读导出"里改动了共享的
+    权威图对象，与并发读写存在竞态；改为返回值传递。
+    """
+    return {
+        nid: (graph.graph.in_degree(nid), graph.graph.out_degree(nid))
+        for nid in graph.graph.nodes()
+    }
 
 
-def _export_nodes(graph: MemoryGraph) -> list:
+def _export_nodes(graph: MemoryGraph, degrees: dict = None) -> list:
+    if degrees is None:
+        degrees = precompute_degrees(graph)
     nodes = []
     for nid, data in graph.graph.nodes(data=True):
-        meta = data.get("metadata", {})
         raw_type = data["node_type"].value if hasattr(data["node_type"], "value") else str(data["node_type"])
+        in_deg, out_deg = degrees.get(nid, (0, 0))
         nodes.append({
             "id": nid,
             "label": (data.get("content") or "")[:50],
@@ -70,8 +75,8 @@ def _export_nodes(graph: MemoryGraph) -> list:
             "content": data.get("content", ""),
             "deprecated": data.get("deprecated", False),
             "forgotten": data.get("forgotten", False),
-            "in_degree": meta.get("_in_degree", 0),
-            "out_degree": meta.get("_out_degree", 0),
+            "in_degree": in_deg,
+            "out_degree": out_deg,
             "radius": _RADIUS_MAP.get(raw_type.upper(), 2.5),
         })
     return nodes
@@ -106,15 +111,19 @@ def _export_links(graph: MemoryGraph) -> list:
     return links
 
 
-def _export_stats(graph: MemoryGraph) -> dict:
-    deprecated = sum(1 for _, d in graph.graph.nodes(data=True) if d.get("deprecated"))
-    forgotten = sum(1 for _, d in graph.graph.nodes(data=True) if d.get("forgotten"))
-    orphaned = sum(
-        1 for _, d in graph.graph.nodes(data=True)
-        if not d.get("deprecated") and not d.get("forgotten")
-        and d.get("metadata", {}).get("_in_degree", 0) == 0
-        and d.get("metadata", {}).get("_out_degree", 0) == 0
-    )
+def _export_stats(graph: MemoryGraph, degrees: dict) -> dict:
+    deprecated = 0
+    forgotten = 0
+    orphaned = 0
+    for nid, d in graph.graph.nodes(data=True):
+        if d.get("deprecated"):
+            deprecated += 1
+        if d.get("forgotten"):
+            forgotten += 1
+        if not d.get("deprecated") and not d.get("forgotten"):
+            in_deg, out_deg = degrees.get(nid, (0, 0))
+            if in_deg == 0 and out_deg == 0:
+                orphaned += 1
     return {
         "total_nodes": graph.node_count,
         "total_edges": graph.edge_count,

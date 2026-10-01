@@ -82,12 +82,37 @@ def log_operation(source, op, request=None, result=None, actor=None,
         record["tool"] = tool
 
     out_path = path or default_oplog_path()
+    line = json.dumps(record, ensure_ascii=False, default=str) + "\n"
     try:
-        with open(out_path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+        # O_APPEND + 单次 os.write：整行写入收缩为一个系统调用，
+        # 避免 MCP / 面板两进程并发追加时出现半行交错（读取端会把坏行整行丢掉）。
+        fd = os.open(out_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+        try:
+            os.write(fd, line.encode("utf-8"))
+        finally:
+            os.close(fd)
     except OSError as e:
         # 日志失败不应阻塞主流程
         sys.stderr.write(f"[oplog] 写入失败 {out_path}: {e}\n")
+
+
+def _read_tail_lines(path: str, tail: int) -> list:
+    """从文件尾部反向读取最后 tail 行（bytes），避免整份日志读进内存。"""
+    if tail <= 0:
+        return []
+    with open(path, "rb") as f:
+        f.seek(0, os.SEEK_END)
+        pos = f.tell()
+        block = 8192
+        buf = b""
+        newlines = 0
+        while pos > 0 and newlines <= tail:
+            step = min(block, pos)
+            pos -= step
+            f.seek(pos)
+            buf = f.read(step) + buf
+            newlines = buf.count(b"\n")
+    return buf.splitlines()[-tail:]
 
 
 def read_oplog(tail=200, path=None):
@@ -97,16 +122,18 @@ def read_oplog(tail=200, path=None):
         return []
     rows = []
     try:
-        with open(out_path, "r", encoding="utf-8") as f:
-            lines = f.readlines()
-        for line in lines[-tail:]:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                rows.append(json.loads(line))
-            except Exception:
-                continue
+        raw_lines = _read_tail_lines(out_path, tail)
     except OSError:
         return []
+    for raw in raw_lines:
+        try:
+            line = raw.decode("utf-8").strip()
+        except UnicodeDecodeError:
+            continue
+        if not line:
+            continue
+        try:
+            rows.append(json.loads(line))
+        except Exception:
+            continue
     return rows

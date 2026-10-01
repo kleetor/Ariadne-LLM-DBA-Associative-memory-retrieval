@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import errno
 import os
 import threading
 import time
@@ -59,7 +60,13 @@ class FileLock:
             try:
                 self._try_lock(fd)
                 break
-            except OSError:
+            except OSError as e:
+                # 只有"锁被占用"才重试；其它 OSError（fd 非法等）应直接抛出，
+                # 否则会被 TimeoutError 掩盖，故障难以定位。
+                if not self._is_contention(e):
+                    os.close(fd)
+                    self._local.release()
+                    raise
                 if time.monotonic() >= deadline:
                     os.close(fd)
                     self._local.release()
@@ -105,6 +112,17 @@ class FileLock:
         return False
 
     # ---- 平台实现 ----
+
+    @staticmethod
+    def _is_contention(err: OSError) -> bool:
+        """该 OSError 是否属于"锁被占用、可重试"。"""
+        if isinstance(err, BlockingIOError):
+            return True
+        contention = {errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK, errno.EBUSY}
+        edeadlock = getattr(errno, "EDEADLOCK", None)
+        if edeadlock is not None:
+            contention.add(edeadlock)
+        return err.errno in contention
 
     @staticmethod
     def _try_lock(fd: int) -> None:

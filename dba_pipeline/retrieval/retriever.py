@@ -25,6 +25,8 @@ from dba_pipeline.embedding.store import VectorStore
 # 0 仍表示"不限"（历史语义，见 `retrieve()` 的 docstring）。
 PEAK_NODES_AUTO = -1
 
+logger = logging.getLogger(__name__)
+
 # 阶段观测回调：on_stage(stage, info)，供面板「调用测试」把链路每一段展示出来。
 StageHook = Optional[Callable[[str, Dict[str, Any]], None]]
 
@@ -333,12 +335,11 @@ class PurposeDrivenRetriever:
 
     def _has_reverse_temporal(self, memory_id: str) -> bool:
         """是否为"真时间锚点"：存在反向 TEMPORAL 邻居（有事件锚定到它）。"""
-        try:
-            for nb, rel_type, is_reverse in self.graph.get_neighbors(memory_id):
-                if rel_type == RelationType.TEMPORAL and is_reverse:
-                    return True
-        except Exception:
+        if memory_id not in self.graph.graph:
             return False
+        for nb, rel_type, is_reverse in self.graph.get_neighbors(memory_id):
+            if rel_type == RelationType.TEMPORAL and is_reverse:
+                return True
         return False
 
     def temporal_lookup(
@@ -371,10 +372,14 @@ class PurposeDrivenRetriever:
             facts[].time_consistent: True/False/None。None 表示事实里没有时期词、
             无法判定；False 表示事实自带的时期词与锚点完全不相交（疑似 TEMPORAL 边错配）。
         """
+        degraded_reason = None
         try:
             hits = self.vector_store.search(query, k=k_seed)  # [(id, score, meta)]
-        except Exception:
+        except Exception as e:
+            # 主路径取数失败必须可见：否则调用方无法区分"确实没有"与"检索挂了"
+            logger.warning("时序检索向量搜索失败，降级为空结果: %s", e, exc_info=True)
             hits = []
+            degraded_reason = "vector_search_failed"
         matched = [(h[0], h[1]) if len(h) >= 2 else (h[0], 1.0) for h in hits]
 
         # 只定位"时间锚点"（时间推事件型查询的锚必须是时间节点）；跳过废弃/遗忘节点
@@ -461,6 +466,8 @@ class PurposeDrivenRetriever:
 
         result = {"query": query, "matches": matches, "count": len(matches),
                   "match_type": match_type}
+        if degraded_reason:
+            result["degraded_reason"] = degraded_reason
         if rejected:
             result["rejected"] = True
             result["reason"] = reason
@@ -521,7 +528,7 @@ class PurposeDrivenRetriever:
         # Step 2: 向量搜索种子记忆（混合 query text + 目的向量）
         half_k = max(1, seed_k // 2)
         text_seeds = self.vector_store.search(query, k=half_k)
-        purpose_seeds = self.vector_store.search_by_vector(purpose_vec, k=seed_k - half_k)
+        purpose_seeds = self.vector_store.search_by_vector(purpose_vec, k=max(1, seed_k - half_k))
 
         # 合并去重，保持 text 种子优先顺序，purpose 种子补充；跳过废弃/遗忘节点
         seen = set()
@@ -546,23 +553,15 @@ class PurposeDrivenRetriever:
         seed_scores = self.purpose_model.compute_purpose_score_from_vectors(
             seed_vectors, purpose_vec
         )
-        # 种子轮没有跳转轴扩展（jw=0），使用与后续轮次一致的得分公式
-        mu_0 = float(np.mean(seed_scores)) * self.purpose_weight_coef
+        # 寻峰判据统一取**目的关联度均值**（与跳数无关）：组合分里的跳转项带
+        # `decay^hop` 确定性衰减，喂给寻峰会让斜率被衰减主导、峰值判据失真；
+        # 且种子轮本就没有跳转项，两者不同尺度不该进同一条斜率序列。
+        mu_0 = float(np.mean(seed_scores)) if len(seed_scores) else 0.0
         emit_stage(on_stage, "seeds", ids=seed_ids, mean_score=round(mu_0, 4),
                    text_hits=len(text_seeds), purpose_hits=len(purpose_seeds))
 
         self.peak_finder.reset()
-        decision = self.peak_finder.add_round(mu_0)
-        if decision == "peak_found":
-            emit_stage(on_stage, "peak_found", hop=0, mean_score=round(mu_0, 4),
-                       reason="种子轮即达峰值")
-            # 种子轮同样受输出上限约束，否则纯种子查询会绕过上限
-            # （`PEAK_NODES_AUTO` 也要在这里解析，否则哨兵在早退路径上会退化成"不限"）
-            if max_peak_nodes == PEAK_NODES_AUTO:
-                max_peak_nodes = self._auto_peak_cap(seed_ids)
-            return self._build_result(
-                seed_ids[:max_peak_nodes] if (max_peak_nodes or 0) > 0 else seed_ids,
-                purpose_info, [])
+        self.peak_finder.add_round(mu_0)  # 首轮必返回 continue（见 PeakFinder.add_round）
 
         # Step 3-6: 循环扩展
         current_ids = list(seed_ids)
@@ -576,10 +575,16 @@ class PurposeDrivenRetriever:
             ],
             "mean_score": mu_0,
         }]
+        # 跨跳访问集合：只靠"本轮不折返"会让历史节点被重复扩展、重复计分，
+        # 把每轮 mu 拉偏（而 mu 正是寻峰依据）
+        visited = set(seed_ids)
 
         for hop in range(1, max_hops + 1):
             # 跳转轴扩展（含可选 PathTracker 动态权重 + 边来源追踪）
             expanded = self.graph.expand_with_trace(current_ids, path_tracker=self.path_tracker)
+            # 跨跳去重：剔除历史已访问节点，避免重复扩展、重复计分（mu 正是寻峰依据）
+            expanded = {mid: tr for mid, tr in expanded.items() if mid not in visited}
+            visited.update(expanded.keys())
 
             # 记录路径激活（供 PathTracker 分析）
             if self.path_tracker is not None:
@@ -663,8 +668,8 @@ class PurposeDrivenRetriever:
                                       + ps * self.purpose_weight_coef,
                 }
 
-            # 当前轮综合得分均值（跳转轴 + 目的，用于寻峰）
-            mu_hop = float(np.mean([v["combined_score"] for v in combined.values()]))
+            # 当前轮目的关联度均值（与跳数无关，作为寻峰判据）
+            mu_hop = float(np.mean([v["purpose_score"] for v in combined.values()]))
 
             # 寻峰判断
             decision = self.peak_finder.add_round(mu_hop)
@@ -845,7 +850,10 @@ class PurposeDrivenRetriever:
                 cid = c.get("id")
                 if not cid:
                     continue
-                score[cid] = c.get("combined_score", 0)
+                # 与 _collect_peak_tolerance / _build_result 同口径：同一节点取最高分
+                cs = c.get("combined_score", 0)
+                if cid not in score or cs > score[cid]:
+                    score[cid] = cs
                 content[cid] = c.get("content", "")
                 # 节点首次出现时才记录父边；回访（如双向边折返）不更新，避免 parent 成环
                 if cid in seen:

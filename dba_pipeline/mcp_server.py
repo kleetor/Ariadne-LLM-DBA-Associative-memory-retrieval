@@ -96,6 +96,10 @@ class DBAServer:
         self.vector_store = vector_store  # 可选: VectorStore（人工干预时同步向量）
         # 可重入锁，与 GraphBuilder 共享，串行化 graph 修改与 YAML 写回
         self._lock = lock if lock is not None else threading.RLock()
+        # 运行期「图谱切换」与「检索」互斥锁：切换会 clear_vectors + 全量重建，
+        # 若与在途检索并发，检索会读到被清空/半重建的向量集。加锁顺序固定为
+        # _runtime_lock → _lock，避免死锁。
+        self._runtime_lock = threading.RLock()
         # 跨进程写锁：与 WebUI 面板共用同一把 <yaml>.lock，串行化「读-改-写」；
         # 维护可能耗时较长（LLM 调用），故 MCP 侧等待上限放宽到 5 分钟。
         self._file_lock = filelock.FileLock(filelock.lock_path_for(yaml_path)) if yaml_path else None
@@ -234,28 +238,30 @@ class DBAServer:
         load_graph(target)          # 先校验可解析，失败不触碰现状
         started = time.perf_counter()
 
-        with self._lock:
-            load_into(self.graph, target)
-            self.yaml_path = target
-            self._file_lock = filelock.FileLock(
-                filelock.lock_path_for(target), timeout=self._file_lock_timeout
-            )
-            self._last_yaml_mtime = self._yaml_mtime()
-            self._next_node_id = self._compute_next_id()
-            self._vector_mtime = 0
+        # 与在途检索互斥：切换期间会清空并全量重建向量索引，检索不能看到中间态
+        with self._runtime_lock:
+            with self._lock:
+                load_into(self.graph, target)
+                self.yaml_path = target
+                self._file_lock = filelock.FileLock(
+                    filelock.lock_path_for(target), timeout=self._file_lock_timeout
+                )
+                self._last_yaml_mtime = self._yaml_mtime()
+                self._next_node_id = self._compute_next_id()
+                self._vector_mtime = 0
 
-        vector_stats = {"rebuilt": False}
-        if self.vector_store is not None:
-            desired = self._graph_contents()
-            if desired:
-                # 换图后旧向量与新图毫无关系，增量对账在这里不适用，必须清空重建
-                self.vector_store.clear_vectors()
-                vector_stats = dict(self.vector_store.reconcile(desired))
-                vector_stats["rebuilt"] = True
-            else:
-                # 与 reconcile_vectors 的处理保持一致：空图谱不清空既有索引，避免误删
-                vector_stats["reason"] = "图谱为空，保留既有向量索引"
-            self._vector_mtime = self._yaml_mtime()
+            vector_stats = {"rebuilt": False}
+            if self.vector_store is not None:
+                desired = self._graph_contents()
+                if desired:
+                    # 换图后旧向量与新图毫无关系，增量对账在这里不适用，必须清空重建
+                    self.vector_store.clear_vectors()
+                    vector_stats = dict(self.vector_store.reconcile(desired))
+                    vector_stats["rebuilt"] = True
+                else:
+                    # 与 reconcile_vectors 的处理保持一致：空图谱不清空既有索引，避免误删
+                    vector_stats["reason"] = "图谱为空，保留既有向量索引"
+                self._vector_mtime = self._yaml_mtime()
 
         return {
             "changed": True,
@@ -452,41 +458,43 @@ class DBAServer:
         if self.retriever is None:
             return {"error": "检索链路未初始化（需要 embedding）", "stories": []}
 
-        # 检索前对齐：面板等外部进程对图谱的增删改需先进入向量库
-        self._refresh_before_read()
-        try:
-            # 每次检索视为一次联想会话，重置同会话饱和计数（跨会话终身增强保留）
-            if self.retriever.path_tracker is not None:
-                self.retriever.path_tracker.start_session()
-            # StoryRank：检索 → 连通性粗筛 → 故事化（不生成回复，交由 Agent 处理）
-            # render_timestamps=True：把节点「记录于 <日期>」交给叙事整理，让上层 LLM
-            # 自己判断时间关系，而不依赖独立的时序锚点网络。
-            # 运行时参数（面板可调）：种子数量 / 最大跳数 / 每轮扩展数
-            rp = self.params.get("retrieval", {})
-            result = self.retriever.retrieve_with_story(
-                query, with_response=False, render_timestamps=True,
-                seed_k=int(rp.get("seed_k", 5)),
-                max_hops=int(rp.get("max_hops", 5)),
-                expand_k=(int(rp.get("expand_k", 0)) or None),
-            )
-            stories = result.get("stories", [])
-            # rank-k：最多返回 rerank_k 个故事片段（0 表示不截断）
-            if rerank_k > 0:
-                stories = stories[:rerank_k]
-            return {
-                "stories": stories,
-                # 0927：StoryRank 只回 `used` 计数，不再回采纳/丢弃的 id 列表
-                # （理由见 InferenceEngine.story_rank 的 Returns）。
-                "story_used": result.get("story_used", 0),
-                "total_matched": result.get("total_candidates", 0),
-                "returned": len(stories),
-                "query": query,
-                "purpose": result.get("purpose"),
-                "method": "story_rank",
-            }
-        except Exception as e:
-            logging.error(f"StoryRank 检索失败: {e}", exc_info=True)
-            return {"error": str(e), "stories": [], "method": "story_rank_failed"}
+        # 检索前对齐：面板等外部进程对图谱的增删改需先进入向量库。
+        # 持运行期锁，与图谱切换（清空+重建向量）互斥，避免读到向量中间态。
+        with self._runtime_lock:
+            self._refresh_before_read()
+            try:
+                # 每次检索视为一次联想会话，重置同会话饱和计数（跨会话终身增强保留）
+                if self.retriever.path_tracker is not None:
+                    self.retriever.path_tracker.start_session()
+                # StoryRank：检索 → 连通性粗筛 → 故事化（不生成回复，交由 Agent 处理）
+                # render_timestamps=True：把节点「记录于 <日期>」交给叙事整理，让上层 LLM
+                # 自己判断时间关系，而不依赖独立的时序锚点网络。
+                # 运行时参数（面板可调）：种子数量 / 最大跳数 / 每轮扩展数
+                rp = self.params.get("retrieval", {})
+                result = self.retriever.retrieve_with_story(
+                    query, with_response=False, render_timestamps=True,
+                    seed_k=int(rp.get("seed_k", 5)),
+                    max_hops=int(rp.get("max_hops", 5)),
+                    expand_k=(int(rp.get("expand_k", 0)) or None),
+                )
+                stories = result.get("stories", [])
+                # rank-k：最多返回 rerank_k 个故事片段（0 表示不截断）
+                if rerank_k > 0:
+                    stories = stories[:rerank_k]
+                return {
+                    "stories": stories,
+                    # 0927：StoryRank 只回 `used` 计数，不再回采纳/丢弃的 id 列表
+                    # （理由见 InferenceEngine.story_rank 的 Returns）。
+                    "story_used": result.get("story_used", 0),
+                    "total_matched": result.get("total_candidates", 0),
+                    "returned": len(stories),
+                    "query": query,
+                    "purpose": result.get("purpose"),
+                    "method": "story_rank",
+                }
+            except Exception as e:
+                logging.error(f"StoryRank 检索失败: {e}", exc_info=True)
+                return {"error": str(e), "stories": [], "method": "story_rank_failed"}
 
     def run_chain_trace(self, query: str, on_stage=None, rerank_k: int = 20) -> dict:
         """面板「调用测试」用：走同一条真实链路，但把每一段轨迹都带回来。
@@ -514,45 +522,46 @@ class DBAServer:
                 return _safe(value.item())
             return str(value)
 
-        # 检索前对齐：面板等外部进程对图谱的增删改需先进入向量库
-        self._refresh_before_read()
-        # 每次检索视为一次联想会话，重置同会话饱和计数（跨会话终身增强保留）
-        if self.retriever.path_tracker is not None:
-            self.retriever.path_tracker.start_session()
-        # 运行时参数与 query_memory 保持同一来源（面板可调）
-        rp = self.params.get("retrieval", {})
-        seed_k = int(rp.get("seed_k", 5))
-        max_hops = int(rp.get("max_hops", 5))
-        expand_k = int(rp.get("expand_k", 0)) or None
+        # 检索前对齐 + 与图谱切换互斥（见 __init__ 的 _runtime_lock 说明）
+        with self._runtime_lock:
+            self._refresh_before_read()
+            # 每次检索视为一次联想会话，重置同会话饱和计数（跨会话终身增强保留）
+            if self.retriever.path_tracker is not None:
+                self.retriever.path_tracker.start_session()
+            # 运行时参数与 query_memory 保持同一来源（面板可调）
+            rp = self.params.get("retrieval", {})
+            seed_k = int(rp.get("seed_k", 5))
+            max_hops = int(rp.get("max_hops", 5))
+            expand_k = int(rp.get("expand_k", 0)) or None
 
-        result = self.retriever.retrieve_with_story(
-            query, with_response=False, render_timestamps=True,
-            seed_k=seed_k, max_hops=max_hops, expand_k=expand_k,
-            on_stage=on_stage,
-        )
-        stories = result.get("stories", [])
-        if rerank_k > 0:
-            stories = stories[:rerank_k]
-        # 「经过的节点」= PAR 每跳候选的并集（面板据此在图谱里做激活呈现）
-        visited = []
-        for hop in result.get("hop_history", []):
-            for cand in hop.get("candidates", []):
-                cid = cand.get("id")
-                if cid and cid not in visited:
-                    visited.append(cid)
-        return _safe({
-            "query": query,
-            "purpose": result.get("purpose"),
-            "hop_history": result.get("hop_history", []),
-            "peak_memories": result.get("peak_memories", []),
-            "peak_scores": result.get("peak_scores", {}),
-            "visited_ids": visited,
-            "stories": stories,
-            "story_used": result.get("story_used", 0),
-            "total_candidates": result.get("total_candidates", 0),
-            "method": "story_rank",
-            "params": {"seed_k": seed_k, "max_hops": max_hops, "expand_k": expand_k},
-        })
+            result = self.retriever.retrieve_with_story(
+                query, with_response=False, render_timestamps=True,
+                seed_k=seed_k, max_hops=max_hops, expand_k=expand_k,
+                on_stage=on_stage,
+            )
+            stories = result.get("stories", [])
+            if rerank_k > 0:
+                stories = stories[:rerank_k]
+            # 「经过的节点」= PAR 每跳候选的并集（面板据此在图谱里做激活呈现）
+            visited = []
+            for hop in result.get("hop_history", []):
+                for cand in hop.get("candidates", []):
+                    cid = cand.get("id")
+                    if cid and cid not in visited:
+                        visited.append(cid)
+            return _safe({
+                "query": query,
+                "purpose": result.get("purpose"),
+                "hop_history": result.get("hop_history", []),
+                "peak_memories": result.get("peak_memories", []),
+                "peak_scores": result.get("peak_scores", {}),
+                "visited_ids": visited,
+                "stories": stories,
+                "story_used": result.get("story_used", 0),
+                "total_candidates": result.get("total_candidates", 0),
+                "method": "story_rank",
+                "params": {"seed_k": seed_k, "max_hops": max_hops, "expand_k": expand_k},
+            })
 
     def temporal_lookup(self, query: str, k_seed: int = None, max_facts: int = None,
                         max_anchors: int = None) -> dict:
@@ -765,6 +774,12 @@ class DBAServer:
         self._refresh_graph_only()  # 让查看结果与面板编辑保持一致
         if not node_id:
             return {"error": "缺少 node_id"}
+        # 持锁遍历：后台维护/图谱切换线程会增删节点边，锁外遍历可能抛
+        # RuntimeError: dictionary changed size during iteration
+        with self._lock:
+            return self._inspect_graph_locked(node_id)
+
+    def _inspect_graph_locked(self, node_id: str) -> dict:
         if node_id not in self.graph.graph.nodes:
             return {"error": f"节点不存在: {node_id}"}
 
@@ -898,6 +913,19 @@ class DBAServer:
                 if nid not in self.graph.graph.nodes:
                     return {"error": f"节点不存在: {nid}"}
                 node = self.graph.graph.nodes[nid]
+                # 先全部校验通过再落地：否则 content 已就地改 / 向量已更新，随后校验失败
+                # 直接 return 会跳过 _save（mtime 未变又不会重载）→ 内存与磁盘静默不一致
+                new_type = None
+                if "node_type" in params:
+                    new_type = NODE_TYPES.get(str(params["node_type"]).upper())
+                    if not new_type:
+                        return {"error": f"无效的节点类型: {params['node_type']}", "action": action}
+                # 允许给存量节点补时间戳（节点的创建时间无法由抽取侧回填，只能手工注入）
+                ts = params.get("timestamp")
+                if "timestamp" in params and ts is not None and (
+                        isinstance(ts, bool) or not isinstance(ts, int)):
+                    return {"error": "timestamp 必须为 Unix 毫秒整数，或 null 表示清空",
+                            "action": action}
                 if "content" in params:
                     old_content = node.get("content", "")
                     node["content"] = params["content"]
@@ -908,19 +936,11 @@ class DBAServer:
                         except Exception as e:
                             node["content"] = old_content
                             return {"error": f"向量更新失败，内容已回滚: {e}", "action": action}
-                if "node_type" in params:
-                    nt = NODE_TYPES.get(params["node_type"].upper())
-                    if not nt:
-                        return {"error": f"无效的节点类型: {params['node_type']}"}
-                    node["node_type"] = nt
+                if new_type is not None:
+                    node["node_type"] = new_type
                 if "deprecated" in params:
                     node["deprecated"] = bool(params["deprecated"])
                 if "timestamp" in params:
-                    # 允许给存量节点补时间戳（节点的创建时间无法由抽取侧回填，只能手工注入）
-                    ts = params["timestamp"]
-                    if ts is not None and (isinstance(ts, bool) or not isinstance(ts, int)):
-                        return {"error": "timestamp 必须为 Unix 毫秒整数，或 null 表示清空",
-                                "action": action}
                     node["timestamp"] = ts
                 result["node"] = {"id": nid, "content": node.get("content", ""),
                                   "timestamp": node.get("timestamp")}
@@ -1001,8 +1021,23 @@ class DBAServer:
 
         return result
 
+    def _is_safe_save_dir(self, save_dir: str) -> bool:
+        """限制 checkpoint 落盘目录在图谱目录之内。
+
+        `save_dir` 来自工具入参（由 LLM/Agent 提供），不约束即可被提示注入诱导写入
+        任意目录；这里拒绝越出图谱目录的路径（含绝对路径与 `..`）。
+        """
+        base = os.path.abspath(os.path.dirname(self.yaml_path)) if self.yaml_path else None
+        if not base:
+            return False
+        target = os.path.abspath(save_dir if os.path.isabs(save_dir)
+                                 else os.path.join(base, save_dir))
+        return target == base or target.startswith(base + os.sep)
+
     def checkpoint(self, save_dir: str = None) -> dict:
         """保存检查点（若 DBA 管线已接入则保存完整状态）"""
+        if save_dir and not self._is_safe_save_dir(save_dir):
+            return {"error": f"非法的 save_dir（仅允许图谱目录及其子目录）: {save_dir}"}
         if self.dba:
             target = save_dir or "snapshots/latest"
             try:
@@ -1041,24 +1076,26 @@ class DBAServer:
     def get_stats(self) -> dict:
         """获取系统统计信息"""
         self._refresh_graph_only()  # 统计口径与面板编辑保持一致
-        nodes = list(self.graph.graph.nodes(data=True))
-        deprecated = sum(1 for _, d in nodes if d.get("deprecated"))
-        forgotten = sum(1 for _, d in nodes if d.get("forgotten"))
+        with self._lock:
+            nodes = list(self.graph.graph.nodes(data=True))
+            total_edges = self.graph.edge_count
+            deprecated = sum(1 for _, d in nodes if d.get("deprecated"))
+            forgotten = sum(1 for _, d in nodes if d.get("forgotten"))
 
-        node_types = {}
-        for _, d in nodes:
-            nt = d.get("node_type")
-            key = nt.value if hasattr(nt, "value") else str(nt)
-            node_types[key] = node_types.get(key, 0) + 1
+            node_types = {}
+            for _, d in nodes:
+                nt = d.get("node_type")
+                key = nt.value if hasattr(nt, "value") else str(nt)
+                node_types[key] = node_types.get(key, 0) + 1
 
-        return {
-            "total_nodes": len(nodes),
-            "total_edges": self.graph.edge_count,
-            "deprecated": deprecated,
-            "forgotten": forgotten,
-            "active": len(nodes) - deprecated - forgotten,
-            "node_types": node_types,
-        }
+            return {
+                "total_nodes": len(nodes),
+                "total_edges": total_edges,
+                "deprecated": deprecated,
+                "forgotten": forgotten,
+                "active": len(nodes) - deprecated - forgotten,
+                "node_types": node_types,
+            }
 
 
 # ---- MCP Tool Schema ----
@@ -1306,6 +1343,26 @@ def _build_tool_list() -> list:
     return tools
 
 
+# 请求携带原始对话/查询正文的工具：这些内容不应落到共享操作日志（隐私），
+# 与 source_store「原文落盘需 opt-in」的姿态保持一致
+_OPLOG_REDACT_TOOLS = {"dba_add_conversation", "dba_query_memory", "dba_temporal_lookup"}
+
+
+def _oplog_request(name: str, arguments: dict) -> dict:
+    """构造写入操作日志的请求字段：敏感工具的字符串值只记长度。"""
+    if name not in _OPLOG_REDACT_TOOLS or not isinstance(arguments, dict):
+        return arguments
+    out = {}
+    for k, v in arguments.items():
+        if isinstance(v, str):
+            out[k] = f"<{len(v)} 字符>"
+        elif isinstance(v, list):
+            out[k] = [f"<{len(str(x))} 字符>" if isinstance(x, str) else x for x in v]
+        else:
+            out[k] = v
+    return out
+
+
 def create_mcp_server(dba: DBAServer) -> "Server":
     """构建 MCP Server 实例 (MCP v2.0 API)"""
     server = Server("ariadne")
@@ -1352,14 +1409,14 @@ def create_mcp_server(dba: DBAServer) -> "Server":
             else:
                 result = {"error": f"Unknown tool: {name}"}
         except Exception as e:
-            oplog.log_operation("llm", op=name, request=arguments,
+            oplog.log_operation("llm", op=name, request=_oplog_request(name, arguments),
                                 result={"status": "error", "error": str(e)},
                                 actor=actor, tool=name, path=log_path)
             return CallToolResult(
                 content=[TextContent(type="text", text=json.dumps({"error": str(e)}, ensure_ascii=False, indent=2))]
             )
 
-        oplog.log_operation("llm", op=name, request=arguments, result=result,
+        oplog.log_operation("llm", op=name, request=_oplog_request(name, arguments), result=result,
                             actor=actor, tool=name, path=log_path)
         return CallToolResult(
             content=[TextContent(type="text", text=json.dumps(result, ensure_ascii=False, indent=2))]

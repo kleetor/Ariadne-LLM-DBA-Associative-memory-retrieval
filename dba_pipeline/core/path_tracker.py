@@ -20,7 +20,7 @@
 
 from typing import Dict, List, Tuple, Optional
 from dataclasses import dataclass, field
-from collections import defaultdict
+from collections import defaultdict, deque
 
 
 @dataclass
@@ -31,6 +31,7 @@ class PathTrackerConfig:
     session_satiation_coef: float = 0.15  # 同会话每次重复的饱和系数
     session_satiation_floor: float = 0.3  # 饱和因子下限
     session_boundary_hops: int = 3    # 用 hop 数模拟 session 边界（简化）
+    history_max: int = 20000          # 历史记录上限（防止长期运行下无界增长）
 
 
 class PathTracker:
@@ -60,8 +61,8 @@ class PathTracker:
         # session 计数器
         self.session_id: int = 0
 
-        # 历史记录（用于曲线分析）
-        self.history: List[Dict] = []
+        # 历史记录（用于曲线分析）；用 deque 限长，避免长跑进程内存无界增长
+        self.history: deque = deque(maxlen=self.config.history_max)
 
     # ── Session 管理 ──
 
@@ -89,12 +90,10 @@ class PathTracker:
         src_node: str,
         dst_node: str,
         edge_type: str,
-        hop: int = 0,
     ) -> str:
         """构造路径键。
 
         用于精确匹配：同一 (src, dst, edge_type) 组合算同一路径。
-        hop 参数可区分不同跳数的同一类路径。
         """
         return f"{src_node}→{dst_node}@{edge_type}"
 
@@ -115,15 +114,19 @@ class PathTracker:
         self.lifetime_counts[path_key] += 1
         self.session_counts[path_key] += 1
 
+        # 两个因子各算一次，避免重复查表计算
+        lifetime_bonus = self._calc_lifetime_bonus(path_key)
+        session_satiation = self._calc_session_satiation(path_key)
+
         # 记录历史
         self.history.append({
             "session": self.session_id,
             "path": path_key,
             "lifetime": self.lifetime_counts[path_key],
             "session_count": self.session_counts[path_key],
-            "lifetime_bonus": self._calc_lifetime_bonus(path_key),
-            "session_satiation": self._calc_session_satiation(path_key),
-            "combined_weight": self._calc_lifetime_bonus(path_key) * self._calc_session_satiation(path_key),
+            "lifetime_bonus": lifetime_bonus,
+            "session_satiation": session_satiation,
+            "combined_weight": lifetime_bonus * session_satiation,
         })
 
     def record_batch(self, path_keys: List[str]):
@@ -192,9 +195,16 @@ class PathTracker:
         }
 
     def get_session_summary(self) -> Dict:
-        """获取当前 session 的摘要统计"""
+        """获取当前 session 的摘要统计（空/非空返回同一套键，避免调用方 KeyError）"""
         if not self.session_counts:
-            return {"total_paths": 0, "max_satiation": 1.0, "paths_at_floor": 0}
+            return {
+                "session_id": self.session_id,
+                "total_paths": 0,
+                "total_activations": 0,
+                "max_repetition": 0,
+                "min_satiation": 1.0,
+                "paths_at_floor": 0,
+            }
 
         counts = list(self.session_counts.values())
         sats = [self._calc_session_satiation(pk) for pk in self.session_counts]
@@ -209,9 +219,16 @@ class PathTracker:
         }
 
     def get_lifetime_summary(self) -> Dict:
-        """获取生命周期摘要统计"""
+        """获取生命周期摘要统计（空/非空返回同一套键）"""
         if not self.lifetime_counts:
-            return {"total_paths": 0, "max_bonus": 1.0}
+            return {
+                "total_unique_paths": 0,
+                "total_activations": 0,
+                "max_activations": 0,
+                "max_bonus": 1.0,
+                "paths_at_cap": 0,
+                "mean_bonus": 1.0,
+            }
 
         counts = list(self.lifetime_counts.values())
         bonuses = [self._calc_lifetime_bonus(pk) for pk in self.lifetime_counts]

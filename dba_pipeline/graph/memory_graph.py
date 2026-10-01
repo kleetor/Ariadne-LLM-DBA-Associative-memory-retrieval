@@ -14,7 +14,7 @@ import networkx as nx
 
 from dba_pipeline.core.jump_axis import (
     NodeType, RelationType,
-    get_jump_weight, expand_weights,
+    get_jump_weight,
 )
 
 
@@ -86,9 +86,9 @@ class MemoryGraph:
         return None
 
     def get_node_type(self, node_id: str) -> Optional[NodeType]:
-        """获取节点类型"""
+        """获取节点类型（脏节点无 node_type 时返回 None，不抛 KeyError）"""
         node = self.get_node(node_id)
-        return node["node_type"] if node else None
+        return node.get("node_type") if node else None
 
     def get_neighbors(
         self,
@@ -199,9 +199,9 @@ class MemoryGraph:
         return result
 
     def get_content(self, node_id: str) -> Optional[str]:
-        """获取节点内容"""
+        """获取节点内容（脏节点无 content 时返回 None，不抛 KeyError）"""
         node = self.get_node(node_id)
-        return node["content"] if node else None
+        return node.get("content") if node else None
 
     def get_contents(self, node_ids: List[str]) -> List[Optional[str]]:
         """批量获取节点内容，保留 None 占位以维持与 node_ids 一一对应"""
@@ -223,7 +223,16 @@ class MemoryGraph:
     # to_dict / from_dict 会自动透传（不登记则落盘时静默丢失）。
     # evidence：原文支撑片段（opt-in，见 MemoryDBA.enable_evidence）
     # source_ref：该节点最近一次内容/证据来自哪个批次（opt-in，见 enable_source_store）
-    PERSISTED_NODE_FIELDS = ("speaker", "timestamp", "evidence", "source_ref")
+    # metadata：节点附加信息（此前未登记，落盘即静默丢失）
+    PERSISTED_NODE_FIELDS = ("speaker", "timestamp", "evidence", "source_ref", "metadata")
+
+    @staticmethod
+    def _node_type_value(ndata: dict) -> str:
+        """安全取节点类型字符串：脏节点（被边引用但无 node_type）回退 THING，不抛 KeyError"""
+        nt = ndata.get("node_type")
+        if hasattr(nt, "value"):
+            return nt.value
+        return str(nt) if nt is not None else NodeType.THING.value
 
     def to_dict(self) -> dict:
         """导出为可持久化的字典格式（兼容 YAML checkpoint）
@@ -239,13 +248,13 @@ class MemoryGraph:
             node = {
                 "id": nid,
                 "content": ndata.get("content", ""),
-                "type": ndata["node_type"].value if hasattr(ndata["node_type"], "value") else str(ndata["node_type"]),
+                "type": self._node_type_value(ndata),
                 "deprecated": ndata.get("deprecated", False),
                 "forgotten": ndata.get("forgotten", False),
             }
-            # 扩展字段透传（登记见 PERSISTED_NODE_FIELDS）
+            # 扩展字段透传（登记见 PERSISTED_NODE_FIELDS）；跳过空 metadata 避免噪声
             for field in self.PERSISTED_NODE_FIELDS:
-                if field in ndata:
+                if field in ndata and ndata[field] is not None and ndata[field] != {}:
                     node[field] = ndata[field]
             nodes.append(node)
 
@@ -326,7 +335,7 @@ class MemoryGraph:
 
         # 节点定义
         for nid, _, ndata in sampled:
-            nt_val = ndata["node_type"].value if hasattr(ndata["node_type"], "value") else str(ndata["node_type"])
+            nt_val = self._node_type_value(ndata)
             color = type_colors.get(nt_val, "#888")
             label = (ndata.get("content", "") or nid)[:30].replace('"', "")
             tag = ""

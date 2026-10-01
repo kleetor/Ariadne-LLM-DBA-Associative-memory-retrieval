@@ -249,22 +249,33 @@ def _count_nodes(path: str) -> Optional[int]:
 # ---------------------------------------------------------------------------
 
 def request_switch(yaml_path: Optional[str], name: str, by: str = "") -> Dict:
-    """面板侧：登记一次「请 MCP 切换到 name」的请求。"""
+    """面板侧：登记一次「请 MCP 切换到 name」的请求。
+
+    「读 generation → +1 → 写回」必须在**同一临界区**内完成：若在锁外读取，
+    两次并发请求会读到同一 generation 并写回同一个 +1 值，其中一次切换被吞掉。
+    """
     error = validate_name(name)
     if error:
         raise ValueError(error)
     if not os.path.isfile(graph_path(yaml_path, name)):
         raise ValueError(f"图谱不存在: {name}")
-    generation = _as_int(read_pointer(yaml_path).get("generation")) + 1
-    return patch_pointer(
-        yaml_path,
-        active=name,
-        generation=generation,
-        requested_at=_now(),
-        requested_by=by or "",
-        status="pending",
-        detail="",
-    )
+    directory = graph_dir(yaml_path)
+    lock = filelock.FileLock(os.path.join(os.path.abspath(directory), LOCK_FILENAME),
+                             timeout=10.0)
+    with lock.hold():
+        data = read_pointer_in(directory)
+        generation = _as_int(data.get("generation")) + 1
+        data.update({
+            "active": name,
+            "generation": generation,
+            "requested_at": _now(),
+            "requested_by": by or "",
+            "status": "pending",
+            "detail": "",
+        })
+        data.setdefault("version", 1)
+        _atomic_write_json(pointer_path_in(directory), data)
+    return data
 
 
 def pending_request(yaml_path: Optional[str]) -> Optional[Dict]:

@@ -293,9 +293,10 @@ class VectorStore:
         embed_contents = []
         doc_metadatas = []
         for i, (mid, content) in enumerate(zip(memory_ids, contents)):
+            if mid not in new_ids:
+                # 已在库中：不重复写入 FAISS（否则索引产生重复行，召回重复、内存膨胀）
+                continue
             vec = vec_map.get(mid)
-            if vec is None:
-                vec = self._content_vectors.get(mid)
             if vec is None:
                 logger.warning(f"节点 {mid} 缺少向量，跳过写入")
                 continue
@@ -409,10 +410,12 @@ class VectorStore:
         with self._lock:
             known = set(self._content_vectors) | set(self._contents)
             to_remove = [mid for mid in known if mid not in desired]
-            to_add = [mid for mid in desired if mid not in known]
+            # 「无向量」即补，与 `_contents` 解耦：否则先降级（仅写 _contents）、后补齐
+            # embeddings 的节点会被 known 挡住，永远建不出向量
+            to_add = [mid for mid in desired if mid not in self._content_vectors]
             to_update = [
                 mid for mid in desired
-                if mid in known and self._contents.get(mid) != desired[mid]
+                if mid in self._content_vectors and self._contents.get(mid) != desired[mid]
             ]
             need = to_add + to_update
 
@@ -602,10 +605,15 @@ class VectorStore:
 
     @staticmethod
     def _shard_files(shard_dir: str) -> List[str]:
-        """按序号升序返回分片文件名（回放顺序即权威顺序）"""
+        """按序号升序返回分片文件名（回放顺序即权威顺序）
+
+        用 (长度, 名称) 而非纯字典序：`f"{seq:04d}"` 在 seq >= 10000 时会溢出到 5 位，
+        纯字典序会把 "10000" 排到 "9999" 之前，导致回放/续号错乱。
+        """
         if not os.path.isdir(shard_dir):
             return []
-        return sorted(f for f in os.listdir(shard_dir) if f.endswith(".npz"))
+        names = [f for f in os.listdir(shard_dir) if f.endswith(".npz")]
+        return sorted(names, key=lambda n: (len(n), n))
 
     def _next_shard_seq(self, shard_dir: str) -> int:
         files = self._shard_files(shard_dir)
@@ -765,3 +773,10 @@ class VectorStore:
         else:
             self._contents = {}
         self._rebuild_index()
+        # 迁移转正：把 legacy 全量登记进增量日志，确保下一次 save 写出**完整基线分片**。
+        # 否则首个 save 只写本次增量，之后 load 会走分片回放（`_load_shards` 先清空内存），
+        # legacy 存量向量被静默丢弃。
+        self._vec_log = [
+            (mid, np.asarray(vec, dtype=np.float32))
+            for mid, vec in self._content_vectors.items()
+        ]

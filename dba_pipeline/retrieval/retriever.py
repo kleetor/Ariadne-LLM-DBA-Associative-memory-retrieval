@@ -1097,6 +1097,7 @@ class PurposeDrivenRetriever:
         scene: bool = False,
         max_peak_nodes: Optional[int] = None,
         extra_nodes: Optional[List[Dict]] = None,
+        story: bool = True,
     ) -> Dict:
         """检索 → 连通性粗筛 → StoryRank 故事化 →（可选）生成回复
 
@@ -1162,24 +1163,25 @@ class PurposeDrivenRetriever:
             for e in path.get("edges", []):
                 key = str(e.get("rel_type") or "-")
                 edge_types[key] = edge_types.get(key, 0) + 1
-            emit_stage(on_stage, "storyrank_start", nodes=len(path.get("nodes", [])),
-                       edges=len(path.get("edges", [])))
-            out = self.inference.story_rank(query, path, render_timestamps=render_timestamps,
-                                            condense=condense, state=state, scene=scene)
-            story = out.get("story", "")
             if story:
-                stories.append(story)
-            # 0927：StoryRank 不再回 id 列表，只回 `used` 计数（理由见
-            # InferenceEngine.story_rank 的 Returns）。`discarded_nodes` 随之无法再
-            # 由"候选 − 采纳"推出，一并去掉——保留一个恒为空或恒等于候选的字段
-            # 比去掉更糟：它会被读成"这批节点全被丢弃"。
-            story_used = int(out.get("used") or 0)
-            # 降级必须透传：解析失败时 `story` 是按相关度拼接的节点原文，与"合成叙事"
-            # 在下游完全是两种东西，而聚合指标看不出差别——0926 线上 7 次降级就是
-            # 这样被掩盖的，只能靠 WARNING 行计数才能发现。
-            story_degraded = bool(out.get("degraded"))
-            emit_stage(on_stage, "storyrank_done", used=story_used, story=story,
-                       degraded=story_degraded)
+                emit_stage(on_stage, "storyrank_start", nodes=len(path.get("nodes", [])),
+                           edges=len(path.get("edges", [])))
+                out = self.inference.story_rank(query, path, render_timestamps=render_timestamps,
+                                                condense=condense, state=state, scene=scene)
+                body = out.get("story", "")
+                if body:
+                    stories.append(body)
+                # 0927：StoryRank 不再回 id 列表，只回 `used` 计数（理由见
+                # InferenceEngine.story_rank 的 Returns）。`discarded_nodes` 随之无法再
+                # 由"候选 − 采纳"推出，一并去掉——保留一个恒为空或恒等于候选的字段
+                # 比去掉更糟：它会被读成"这批节点全被丢弃"。
+                story_used = int(out.get("used") or 0)
+                # 降级必须透传：解析失败时 `story` 是按相关度拼接的节点原文，与"合成叙事"
+                # 在下游完全是两种东西，而聚合指标看不出差别——0926 线上 7 次降级就是
+                # 这样被掩盖的，只能靠 WARNING 行计数才能发现。
+                story_degraded = bool(out.get("degraded"))
+                emit_stage(on_stage, "storyrank_done", used=story_used, story=body,
+                           degraded=story_degraded)
 
         result["stories"] = stories
         result["story_used"] = story_used

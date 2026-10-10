@@ -30,6 +30,7 @@
 | ``status`` | 状态推断（ALM 链路当前无调用者） | 读 |
 | ``story`` | StoryRank 叙事整理 | 读 |
 | ``abstain`` | 弃权模糊带判定 | 读 |
+| ``route`` | 空间归属判定（前 N 题判一次，判完冻结） | 读 |
 | ``audit`` | 溯源审计（MCP 巡检） | 旁路 |
 | ``answer`` | 生成回复（ALM 传 ``with_response=False``，不执行） | 旁路 |
 """

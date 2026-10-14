@@ -1010,7 +1010,7 @@
       try {
         const res = await A.api.runChainTest(query);
         this.chainResult = res;
-        // 0927：后端不再返回 story_nodes（StoryRank 只回 used 计数），故只上色 PAR 经过节点。
+        // 后端不再返回 story_nodes（StoryRank 只回 used 计数），故只上色 PAR 经过节点。
         this.applyActivation(res.visited_ids);
       } catch (e) {
         // 409 = 已有一次在跑 / 链路装配失败
@@ -1023,7 +1023,7 @@
 
     applyActivation(visited) {
       if (!A.graph.setActivated) return;
-      // 无采纳 id 列表可用（0927 起 StoryRank 只回 used 计数），金色高亮停用。
+      // 无采纳 id 列表可用（StoryRank 只回 used 计数），金色高亮停用。
       A.graph.setActivated(visited || [], { adopted: [] });
     },
 
@@ -1063,7 +1063,7 @@
         chainKv('用户状态', purpose.status || '-') +
         chainKv('PAR 经过节点', (r.visited_ids || []).length + ' 个（图上保留颜色）') +
         // StoryRank 只回 used 计数（后端按正文覆盖率计算），不再回采纳 id 列表，
-        // 故这里只有条数，也没有"丢弃"（0927 审查 C1）。
+        // 故这里只有条数，也没有"丢弃"。
         chainKv('StoryRank 正文覆盖', (r.story_used || 0) + ' 个节点' +
           (r.story_degraded ? '（降级拼接）' : '')) +
         chainKv('跳数 / 参数', hops.length + ' 跳　·　seed_k=' + (pr.seed_k || '-') +
@@ -1085,7 +1085,7 @@
           '<th>节点</th><th>内容</th><th>组合分</th><th>目的分</th><th>跳转权重</th><th>来自</th><th>关系</th>' +
           '</tr></thead><tbody>' +
           cands.map(function (c) {
-            // 0927：后端不再返回采纳 id 列表，无法逐行标出"已被 StoryRank 采纳"。
+            // 后端不再返回采纳 id 列表，无法逐行标出"已被 StoryRank 采纳"。
             return '<tr>' +
               '<td><a href="#" class="chain-node" data-id="' + U.escapeHtml(c.id) + '">' +
               U.escapeHtml(c.id) + '</a></td>' +

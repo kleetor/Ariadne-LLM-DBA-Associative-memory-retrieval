@@ -41,7 +41,7 @@ def _server(tmp_path, vector_store=None):
 
 
 def test_create_node_id_avoids_existing_nodes(tmp_path):
-    """C2 回归：DBA 已创建 n5 后，intervene 创建节点必须跳过 n5"""
+    """回归：DBA 已创建 n5 后，intervene 创建节点必须跳过 n5"""
     server = _server(tmp_path)
     server.graph.graph.add_node(
         "n5", content="dba 创建", node_type=NodeType.STATUS,

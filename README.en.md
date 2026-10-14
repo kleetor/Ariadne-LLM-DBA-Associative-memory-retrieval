@@ -4,7 +4,7 @@
 
 A full-pipeline system for LLM-driven memory graph construction, retrieval, and visualization.
 
-All planning & report documents live in the `Plan/` directory; the root-level documents are curated so that handing them to an AI lets it quickly grasp this system's functionality and implementation value. The `data/` directory contains an empty `sample` dataset for first-time use and a pre-populated `memory` dataset for quickly experiencing the system.
+The root-level documents are curated so that handing them to an AI lets it quickly grasp this system's functionality and implementation value. The `data/` directory contains an empty `sample` dataset for first-time use and a pre-populated `memory` dataset for quickly experiencing the system.
 
 Future direction: further research on the retrieval algorithm — in different usage scenarios, the base weight table and other collaborating parts may be tuned via parameters to achieve different retrieval behaviors (e.g. opening up taxonomic weights could enable a knowledge-base-style query mode).
 
@@ -16,6 +16,52 @@ Future direction: further research on the retrieval algorithm — in different u
 > *"A thread through the labyrinth of memory."*
 
 **Language**: [English](README.en.md) · [中文](README.md)
+
+---
+
+## ALM Service: Deployment & Architectural Differences
+
+Besides the MCP form, the repository also ships a **synchronous HTTP memory service for external callers**
+(`alm/`: Add / Search / Health), suited to "an external program writes and retrieves memory in bulk under a
+fixed contract".
+
+### Differences from the MCP version
+
+| Aspect | MCP version | ALM version |
+| --- | --- | --- |
+| Interface | MCP protocol (stdio / SSE), exposes 9 tools to the Agent | Synchronous HTTP: `POST /add`, `POST /search`, `GET /health` |
+| Caller | Agent runtime (calls tools on demand during a conversation) | External program / service (calls directly under the contract) |
+| Memory organization | A single graph, switched via a shared pointer | **One isolated space per `user_id`** (directory isolation + LRU eviction) |
+| Auth | Panel / MCP credentials (`auth.json` + Cookie / Basic / Bearer) | `ALM_API_KEYS` (`X-Api-Key` or Bearer); **refuses to start** when bound to a non-loopback address with no keys |
+| Visualization | 3D panel + offline HTML | None (pure API) |
+| Dependencies | LLM + Embedding | LLM + Embedding (both API mode) |
+
+Both **share the same core pipeline** (extraction / storage / retrieval / story rendering); ALM only swaps the
+"access layer" for a synchronous HTTP contract and adds per-`user_id` space isolation with an LRU cache. The write
+side routes by content shape (dialogue through DBA extraction, long documents through a document channel); the read
+side supports both pure-vector and graph/evidence shapes, and can layer a cross-encoder rerank on the pure-vector
+channel.
+
+### Deployment
+
+```bash
+# 1) Create the ALM-specific config (fully isolated from the repository-root .env)
+#    The template lists the required entries (ALM_API_KEYS / LLM / Embedding); add optional ones as needed
+cd alm && cp .env.alm.example .env.alm && vim .env.alm
+
+# 2) Build and start
+docker compose --env-file .env.alm -f docker-compose.alm.yml up -d --build
+
+# 3) Read-only self-check (writes no memory)
+python -m alm.status --base-url http://127.0.0.1:8770 --api-key <your-key>
+```
+
+- Listens on `127.0.0.1:8770` by default; public deployment requires a reverse proxy terminating TLS (the service
+  itself does not do TLS).
+- Memory is persisted in the named volume `alm-data` (container `/data`) — surviving restarts and image upgrades.
+- The repository **does not ship** the image tarball (too large); just build it on site with `--build` above. To
+  distribute a prebuilt image, upload the `docker save` output as a **GitHub Release asset** instead of committing it.
+- Health check, cleanup and load testing: `GET /health`, `python -m alm.cleanup`, `python -m alm.loadtest`.
 
 ---
 
@@ -48,6 +94,7 @@ The ultimate goal is to let an Agent **recall an experience like a person rememb
 
 ## Table of Contents
 
+- [ALM Service: Deployment & Architectural Differences](#alm-service-deployment--architectural-differences)
 - [Goals & Rationale](#goals--rationale)
 - [Overview](#overview)
 - [Key Features](#key-features)
@@ -272,7 +319,7 @@ Baseline comparison:
 | **C** Jump Axis | directed expansion only | no purpose constraint |
 | **PAR** Full pipeline | directed + purpose + peak | divergence noise, output volume inflation |
 
-The core advantage is **associative recall breadth**: at 216 nodes, PAR reaches R@all = 0.538 vs A = 0.159 (roughly **3.4×**), and the gap widens with scale. Note that this R@all uses a **wide-output protocol** (PAR emits 6–27 items vs A fixed top-5), measuring breadth via "more output, more hits"; under a fixed top-N, PAR is actually weaker (P@5 = 0.160 vs A = 0.267 at 216). In the quota-aligned cross-system comparison (LiFEMem 322 nodes, candidate quota aligned at 38.3), pure vector (RAG/Mem0) achieves higher expected coverage (0.840) than PAR (0.765) — pure vector is better at focused semantic recall; PAR's unique value lies in the associative/divergence zone (pure-story comparison wins 25:5 / 26:4). The two metrics measure "associative breadth vs focused recall" — two facets of the same system (see evaluation report §4.8).
+The core advantage is **associative recall breadth**: at 216 nodes, PAR reaches R@all = 0.538 vs A = 0.159 (roughly **3.4×**), and the gap widens with scale. Note that this R@all uses a **wide-output protocol** (PAR emits 6–27 items vs A fixed top-5), measuring breadth via "more output, more hits"; under a fixed top-N, PAR is actually weaker (P@5 = 0.160 vs A = 0.267 at 216). In the quota-aligned cross-system comparison (LiFEMem 322 nodes, candidate quota aligned at 38.3), pure vector (RAG/Mem0) achieves higher expected coverage (0.840) than PAR (0.765) — pure vector is better at focused semantic recall; PAR's unique value lies in the associative/divergence zone (pure-story comparison wins 25:5 / 26:4). The two metrics measure "associative breadth vs focused recall" — two facets of the same system.
 
 ### StoryRank: narrativizing the retrieval chain
 
@@ -337,7 +384,7 @@ EMBEDDING_LOCAL=true
 
 ### Run mode
 
-Only the **full DBA mode** is currently supported: an LLM must be configured (`--llm-model` or `OPENAI_MODEL`). On startup, `dba_add_conversation` invokes the internal LLM for memory maintenance: **node extraction (Step 1) and edge linking (Step 2) are two separate LLM calls** — nodes are extracted and applied first, then edges are linked using all of this round's new nodes plus related old nodes / one-hop neighbors / existing edges, avoiding the visibility limits of a single-pass output (see the [0822 extraction evaluation report](Plan/0822——DBA抽取环节评测报告.md)). Missing LLM / DBA dependencies cause an immediate error exit (no stub-mode fallback).
+Only the **full DBA mode** is currently supported: an LLM must be configured (`--llm-model` or `OPENAI_MODEL`). On startup, `dba_add_conversation` invokes the internal LLM for memory maintenance: **node extraction (Step 1) and edge linking (Step 2) are two separate LLM calls** — nodes are extracted and applied first, then edges are linked using all of this round's new nodes plus related old nodes / one-hop neighbors / existing edges, avoiding the visibility limits of a single-pass output. Missing LLM / DBA dependencies cause an immediate error exit (no stub-mode fallback).
 
 > The agent's LLM and Ariadne's internal maintenance LLM are **two separate models**: the agent's LLM understands intent and calls tools, while Ariadne's LLM turns conversations into graph facts. They share memory through the graph, not the context window.
 

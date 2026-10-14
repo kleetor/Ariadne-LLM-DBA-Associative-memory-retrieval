@@ -3,7 +3,7 @@
 """
 完整检索入口：串联跳转轴 + 目的回归 + 寻峰终止
 
-论文第六章 Algorithm: Purpose-Driven Associative Retrieval
+核心算法：Purpose-Driven Associative Retrieval
 """
 
 import logging
@@ -242,8 +242,8 @@ class PurposeDrivenRetriever:
     """目的驱动的联想记忆检索器（完整链路）
 
     关于 `purpose_filter_threshold`：它是**余弦阈值**，与 embedding 模型强绑定，不是通用常数。
-    0.2 是 bge-large-zh-v1.5 时代的标定值（0828 检索理论文 §3.3.2：该模型下「缓解 vs 喝咖啡」
-    余弦落在 0.2–0.3，取 0.3 会误杀功能等价候选）。0925 换 bge-m3 后实测「必须放过」的那类
+    0.2 是 bge-large-zh-v1.5 时代的标定值（该模型下「缓解 vs 喝咖啡」
+    余弦落在 0.2–0.3，取 0.3 会误杀功能等价候选）。换 bge-m3 后实测「必须放过」的那类
     样本最低余弦升到 0.404，故默认值上移到 0.30（保留同构安全余量）。换模型必须重标——
     见 eval/probe_threshold_retune.py。
     """
@@ -271,8 +271,8 @@ class PurposeDrivenRetriever:
         self.inference = inference
 
         self.purpose_model = PurposeModel(llm, self._embed)
-        # 0930 复审：`peak_tolerance` 此前**从未被显式传入**，生效值一直是 PeakFinder 的库默认
-        # 0.10（0815——debugPlan 已记录）。现接出入口（ALM 侧可配），并支持**相对带宽**
+        # `peak_tolerance` 此前**从未被显式传入**，生效值一直是 PeakFinder 的库默认
+        # 0.10。现接出入口（ALM 侧可配），并支持**相对带宽**
         # `peak_tolerance_ratio > 0`（见 core.peak_find.resolve_peak_tolerance）。
         # 默认值与旧行为逐字一致：absolute=0.10、ratio=0（走绝对模式）。
         self.peak_finder = PeakFinder(
@@ -500,7 +500,7 @@ class PurposeDrivenRetriever:
             max_peak_nodes: 可选，峰值容忍带的输出条数上限（None / 0 = 不限；
                 `PEAK_NODES_AUTO`(-1) = 按叙事篇幅预算反推条数）。
                      容忍带是"整轮并集"，在大图上会把读出量顶到全图六成（实测 200 节点
-                     → 124 条 / 62%），远超设计区间 5–37（见 0828 检索理论文）。
+                     → 124 条 / 62%），远超设计区间 5–37。
 
         Returns:
             {
@@ -824,7 +824,7 @@ class PurposeDrivenRetriever:
             "purpose": purpose_info,
             "hop_history": hop_history,
             "total_candidates": len(memories),
-            # 观测（0930）：寻峰带读数 + 目的过滤逐跳通过率，供上层日志/复算使用。
+            # 观测：寻峰带读数 + 目的过滤逐跳通过率，供上层日志/复算使用。
             # 用 getattr 兜底：部分测试/工具用 `__new__` 绕过 `__init__` 构造实例。
             "peak_band": getattr(self, "_band_stats", {}),
             "purpose_pass": getattr(self, "_purpose_stats", []),
@@ -975,7 +975,7 @@ class PurposeDrivenRetriever:
         edge = trace["edge"]
         score_map = trace.get("score") or {}
         # 全局层次序：先所有根，再所有第二层……（详见 `_order_by_level` 的注释）。
-        # 实测依据（scriptMem-enemy，剥离选项后）：种子第 1 名的证据节点 n385 在原
+        # 实测依据（剥离选项后）：种子第 1 名的证据节点 n385 在原
         # "根组整块排"下落在 path 第 187 位、累计 14,702 字，而正文只写到 1,793 字 →
         # 该证据在正文里 0 命中；层次序把根提到最前，长子树不再挤掉别的根。
         group = self._order_by_level(group, parent)
@@ -1026,7 +1026,7 @@ class PurposeDrivenRetriever:
 
     # 补边时的关系优先级：**有向**关系是 StoryRank 能铺成链条的语义
     # （因果/时序/偏好/时间/分类），双向关系（场景/社交/属性）只表达并列。
-    # 预算不足时优先保留前者——否则被砍掉的恰好是 B2「因果链恢复」所需的那批边。
+    # 预算不足时优先保留前者——否则被砍掉的恰好是「因果链恢复」所需的那批边。
     _DIRECTIONAL_RELS = ("causal", "sequence", "preference", "temporal", "taxonomic")
 
     def _augment_edges_from_graph(
@@ -1065,7 +1065,7 @@ class PurposeDrivenRetriever:
                 # **按真实方向输出**：`get_neighbors` 对同一条边给出两个方向——出边
                 # （is_reverse=False）表示 nid→nb，入边（is_reverse=True）表示 nb→nid。
                 # 此前硬编码 `from=nid, to=nb, is_reverse=False` 会随遍历顺序把有向边
-                # （尤其因果/时序）整条讲反，直接命中 B2「因果链恢复」（见 0927 审查 B1）。
+                # （尤其因果/时序）整条讲反，直接命中「因果链恢复」。
                 frm, to = (nb, nid) if is_reverse else (nid, nb)
                 # 同一对节点只补一条：任一方向已在跳转树里出现过就跳过。
                 # 用"无序对"去重（顺序不敏感），保证两个方向都命中同一判定。
@@ -1154,6 +1154,11 @@ class PurposeDrivenRetriever:
         edge_types: Dict[str, int] = {}
         if all_nodes or extra_nodes:
             path = self._build_path(all_nodes, hop_history) if all_nodes else {"nodes": [], "edges": []}
+            # 供 ALM 的 evidence 档渲染「关系边」：把图内路径（nodes+edges）原样回传。
+            # **必须在此处快照**——下一行的 extra_nodes 会并入 `path["nodes"]`（文档块没有
+            # 图内关系），若拖到那时再取，边就会与不含关系的文档块混在一起。
+            # 只有 evidence 档会消费它；story 档不看这个键（多一个键，行为不变）。
+            result["path"] = {"nodes": list(path["nodes"]), "edges": list(path["edges"])}
             if extra_nodes:
                 # 原文摘录只进 nodes、不进 edges（它们没有图内关系）。
                 # 放在图节点**之后**：先交代记忆链路，再补原文证据。
@@ -1171,13 +1176,13 @@ class PurposeDrivenRetriever:
                 body = out.get("story", "")
                 if body:
                     stories.append(body)
-                # 0927：StoryRank 不再回 id 列表，只回 `used` 计数（理由见
+                # StoryRank 不再回 id 列表，只回 `used` 计数（理由见
                 # InferenceEngine.story_rank 的 Returns）。`discarded_nodes` 随之无法再
                 # 由"候选 − 采纳"推出，一并去掉——保留一个恒为空或恒等于候选的字段
                 # 比去掉更糟：它会被读成"这批节点全被丢弃"。
                 story_used = int(out.get("used") or 0)
                 # 降级必须透传：解析失败时 `story` 是按相关度拼接的节点原文，与"合成叙事"
-                # 在下游完全是两种东西，而聚合指标看不出差别——0926 线上 7 次降级就是
+                # 在下游完全是两种东西，而聚合指标看不出差别——线上 7 次降级就是
                 # 这样被掩盖的，只能靠 WARNING 行计数才能发现。
                 story_degraded = bool(out.get("degraded"))
                 emit_stage(on_stage, "storyrank_done", used=story_used, story=body,
@@ -1186,7 +1191,7 @@ class PurposeDrivenRetriever:
         result["stories"] = stories
         result["story_used"] = story_used
         result["story_degraded"] = story_degraded
-        # 实际送入 StoryRank 的点/边数量（**只记计数，不记正文**）。这是 B2「因果链、
+        # 实际送入 StoryRank 的点/边数量（**只记计数，不记正文**）。这是「因果链、
         # 路径与中间步骤恢复」的判决依据：边数为 0 或远小于节点数，说明 StoryRank
         # 拿到的是一堆孤立节点，规则 4「只有边类型为 CAUSAL 的两点之间才写成因果」
         # 无从触发。
@@ -1194,7 +1199,7 @@ class PurposeDrivenRetriever:
         result["path_edges"] = path_edges
         # 送入 StoryRank 的边**类型构成**（同样只有计数）。仅知道边数不够用：边数达标
         # 但全是被动关系（scenario/social/attribute）时，规则 4 要的因果链依然无从表达
-        # ——这是"补边补了很多、B2 仍是 0"的必要观测。
+        # ——这是"补边补了很多、因果链恢复仍为 0"的必要观测。
         result["path_edge_types"] = edge_types
 
         # 生成回复：聊天 LLM 只接收干净故事，替代 [id] content 列举

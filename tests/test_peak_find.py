@@ -5,14 +5,14 @@ from dba_pipeline.core.peak_find import PeakFinder, resolve_peak_tolerance
 
 
 def test_default_params_match_usage():
-    # P2-6：默认值应与 retriever 实际使用一致
+    # 默认值应与 retriever 实际使用一致
     pf = PeakFinder()
     assert pf.patience == 2
     assert pf.min_delta == 0.015
 
 
 def test_default_peak_tolerance_unchanged():
-    """0930 接入带宽参数后，**默认行为必须逐字不变**。
+    """接入带宽参数后，**默认行为必须逐字不变**。
 
     历史上 `retriever` 从未传 `peak_tolerance`，生效值是库默认 0.10；接入后 ALM 侧默认
     `ratio=0` → 仍返回 `absolute`（0.10）。这条测试锁住"接入 ≠ 改行为"。

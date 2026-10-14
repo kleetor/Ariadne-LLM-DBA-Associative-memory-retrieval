@@ -55,7 +55,7 @@ def test_create_node_allocates_id():
 
 
 def test_exact_match_dedup_without_vectors():
-    # P2-4：无向量能力时精确匹配去重，不再静默失效
+    # 无向量能力时精确匹配去重，不再静默失效
     graph, builder, _ = _builder(store=None)
     result = builder.apply_ops(
         [{"action": "create", "content": "用户喜欢喝咖啡", "node_type": "STATUS"}], []
@@ -65,7 +65,7 @@ def test_exact_match_dedup_without_vectors():
 
 
 def test_cosine_dedup_with_vectors():
-    # P2-5：有向量能力时用精确余弦相似度去重
+    # 有向量能力时用精确余弦相似度去重
     vectors = {"n1": np.array([1.0, 0.0])}
     embed_fn = lambda text: np.array([1.0, 0.0])  # 与 n1 完全同向
 

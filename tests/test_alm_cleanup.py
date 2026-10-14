@@ -2,7 +2,7 @@
 
 """ALM 留存清理（`alm/cleanup.py`）的归组与删除。
 
-为什么单独钉这两条：清理是**合规**动作（AML 要求 30 天内删除评测数据），
+为什么单独钉这两条：清理是**合规**动作（运行数据须在留存期结束后删除），
 失效模式是"删了图谱、留了原文"——服务看起来一切正常，但从日志/盘上都看不出来。
 新布局下"一个空间 = 一个目录"，故要守住的只有两件事：目录被识别为空间、
 非目录条目一律不碰。
@@ -50,7 +50,7 @@ def test_loose_files_are_reported_not_deleted(tmp_path):
 
 
 def test_legacy_flat_layout_is_still_collected(tmp_path):
-    """旧布局（五份产物平铺）的历史遗留必须仍被识别，否则会被永久跳过、违反留存条款"""
+    """旧布局（五份产物平铺）的历史遗留必须仍被识别，否则会被永久跳过、无法清理"""
     for name in ("u_old.yaml", "u_old.docs.yaml", "u_old.docs.log"):
         (tmp_path / name).write_text("x", encoding="utf-8")
     (tmp_path / "u_old.index").mkdir()

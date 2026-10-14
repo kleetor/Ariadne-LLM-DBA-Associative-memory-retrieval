@@ -25,11 +25,11 @@ from dba_pipeline.source_store import new_batch_id, save_batch
 logger = logging.getLogger(__name__)
 
 
-# ---- Step 1：节点抽取 Prompt（2026-08-22 起，节点抽取与边连接拆成两步）----
+# ---- Step 1：节点抽取 Prompt（节点抽取与边连接拆成两步）----
 
 # 输出形状（单一来源，便于按开关替换；注意 `{{` 是交给 ChatPromptTemplate 的转义）
 #
-# ⚠️ **不要给 create 写 `action`**（P1-2 输出瘦身，见 版本变更记录 §4.26）：
+# ⚠️ **不要给 create 写 `action`**（输出瘦身）：
 # 实测 99.8% 的节点 op / 100% 的边 op 都是 create，把它做成默认值后
 # 每次输出都少写十几个 token。解析侧已加默认（`graph_builder._apply_*_op`）。
 _NODE_OUTPUT_EXAMPLE = (
@@ -51,7 +51,7 @@ _NODE_OUTPUT_EXAMPLE_EVIDENCE = (
 
 # ---- 输出语言指令：注入到 user 消息末尾，而不是只写在 system prompt 里 ----
 #
-# 为什么必须这么做（2026-09-26 本地烟雾实测，英文输入 + 生产模型 deepseek-v4-flash）：
+# 为什么必须这么做（本地烟雾实测，英文输入 + 生产模型 deepseek-v4-flash）：
 # **只把语言约束写在中文 system prompt 顶部不生效**——首批（图里还没有任何「已有节点」
 # 可供上下文污染）依然输出了中文节点，如「用户是杭州一家互联网公司的后端开发工程师」。
 # 判断原因是两点叠加：① LLM 对**紧邻数据**的指令遵循度高于 system 里的规则；
@@ -137,7 +137,7 @@ NODE_EXTRACTION_USER_PROMPT = """── 对话上下文 ──
 ── 请输出节点维护操作 ──"""
 
 
-# ---- Step 2：边连接 Prompt（与节点抽取拆分，2026-08-22）----
+# ---- Step 2：边连接 Prompt（与节点抽取拆分）----
 
 EDGE_LINKING_PROMPT = """你是记忆图谱的「边连接器」：节点已经抽取完成，你只负责为节点建立语义关系边。
 
@@ -329,7 +329,7 @@ def has_temporal_signal(text: str) -> bool:
 
     刻意排除「凌晨/中午/晚上/每天/近来/有时」这类日常时间副词，避免常规生活语料过度拆分；
     也仅凭「高中/大学」等 era 词**不**触发——它们常出现在非时序的设定陈述里（如「大学时学的钢琴」），
-    单靠 era 会让大量常规语料误触发（0822 子集即如此）。真正的时序叙事靠「多个具体日期锚点」识别。
+    单靠 era 会让大量常规语料误触发（早期子集即如此）。真正的时序叙事靠「多个具体日期锚点」识别。
     """
     if not text:
         return False
@@ -351,12 +351,12 @@ NEEDED：用户的新事实、事实变化、与已有记忆矛盾、话题切�
 
 # triage 的判定窗口，以及"窗口结论可信"的长度上限。
 #
-# 背景（2026-09-24 线上实测，见 MemoryDBA._should_maintain 的说明）：ALM 侧单次 Add
+# 背景（线上实测，见 MemoryDBA._should_maintain 的说明）：ALM 侧单次 Add
 # 的对话长度中位 2522、最长 11196 字符，而判定只取尾部 _TRIAGE_WINDOW 字符，覆盖率
 # 低到 5%~20%，"事实在中段、头尾寒暄"的对话会被整批判 SKIP，进而落成孤立原文节点、
 # 零条边。故超过 _TRIAGE_TRUST_MAX_CHARS 的对话不再采信窗口结论，直接放行。
 #
-# ⚠️ 2026-09-25 重标：上限由 1500 下调为 **900**。依据是线上日志里 9 次 triage 判 SKIP
+# ⚠️ 重标：上限由 1500 下调为 **900**。依据是线上日志里 9 次 triage 判 SKIP
 # 的对话长度分布 —— 45 / 80 / 310 / 541 / 930 / 1019 / 1047 / 1381 / 1412，
 # 其中 5 次（930~1412）都落在 1500 以下，于是 triage 照跑、照 SKIP，长度闸形同不存在。
 # 1500 是按离线探测集定的，而那批对话中位 2522 —— **探针集里没有 1000~1500 这一段**，
@@ -374,10 +374,10 @@ _TRIAGE_TRUST_MAX_CHARS = 900
 # 边连接的单批新节点上限。超过就拆批调用（见 `_link_edges`）。
 #
 # 为什么需要：`edge_ops` 的条数与「本轮新节点 × 候选旧节点」同阶，单次输出会线性膨胀，
-# 0927 实测有一次 `out=32768` 撞顶、JSON 在数组中途断掉，该批的边整批丢。
+# 实测有一次 `out=32768` 撞顶、JSON 在数组中途断掉，该批的边整批丢。
 #
 # 取值理由：正常的 `add_batch_size=6 / add_max_chars=1500` 下一批通常只产出个位数节点
-# （0930 Full 实测单次 Add 平均 10.8 条消息、约 5.1 组，每组十几个节点），故 24 是
+# （实测单次 Add 平均 10.8 条消息、约 5.1 组，每组十几个节点），故 24 是
 # "确实异常多"的门槛——多数调用**不会**触发拆批，行为与改造前逐字一致。
 EDGE_BATCH_SIZE = 24
 
@@ -440,17 +440,17 @@ class MemoryDBA:
                 **必须开**：提示词原则 3 早已要求「本轮新节点必须尽量接入已有图谱结构，
                 能连则连」，但实测因果/时序边仍是**批内短程**的——以节点顺序作时间代理，
                 causal/sequence 边的中位索引距离只有 8/9，而随机基线是 107；只有 42% 的
-                节点有 causal/sequence 出边，能走满 3 跳的仅 21%（B2「因果链、路径与
+                节点有 causal/sequence 出边，能走满 3 跳的仅 21%（「因果链、路径与
                 中间步骤恢复」连续 5 轮 0 分即源于此）。根因是边步骤的旧节点上下文只有
                 15 条、且按**整段对话**相似度竞争，长对话下被稀释——与节点步骤同一个
                 问题（见 _WIDE_K_PER_MSG）。
             triage_enabled: 是否启用 triage 维护判断（"这段对话值不值得维护"）。默认 True
                 保持既有行为不变。**ALM 侧应关闭**，理由见 `_should_maintain` 的说明：
                 分批之后多数组会落回长度闸以下，triage 会重新参与判定，实测把 41% 的组
-                判成 SKIP → 内容被转出图（2026-09-26 冒烟：兜底率 11.1% → 50.7%）。
+                判成 SKIP → 内容被转出图（冒烟：兜底率 11.1% → 50.7%）。
             enable_choice_extraction: 是否启用「决策与取舍」补充规则（把"被放弃的选项 /
                 选择依据"也抽成 REASON 节点）。默认关闭以保持既有抽取行为不变；
-                记忆保真任务 A 效果验证通过后再考虑对 ALM 侧开启。
+                记忆保真效果验证通过后再考虑对 ALM 侧开启。
             enable_evidence: 是否让抽取额外产出 evidence（原文支撑片段）并落盘。
                 默认关闭；evidence 属原文片段，有隐私与体积属性，且不进检索/叙事。
             enable_source_store: 是否把本批**原文**落盘（供溯源巡检反查）。默认关闭——
@@ -475,14 +475,14 @@ class MemoryDBA:
         # 为什么要试末尾：`_node_chain` 的 4 个变体（base/temporal/choice/choice+temporal）
         # 在"插入点之前"共享前缀，插在中间会把 base 系统切成两半——实测跨变体调用的
         # 前缀缓存命中只有 **512 tok**，而 base 系统本身约 1,088 tok，于是节点抽取链的
-        # 缓存命中率上限被压到 **37.8%**（见 版本变更记录 §4.25.2）。
+        # 缓存命中率上限被压到 **37.8%**。
         # 挪到末尾后，基础系统成为公共前缀，上限可望接近 80%。
         #
         # ⚠️ 但它同时改变了"规则 vs 输出格式"的相对位置，**会动质量**，
         # 故默认关；须先过 `alm.tools.alm_cache_probe`（上限）+ `alm.tools.alm_batch_quality_exp`（质量）两道。
         self.variant_tail = variant_tail
 
-        # 组装 Prompt 链：节点抽取与边连接拆成两步（2026-08-22）
+        # 组装 Prompt 链：节点抽取与边连接拆成两步
         def _node_chain(*extras):
             """把增强规则并入节点抽取链。
 
@@ -612,15 +612,15 @@ class MemoryDBA:
         )
 
         # 跨批连边观测锚点：本批新建的边里，有多少条**一端在本轮新节点、另一端是已有记忆**。
-        # 这是 B2「因果链、路径与中间步骤恢复」的判决依据——提示词原则上要求跨批接入，
+        # 这是「因果链、路径与中间步骤恢复」的判决依据——提示词原则上要求跨批接入，
         # 但离线实测因果/时序边仍是批内短程（中位索引距离 8/9 vs 随机基线 107），
         # 说明跨批连边几乎没发生。只记计数，不记正文。
         new_set = set(new_ids)
         inner = cross = 0
         for op in edge_ops:
-            # `action` 省略即 create（P1-2 输出瘦身后模型不再写 create）。
+            # `action` 省略即 create（输出瘦身后模型不再写 create）。
             # 这里若仍直接比 `!= "create"`，统计会**静默归零**——功能不受影响，
-            # 但"跨批连边有没有发生"这个判决依据会断掉（见 版本变更记录 §4.26）。
+            # 但"跨批连边有没有发生"这个判决依据会断掉。
             if (op.get("action") or "create") != "create":
                 continue
             f, t = op.get("from"), op.get("to")
@@ -630,7 +630,7 @@ class MemoryDBA:
                 cross += 1
         # 刻意用 WARNING 而非 INFO：ALM 容器把 dba_pipeline 钉在 WARNING 以上
         # （合规需要，防止 graph_builder 在 INFO 打印节点正文），INFO 在这里永远不可见。
-        # 而「跨批连边有没有发生」是定位 B2 的必要信号——本行只有计数，可以安全放行。
+        # 而「跨批连边有没有发生」是必要信号——本行只有计数，可以安全放行。
         logger.warning("边连边分布: 批内=%d 跨批=%d（本轮新节点 %d 个）", inner, cross, len(new_set))
 
         out = {
@@ -658,7 +658,7 @@ class MemoryDBA:
         """边连接：新节点多时**拆批**调用，避免单次输出撞上限。
 
         `edge_ops` 的条数与「本轮新节点 × 候选旧节点」同阶，单次输出会线性膨胀——
-        0927 实测出现过一次 `out=32768` 撞顶，JSON 在数组中途断掉（`_salvage_truncated_ops`
+        实测出现过一次 `out=32768` 撞顶，JSON 在数组中途断掉（`_salvage_truncated_ops`
         只能救回完整对象），**该批的边整批丢**。拆批让单次输出有界。
 
         代价是旧节点上下文（`current_nodes` / `current_edges` / `neighbor_info`）要按批
@@ -706,7 +706,7 @@ class MemoryDBA:
     def store_raw(self, conversation: str, timestamp: Optional[int] = None) -> List[str]:
         """把未经抽取的原文兜底落库为可检索节点（MCP 侧专用）。
 
-        背景（0927 审查 B5）：`_should_maintain` 判 SKIP 时，MCP 侧内容**被直接丢弃**
+        背景：`_should_maintain` 判 SKIP 时，MCP 侧内容**被直接丢弃**
         （ALM 侧此时会经 `space._divert_raw` 转文档通道；MCP 没有文档通道）。这既造成
         记忆缺失，又完全静默——调用方只看到"空转跳过"，无从得知内容没被存储。
 
@@ -892,7 +892,7 @@ class MemoryDBA:
     def _should_maintain(self, conversation: str) -> bool:
         """维护判断前置：极小 prompt 判断是否值得维护。
 
-        **ALM 侧应整体关闭（`triage_enabled=False`）。** 2026-09-26 冒烟实测：写入分批
+        **ALM 侧应整体关闭（`triage_enabled=False`）。** 冒烟实测：写入分批
         （`add_max_chars=1500`）把一次 Add 切成若干小组后，多数组的长度落回
         `_TRIAGE_TRUST_MAX_CHARS=900` **以下**，于是 triage 重新参与判定——而改造前整批
         2000~3000 字 > 1500，它是被整体放行的。后果：**421 个组里 173 个被判 SKIP（41%）**，
@@ -900,7 +900,7 @@ class MemoryDBA:
 
         为什么结论是"关"而不是"再调阈值"：错判不在窗口覆盖率上——实测有个组对话只有
         113 字符、窗口覆盖 100%，仍把含事实的 "It's much better for my neck actually"
-        判成 SKIP。而 ALM 的数据全是评测对话，"值得存"的先验极高，分组也已经把单次输入
+        判成 SKIP。而 ALM 的数据全是对话，"值得存"的先验极高，分组也已经把单次输入
         压到合理规模：triage 省下的那一次抽取，远不值"丢记忆"的代价。
 
         保留本方法与下面的长度闸，是为了 MCP 侧（默认 `triage_enabled=True`）行为不变；

@@ -142,7 +142,7 @@ def test_build_path_orders_by_level_not_by_root_block():
 
 
 def test_story_rank_parses_story_and_counts_used_backend():
-    """`used` 由后端按"正文实际覆盖的节点数"计算（0927 审查 C4），不再采用模型自报值。
+    """`used` 由后端按"正文实际覆盖的节点数"计算，不再采用模型自报值。
 
     正文逐字包含三条节点内容 → used == 3。
     """
@@ -192,7 +192,7 @@ def test_story_rank_fallback_picks_top_n_by_score():
     """输出不可解析时按 combined_score 降序取前 N，而不是把全部候选平铺。
 
     背景：`" ".join(所有节点)` 在最难的题上会产出 1.2 万~2.3 万字符的原文流水账
-    （0926 线上 7 次实测，采纳 217~443），而节点边界/边/方向会在拼接时全部抹平。
+    （线上 7 次实测，采纳 217~443），而节点边界/边/方向会在拼接时全部抹平。
     """
     nodes = [
         {"id": f"n{i}", "content": f"事实{i}", "node_type": "status", "score": float(i)}
@@ -228,7 +228,7 @@ def test_story_rank_retries_once_when_over_budget():
 def test_story_rank_shrinks_feed_before_truncating(caplog):
     """压缩重试后仍超预算 → **缩喂重试**（丢尾部节点），而不是先截正文。
 
-    0930 需求：面对 Full 不能只靠兜底。超预算时先丢"优先级最低的尾部节点"重试，
+    面对 Full 不能只靠兜底。超预算时先丢"优先级最低的尾部节点"重试，
     只有缩到下限仍超才硬截断——这样正文是**完整**的，不会把收束/结论那段写出来又切掉。
     """
     over = json.dumps({"story": "很长的内容" * 600}, ensure_ascii=False)   # 3000 字符
@@ -318,8 +318,8 @@ def test_select_core_nodes_no_infinite_loop_on_revisit():
 def test_rule6_allows_juxtaposition_but_forbids_naming_the_change():
     """规则 6 的边界必须**成对**存在。
 
-    0927 之前规则 6 自相矛盾：前半句要求"围绕『用户当前消息』问的**变化**写"，后半句又禁止
-    写"立场"——问"立场如何演变"的题（平台 B2 · Causal chain/path/intermediate-step recovery，
+    此前规则 6 自相矛盾：前半句要求"围绕『用户当前消息』问的**变化**写"，后半句又禁止
+    写"立场"——问"立场如何演变"的题（Causal chain/path/intermediate-step recovery，
     实测恒 0）因此被夹死，模型只能把全部节点平铺。
 
     修法是把禁令精确化为「**可并置、不可命名**」：允许同一主体不同时刻的事实按先后并列，

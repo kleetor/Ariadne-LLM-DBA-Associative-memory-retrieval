@@ -20,6 +20,7 @@
 
 import hashlib
 import json
+import logging
 import re
 import threading
 import time
@@ -138,7 +139,7 @@ def _routes(node_count: int, route_p: float = 0.9):
                                 "condense": False, "state": False, "temporal": False})),
         (M_STORY, json.dumps({"story": "用户在这段对话里提到了若干事实。", "used": 1},
                              ensure_ascii=False)),
-        # 归属判定（B 项 + T3）。实测里它自报的 p 呈双峰，故夹具直接给两端值。
+        # 归属判定。实测里它自报的 p 呈双峰，故夹具直接给两端值。
         (M_ROUTE, json.dumps({"p": route_p})),
     )
 
@@ -282,7 +283,7 @@ def test_edge_linking_single_call_under_threshold(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_trace_is_clipped_on_the_real_add(tmp_path, caplog):
-    """`[IO] add 入参` 在链路上必须被截到上限以内（0930 实测单文件 84 MB 的成因）"""
+    """`[IO] add 入参` 在链路上必须被截到上限以内（实测单文件 84 MB 的成因）"""
     model = ScriptedChatModel(routes=_routes(node_count=2))
     space = _make_space(tmp_path, model, trace_io=True, trace_max_chars=200)
 
@@ -308,7 +309,7 @@ def test_trace_disabled_by_default(tmp_path, caplog):
 
 
 # ---------------------------------------------------------------------------
-# 7. 写侧/读侧模式：路由的落地点（Plan §一 总目标）
+# 7. 写侧/读侧模式：路由的落地点
 #
 # 这两项的判据**只有一个：LLM 调用数为零**。
 # 因为整个路由的账建立在"不建图 = 零 LLM 开销"上（写侧占 LLM 调用 94.7%，
@@ -369,9 +370,9 @@ def test_documents_only_space_end_to_end(tmp_path):
 
 
 def test_search_shape_evidence_skips_storyrank(tmp_path):
-    """A 项：`search_shape="evidence"` 下**不调 StoryRank**，直接回证据块。
+    """`search_shape="evidence"` 下**不调 StoryRank**，直接回证据块。
 
-    验收（计划 §二 A）：① 读侧少一次最贵的 LLM 调用（StoryRank 单次输入 >5000，
+    验收：① 读侧少一次最贵的 LLM 调用（StoryRank 单次输入 >5000，
     是全日志唯一的一档）；② 结构上不再可能出现 `路径=拼接`（JSON 解析失败→降级成
     1.2~2.3 万字流水账）与 `out=` 撞 max_tokens；③ 返回的必须是**节点原文证据块**，
     不是那条叙事文本。
@@ -405,7 +406,7 @@ def test_search_shape_story_is_the_default(tmp_path):
 
 
 def test_auto_route_initial_state_is_vector(tmp_path):
-    """B 项：开启 auto_route 后，**新空间初态必须是 vector**（零 LLM）
+    """开启 auto_route 后，**新空间初态必须是 vector**（零 LLM）
 
     这是前置条件而不是优化：判断器要到前 2 题才表态，若初态是 graph，
     那 2 题的语料**已经建完图了**——判断器白判、钱白花。
@@ -423,7 +424,7 @@ def test_auto_route_initial_state_is_vector(tmp_path):
 
 
 def test_auto_route_decides_then_freezes(tmp_path):
-    """B/T3：前 N 题判一次 → 写入 mode.yaml → **冻结**（此后不再路由）"""
+    """前 N 题判一次 → 写入 mode.yaml → **冻结**（此后不再路由）"""
     model = ScriptedChatModel(routes=_routes(node_count=3, route_p=0.9))
     space = _make_space(tmp_path, model, auto_route=True)
 
@@ -466,7 +467,7 @@ def test_auto_route_parse_failure_falls_back_to_vector(tmp_path):
     """判不出来 → **走向量层**（成本优先的显式兜底方向）
 
     为什么兜底不是 graph：误判成 graph 要白付一整空间的建图钱（可见、量级 $）；
-    误判成 vector 只是可能丢分（不可见）。成本优先下选前者（见计划 §1.4）。
+    误判成 vector 只是可能丢分（不可见）。成本优先下选前者。
     """
     routes = tuple((m, p) for m, p in _routes(node_count=3) if m != M_ROUTE)
     routes += ((M_ROUTE, "我不会输出 JSON"),)
@@ -494,7 +495,7 @@ def test_global_force_beats_space_mode(tmp_path):
 
 
 def test_search_purpose_inference_does_not_hold_space_lock(tmp_path):
-    """P1-1：读侧的目的推断（唯一必做 LLM）必须在**空间锁外**执行。
+    """读侧的目的推断（唯一必做 LLM）必须在**空间锁外**执行。
 
     场景是 16 并发 × 48h：一次目的推断 LLM 超时最坏 `llm_timeout`=120s。若推断持锁，
     同 user_id 的并发 `/add` 会被整段堵死。
@@ -545,13 +546,13 @@ def test_search_purpose_inference_does_not_hold_space_lock(tmp_path):
     add_done.set()
     t.join(timeout=10.0)
 
-    assert not gate["timeout"], "目的推断持锁，add 被阻塞（P1-1 回归）"
+    assert not gate["timeout"], "目的推断持锁，add 被阻塞（回归）"
     assert not err, f"search 线程抛出异常：{err.get('exc')}"
     assert elapsed < 5.0, f"add 耗时异常：{elapsed:.3f}s"
 
 
 def test_doc_store_persists_raw_messages_not_chunks(tmp_path):
-    """B2 项：文档区落盘的是**原始消息**（role / 时间戳 / 消息边界），切片是派生视图。
+    """文档区落盘的是**原始消息**（role / 时间戳 / 消息边界），切片是派生视图。
 
     为什么必须如此：
       · 「回补建图」——归属判定在前 2 题，此前该空间走 vector；若最终判成 graph，
@@ -589,7 +590,7 @@ def test_doc_store_persists_raw_messages_not_chunks(tmp_path):
 def _l1_only_space(tmp_path, model, **overrides):
     """造一个「判定前」的空间：归属未定 → 写侧走 documents → 语料全落在 L1。
 
-    这正是 C 项要处理的现场：`auto_route` 开启后新空间初态是 vector，
+    这正是要处理的现场：`auto_route` 开启后新空间初态是 vector，
     在判定发生前收到的语料**只进文档区**，图是空的。
     """
     overrides.setdefault("auto_route", True)
@@ -598,10 +599,10 @@ def _l1_only_space(tmp_path, model, **overrides):
 
 
 def test_docs_log_replay_is_idempotent_by_request_id(tmp_path):
-    """P1-3：重启后平台重试同一 request_id，不得重复入库。
+    """重启后调用方重试同一 request_id，不得重复入库。
 
-    `Engine._request_log` 是**内存态**，重启即失；若幂等信息只活在内存里，平台重试会被
-    当成新请求再建一次图（0930 一次跑里重启过 2 次 → 重复付费）。本用例验证 rid 被写在
+    `Engine._request_log` 是**内存态**，重启即失；若幂等信息只活在内存里，调用方重试会被
+    当成新请求再建一次图（一次运行里重启过 2 次 → 重复付费）。本用例验证 rid 被写在
     `docs.log` 的**每条消息**上，回放时整行跳过。
 
     注意重试会生成**新的 doc_id**——所以按 `(doc_id, msg_index)` 的内容去重挡不住它，
@@ -615,7 +616,7 @@ def test_docs_log_replay_is_idempotent_by_request_id(tmp_path):
     n = len(first.doc_msgs)
     assert n == 4
 
-    # 模拟重启：新实例（内存态幂等表为空）→ 平台重试同一 request_id
+    # 模拟重启：新实例（内存态幂等表为空）→ 调用方重试同一 request_id
     retry = _make_space(tmp_path, model, write_mode="documents")
     assert len(retry.doc_msgs) == n
     retry.add(_messages(n=4), request_id="R1")
@@ -627,7 +628,7 @@ def test_docs_log_replay_is_idempotent_by_request_id(tmp_path):
 
 
 def test_backfill_builds_graph_from_l1_messages(tmp_path):
-    """C 项：判成 graph 后，判定前落在 L1 的语料必须**补建进图**
+    """判成 graph 后，判定前落在 L1 的语料必须**补建进图**
 
     不补的话图侧永久缺前置内容——而那正是"检索时图帮不上忙"的经典成因。
     """
@@ -646,7 +647,7 @@ def test_backfill_builds_graph_from_l1_messages(tmp_path):
 
 
 def test_backfill_runs_in_background_and_is_idempotent(tmp_path):
-    """C 项：回补走**后台**线程（不阻塞发起它的 /search），且不可重复起线程"""
+    """回补走**后台**线程（不阻塞发起它的 /search），且不可重复起线程"""
     model = ScriptedChatModel(routes=_routes(node_count=3))
     space = _l1_only_space(tmp_path, model)
     space.add(_messages(n=6))
@@ -693,9 +694,12 @@ def test_backfill_resumes_from_checkpoint(tmp_path):
 
 
 def test_backfill_stop_loss_skips_when_too_large(tmp_path):
-    """启动前止损：估算超上限就**不启动**（宁可不建图，不可占满线程 / 超预算）"""
+    """启动前止损：估算超上限就**不启动**（宁可不建图，不可占满线程 / 超预算）
+
+    显式把回补批大小调回 6（默认已是更粗的 24），否则 12 条只算 1 组、验不出止损。
+    """
     model = ScriptedChatModel(routes=_routes(node_count=3))
-    space = _l1_only_space(tmp_path, model, backfill_max_groups=1)
+    space = _l1_only_space(tmp_path, model, backfill_max_groups=1, backfill_batch_size=6)
     space.add(_messages(n=12))                      # 12 条 / 每批 6 条 = 2 组 > 上限 1
 
     added = space.run_backfill()
@@ -765,7 +769,7 @@ def test_fallback_reason_treats_omitted_action_as_create(tmp_path):
 # 8. 文档区落盘：只追加，不整份重写（O(n²) 写放大）
 #
 # 改造前 `_save_documents` 每次 Add 都 `yaml.dump` **整份** docs，而 documents 模块下
-# 全部语料都走这条路 → 第 k 次 Add 重写前 k 次累计的全部条文。线上实测一轮 full
+# 全部语料都走这条路 → 第 k 次 Add 重写前 k 次累计的全部条文。线上实测一轮生产运行
 # 4,378 次 Add、终态 ~10 MB，写放大接近 46 GB，与已修的「索引全量重写」同源。
 # ---------------------------------------------------------------------------
 
@@ -844,7 +848,7 @@ def test_docs_log_repairs_trailing_partial_line(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# 9. 全链路审查回归（F1 / F2 / F4）
+# 9. 全链路回归
 #
 # 三条都属"静默失效"：不报错、不影响返回值，只在特定并发/模式下丢数据，故必须
 # 用**能区分修复前后**的断言钉住（而不是"跑完不报错"）。
@@ -852,7 +856,7 @@ def test_docs_log_repairs_trailing_partial_line(tmp_path):
 
 
 def test_memory_space_exposes_bg_active_flag(tmp_path):
-    """F1：`bg_active` 必须是真实存在的**公开属性**（engine 读的就是这个名字）。
+    """`bg_active` 必须是真实存在的**公开属性**（engine 读的就是这个名字）。
 
     `_evict_locked` 用 `getattr(sp, "bg_active", False)` 判断能否换出；若该属性不存在，
     `getattr` 静默取默认 False → 保护失效。故这里直接断言属性与内部标记同步。
@@ -866,7 +870,7 @@ def test_memory_space_exposes_bg_active_flag(tmp_path):
 
 
 def test_engine_eviction_skips_space_with_background_task(tmp_path):
-    """F1：**最旧**的空间若在跑后台回补，就不得被 LRU 换出。
+    """**最旧**的空间若在跑后台回补，就不得被 LRU 换出。
 
     为什么必须造"最旧"：`_evict_locked` 取第一个可换出的条目。若把带后台标记的空间
     放在最前，修复前（属性名不符 → 恒 False）它会**恰好**被选为牺牲品；修复后才会
@@ -900,7 +904,7 @@ def test_engine_eviction_skips_space_with_background_task(tmp_path):
 
 
 def test_document_channel_keeps_overflow_messages(tmp_path):
-    """F2：文档通道不得丢弃超出 `max_messages_per_add` 的消息。
+    """文档通道不得丢弃超出 `max_messages_per_add` 的消息。
 
     写侧 `documents`（向量模式）下形态判定被整批覆盖为文档 → **所有** Add 都走文档
     分支；该分支原先只落 `payload`（前 `limit` 条），`overflow` 被静默丢弃——既不进图
@@ -919,7 +923,7 @@ def test_document_channel_keeps_overflow_messages(tmp_path):
 
 
 def test_document_store_uses_explicit_rid_not_instance_state(tmp_path):
-    """F4：rid 必须由**显式参数**下传，不能读实例上的共享状态。
+    """rid 必须由**显式参数**下传，不能读实例上的共享状态。
 
     并发 Add 在锁外交错时，实例属性会被后到的请求覆盖 → 两批打成同一个 rid →
     重启回放按 rid 整行跳过 → 先到那批静默丢失。这里刻意在实例上摆一个"残留的
@@ -927,7 +931,9 @@ def test_document_store_uses_explicit_rid_not_instance_state(tmp_path):
     """
     model = ScriptedChatModel(routes=_routes(node_count=1))
     space = _make_space(tmp_path, model, write_mode="documents")
-    space._add_rid = "STALE"                 # 模拟被并发请求覆盖后的残留值
+    # 故意在实例上摆一个同名 decoy：实现已**不再读实例状态**，即便这里有值也必须
+    # 以显式传入的 rid 为准（旧实现读 self._add_rid，会被并发请求覆盖成别人的值）。
+    space._add_rid = "STALE"
 
     space._store_documents(
         [AddMessage(role="user", content="hello", timestamp=1704067200000)],
@@ -938,7 +944,7 @@ def test_document_store_uses_explicit_rid_not_instance_state(tmp_path):
 
 
 def test_add_threads_request_id_into_document_channel(tmp_path, monkeypatch):
-    """F4：`add()` 必须把本次 request_id 传给文档通道（端到端接线）"""
+    """`add()` 必须把本次 request_id 传给文档通道（端到端接线）"""
     model = ScriptedChatModel(routes=_routes(node_count=1))
     space = _make_space(tmp_path, model, write_mode="documents")
     seen = {}
@@ -957,7 +963,7 @@ def test_add_threads_request_id_into_document_channel(tmp_path, monkeypatch):
 
 
 def test_concurrent_adds_do_not_cross_request_ids(tmp_path):
-    """F4：两个不同 request_id 的 Add 并发后，各自消息必须保留自己的 rid（P1-3 幂等前提）"""
+    """两个不同 request_id 的 Add 并发后，各自消息必须保留自己的 rid（幂等前提）"""
     model = ScriptedChatModel(routes=_routes(node_count=1))
     space = _make_space(tmp_path, model, write_mode="documents")
 
@@ -992,12 +998,12 @@ def test_concurrent_adds_do_not_cross_request_ids(tmp_path):
 
 
 def test_auto_route_deciding_query_keeps_llm_out_of_lock(tmp_path):
-    """F3（方案 A）：auto 路由下，**判定那一题**的两次 LLM（association + purpose）
+    """auto 路由下，**判定那一题**的两次 LLM（association + purpose）
     都必须在空间锁外。
 
     为什么单独测这一题：判定前该空间读侧是 vector（不推断目的，零 LLM）；判定当场切
     graph 后才需要目的。旧写法把判定留在锁内、目的推断跟着回落到检索器内部（锁内），
-    于是判定题持锁连做两次 LLM → 同 user_id 的并发 /add 被堵（P1-1 回归）。
+    于是判定题持锁连做两次 LLM → 同 user_id 的并发 /add 被堵（回归）。
 
     用门闩确定性复现：目的推断一启动就等一次 add 完成；若它持锁，add 拿不到锁 →
     事件永不置位 → 门闩超时。
@@ -1026,6 +1032,9 @@ def test_auto_route_deciding_query_keeps_llm_out_of_lock(tmp_path):
     space = _make_space(tmp_path, model, auto_route=True)
 
     space.add(_messages(n=4))                 # 判定前：落 L1（零 LLM）
+    # #3 建图等待窗上线后：判成 graph 会先检查图是否就绪，未就绪就退纯向量（不推断目的）。
+    # 本用例考的是"目的推断在锁外"，故先把回补进度标成 done，让图侧判为就绪，隔离该变量。
+    space._save_backfill_progress(0, "done")
     space.search(QUERY, top_k=5)              # 第 1 题：不判定、不推断目的
     assert model.call_count(M_ROUTE) == 0
     assert model.call_count(M_PURPOSE) == 0, "未定空间的前置题不该推断目的"
@@ -1048,8 +1057,804 @@ def test_auto_route_deciding_query_keeps_llm_out_of_lock(tmp_path):
     add_done.set()
     t.join(timeout=10.0)
 
-    assert not gate["timeout"], "判定题的目的推断持锁，add 被阻塞（F3 回归）"
+    assert not gate["timeout"], "判定题的目的推断持锁，add 被阻塞（回归）"
     assert not err, f"search 线程抛出异常：{err.get('exc')}"
     assert elapsed < 5.0, f"add 耗时异常：{elapsed:.3f}s"
     assert space.space_mode == "graph", "p=0.9 应判成 graph"
     assert model.call_count(M_ROUTE) == 1, "归属只该判定一次"
+
+
+def test_legacy_graph_space_without_mode_file_is_not_downgraded(tmp_path):
+    """兼容兜底：无 `mode.yaml` 但**图非空** → 按 graph 认领，不得静默降级为 vector。
+
+    场景：本特性上线前建的图空间（或 `set_space_mode` 落盘失败过）只有 `graph.yaml`、
+    没有 `mode.yaml`；若一律按初态 vector，已建好的图会被弃用且不再增长。
+    """
+    # 1) 用强制图臂建出一个"有图、无 mode.yaml"的空间（force_mode=graph 不写 mode.yaml）
+    built = _make_space(tmp_path, ScriptedChatModel(routes=_routes(node_count=3)))
+    built.add(_messages(n=6))
+    built.save()
+    assert built.graph.node_count > 0
+    mode_file = tmp_path / "data" / "conv0" / "mode.yaml"
+    assert not mode_file.exists(), "强制图臂不该写 mode.yaml（夹具前提）"
+
+    # 2) 新一轮用默认 auto 重新载入 → 兼容兜底应认成 graph，且检索走图路径
+    fresh = ScriptedChatModel(routes=_routes(node_count=3))
+    reloaded = _make_space(tmp_path, fresh, auto_route=True)
+
+    assert reloaded.graph.node_count > 0, "图没被载入"
+    assert reloaded.space_mode == "graph", "既有图空间被静默降级为 vector"
+    assert reloaded.effective_mode == "graph"
+    assert not mode_file.exists(), "兼容兜底不该落盘（会刷新目录 mtime，影响 30 天留存清理）"
+
+    reloaded.search(QUERY, top_k=5)
+    assert fresh.call_count(M_PURPOSE) == 1, "图路径才推断目的；0 说明被降级走了纯向量"
+    assert fresh.call_count(M_ROUTE) == 0, "归属已由兜底定死，不该再判定"
+    assert not mode_file.exists(), "检索后仍不该落盘 mode.yaml"
+
+
+def test_space_with_empty_graph_file_stays_vector(tmp_path):
+    """兼容兜底边界：`graph.yaml` **存在但为空**（0 节点）→ 仍按初态 vector。
+
+    判据是"图非空"而不是"文件存在"——否则一个只建过空图的空间会被误判成 graph。
+    """
+    space = _make_space(tmp_path, ScriptedChatModel(routes=_routes(node_count=3)))
+    space.save(force=True)                       # 写出空图（0 节点）的 graph.yaml
+    assert (tmp_path / "data" / "conv0" / "graph.yaml").exists()
+    assert space.graph.node_count == 0
+
+    reloaded = _make_space(tmp_path, ScriptedChatModel(routes=_routes(node_count=3)),
+                           auto_route=True)
+
+    assert reloaded.space_mode == "vector", "空图空间不该被兜底认成 graph"
+    assert reloaded.effective_mode == "documents", "空图空间写侧应走 documents（零 LLM）"
+
+
+# ---------------------------------------------------------------------------
+# 10. evidence 档：证据块 = 节点（带 [id]（类型）前缀）+ **关系边**
+# ---------------------------------------------------------------------------
+
+
+def test_evidence_items_render_id_prefix_and_relations(tmp_path):
+    """evidence 证据块：节点带 `[id]（类型）`，并**单独回传关系边** `[from] --rel--> [to]`。
+
+    移除 StoryRank 后若只回裸节点，"因果/时序/路径"这类关系信息就丢了（raw 块
+    要保留的信息面）。节点行必须带 id，否则边引用的 id 无处可对。
+    """
+    model = ScriptedChatModel(routes=_routes(node_count=3))
+    space = _make_space(tmp_path, model)
+    space.add(_messages(n=4))
+    ids = list(space.graph.graph.nodes())
+    assert len(ids) >= 3
+    a, b, c = ids[0], ids[1], ids[2]
+
+    result = {
+        "peak_memories": [(a, space.graph.get_content(a)), (b, space.graph.get_content(b))],
+        "path": {"nodes": [], "edges": [
+            # 两端都在返回集合内 → 保留
+            {"from": a, "to": b, "rel_type": "CAUSAL", "is_reverse": False},
+            # c 未在返回集合内 → 丢弃（避免悬空引用）
+            {"from": c, "to": b, "rel_type": "SEQUENCE", "is_reverse": True},
+        ]},
+    }
+    items = space._evidence_items(result, [], top_k=100)
+
+    assert items[0]["id"] == "rules", "图例必须是 data[0]（放最前，不被 top_k 截断）"
+    assert "causal" in items[0]["content"] and "person" in items[0]["content"], \
+        "图例须覆盖节点/关系词表"
+    node_items = [it for it in items if it["id"] != "rules" and not str(it["id"]).startswith("e:")]
+    edge_items = [it for it in items if str(it["id"]).startswith("e:")]
+    assert node_items and all(it["content"].startswith(f"[{it['id']}]（") for it in node_items), \
+        "节点行必须带 `[id]（类型）` 前缀"
+    assert len(edge_items) == 1, f"只应保留两端都在返回集合内的边，实际 {edge_items}"
+    assert edge_items[0]["content"] == f"[{a}] --CAUSAL--> [{b}]"
+    assert edge_items[0]["id"] == f"e:{a}->{b}:CAUSAL"
+
+
+def test_evidence_items_reserve_slots_for_edges(tmp_path):
+    """边不能被节点挤掉：top_k 较小时仍给边留位（否则等于没传关系）。"""
+    model = ScriptedChatModel(routes=_routes(node_count=4))
+    space = _make_space(tmp_path, model)
+    space.add(_messages(n=4))
+    ids = list(space.graph.graph.nodes())
+    peaks = [(i, space.graph.get_content(i)) for i in ids]
+    edges = [{"from": ids[0], "to": ids[1], "rel_type": "CAUSAL", "is_reverse": False}]
+
+    items = space._evidence_items(
+        {"peak_memories": peaks, "path": {"nodes": [], "edges": edges}}, [], top_k=4)
+
+    assert len(items) == 4, "不得超过 top_k"
+    assert items[0]["id"] == "rules", "图例占 data[0]（也在 top_k 预算内）"
+    assert any(str(it["id"]).startswith("e:") for it in items), "top_k 已满时边仍应占位"
+
+
+def test_evidence_legend_lists_every_type_and_is_switchable(tmp_path):
+    """图例必须覆盖 NodeType(6)+RelationType(8) 全部词，且 `evidence_legend=False` 时不发。"""
+    from dba_pipeline.core.jump_axis import NodeType, RelationType
+
+    model = ScriptedChatModel(routes=_routes(node_count=2))
+    space = _make_space(tmp_path, model, search_shape="evidence")
+    space.add(_messages(n=4))
+    ids = list(space.graph.graph.nodes())
+    peaks = [(i, space.graph.get_content(i)) for i in ids]
+
+    items = space._evidence_items({"peak_memories": peaks}, [], top_k=50)
+    assert items[0]["id"] == "rules"
+    legend = items[0]["content"]
+    missing = [e.value for e in (*NodeType, *RelationType) if e.value not in legend]
+    assert not missing, f"图例缺词：{missing}"
+
+    off = _make_space(tmp_path / "off", ScriptedChatModel(routes=_routes(node_count=2)),
+                      search_shape="evidence", evidence_legend=False)
+    off.add(_messages(n=4))
+    oids = list(off.graph.graph.nodes())
+    oitems = off._evidence_items(
+        {"peak_memories": [(i, off.graph.get_content(i)) for i in oids]}, [], top_k=50)
+    assert all(it["id"] != "rules" for it in oitems), "evidence_legend=False 时不该发图例"
+
+
+def test_search_evidence_wires_relations_end_to_end(tmp_path, monkeypatch):
+    """接线：evidence 档 `search()` 必须把 `result["path"]["edges"]` 变成返回里的边条目。"""
+    model = ScriptedChatModel(routes=_routes(node_count=3))
+    space = _make_space(tmp_path, model, search_shape="evidence")
+    space.add(_messages(n=4))
+    ids = list(space.graph.graph.nodes())
+
+    canned = {
+        "peak_memories": [(ids[0], space.graph.get_content(ids[0])),
+                          (ids[1], space.graph.get_content(ids[1]))],
+        "path": {"nodes": [], "edges": [
+            {"from": ids[0], "to": ids[1], "rel_type": "CAUSAL", "is_reverse": False}]},
+        "stories": [], "hop_history": [],
+    }
+    monkeypatch.setattr(space.retriever, "retrieve_with_story", lambda *a, **k: canned)
+
+    items = space.search(QUERY, top_k=10)
+
+    assert any(str(it["id"]).startswith("e:") and "--CAUSAL-->" in it["content"] for it in items), \
+        f"evidence 返回未含关系边：{items}"
+    assert any(it["content"].startswith("[") and "（" in it["content"] for it in items), \
+        "节点条目应带 `[id]（类型）` 前缀"
+
+
+# ---------------------------------------------------------------------------
+# 11. score：图链路不发（恒 1.0 零信息），纯向量链路发（真实余弦）
+# ---------------------------------------------------------------------------
+
+
+def test_graph_path_omits_score_vector_path_keeps_cosine(tmp_path):
+    """图链路（叙事 / 证据块）**不返回 `score`**——每条都是占位 1.0、零信息量；
+    纯向量链路仍返回**真实余弦**。契约里 `score` 是可选，故可省。"""
+    g = _make_space(tmp_path / "g", ScriptedChatModel(routes=_routes(node_count=3)))
+    g.add(_messages(n=4))
+    g_items = g.search(QUERY, top_k=5)
+    assert g_items, "图链路不该为空"
+    assert all("score" not in it for it in g_items), f"图链路不应带 score：{g_items}"
+
+    e = _make_space(tmp_path / "e", ScriptedChatModel(routes=_routes(node_count=3)),
+                    search_shape="evidence")
+    e.add(_messages(n=4))
+    e_items = e.search(QUERY, top_k=5)
+    assert e_items
+    assert all("score" not in it for it in e_items), f"evidence 档不应带 score：{e_items}"
+
+    v = _make_space(tmp_path / "v", ScriptedChatModel(routes=_routes(node_count=3)),
+                    force_mode="vector")
+    v.add(_messages(n=4))
+    v_items = v.search(QUERY, top_k=5)
+    assert v_items
+    assert all(isinstance(it.get("score"), float) for it in v_items), \
+        f"纯向量链路应带真实 score：{v_items}"
+
+
+# ---------------------------------------------------------------------------
+# 索引与条文的一致性：写入原子性 + 「落后只补尾部」
+# ---------------------------------------------------------------------------
+
+class _BoomEmbeddings(Embeddings):
+    """一调用就抛错：模拟 embedding 端点失败（此时**未产生任何向量**）。"""
+
+    def embed_documents(self, texts):
+        raise RuntimeError("embedding boom")
+
+    def embed_query(self, text):
+        raise RuntimeError("embedding boom")
+
+
+def test_store_documents_is_atomic_when_embedding_fails(tmp_path):
+    """写入顺序必须是**先写向量、后登记条文**。
+
+    反例（旧顺序：先 `doc_msgs.extend` 再 `add_memories`）会把"没有向量的消息"留在
+    条文里 → 条文 > 索引 → 该空间下次载入触发修复。线上实测：90 分钟内 8 次修复，
+    其中一个是 4493 块的空间 → 数千次白重嵌（既烧 token，又把瞬时并发顶高、反过来
+    诱发超时/限流）。
+    """
+    model = ScriptedChatModel(routes=_routes(node_count=3))
+    space = _make_space(tmp_path, model, write_mode="documents")
+    space.doc_store.embeddings = _BoomEmbeddings()
+
+    with pytest.raises(Exception):
+        space.add(_messages(n=2))
+
+    assert space.doc_msgs == [], "嵌入失败不得把消息留在条文里"
+    assert space.docs == [], "不得留下无向量的切片"
+    assert space._doc_index == {}
+
+    # 也不该落盘出条文——否则重启即触发修复。
+    space.save()
+    assert not (tmp_path / "data" / "conv0" / "docs.log").exists()
+
+
+def test_load_documents_backfills_only_missing_tail(tmp_path, caplog):
+    """载入时索引**落后**于条文 → 只补缺的尾部，**不做全量重嵌**。
+
+    切片是确定性的追加序（id = `{doc_id}c{块序}`），所以落盘索引里装的就是 `docs`
+    的前 ntotal 块，缺的一定在尾部——补齐等于只 embedding 差额那几条。
+    """
+    model = ScriptedChatModel(routes=_routes(node_count=3))
+    space = _make_space(tmp_path, model, write_mode="documents")
+    space.add(_messages(n=3))
+    space.save()
+    assert len(space.docs) == 3
+
+    # 造出"条文 > 索引"的现场：往**条文日志**里手工追加一条消息，而索引仍是 3 条向量。
+    # 这正是旧写入顺序在 embedding 失败时落下的状态（消息进了条文、向量没进索引）。
+    log_path = tmp_path / "data" / "conv0" / "docs.log"
+    rec = json.loads(log_path.read_text(encoding="utf-8").strip().splitlines()[0])
+    rec["msgs"] = [{"doc_id": "d999", "msg_index": 0, "role": "user",
+                    "content": "line orphan of the conversation",
+                    "timestamp": 1704067300000, "rid": "orphan-rid-1"}]
+    with open(log_path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+
+    caplog.set_level(logging.INFO)
+    reloaded = _make_space(tmp_path, model, write_mode="documents")
+
+    msgs = [r.getMessage() for r in caplog.records]
+    assert any("补齐尾部" in m for m in msgs), msgs
+    assert not any("重建向量" in m for m in msgs), "落后时应只补尾部，不得全量重建"
+    assert len(reloaded.docs) == 4, "条文 4 块应原样载入"
+    assert reloaded.search(QUERY, top_k=5), "补齐后文档通道应可检索"
+
+
+def test_load_documents_rebuilds_when_index_is_ahead(tmp_path, caplog):
+    """索引**超前**于条文（条 < 索引）→ 追加修不了（FAISS 删条代价高），仍全量重建。"""
+    model = ScriptedChatModel(routes=_routes(node_count=3))
+    space = _make_space(tmp_path, model, write_mode="documents")
+    space.add(_messages(n=3))
+    space.save()
+
+    # 把条文日志改成只剩 1 条消息，而索引里仍是 3 条向量 → 条 < 索引。
+    log_path = tmp_path / "data" / "conv0" / "docs.log"
+    first = json.loads(log_path.read_text(encoding="utf-8").strip().splitlines()[0])
+    first["msgs"] = first["msgs"][:1]
+    log_path.write_text(json.dumps(first, ensure_ascii=False) + "\n", encoding="utf-8")
+
+    caplog.set_level(logging.INFO)
+    reloaded = _make_space(tmp_path, model, write_mode="documents")
+
+    msgs = [r.getMessage() for r in caplog.records]
+    assert any("改为重建" in m for m in msgs), msgs
+    assert any("重建向量" in m for m in msgs), msgs
+    assert len(reloaded.docs) == 1
+
+
+# ---------------------------------------------------------------------------
+# #1 配额令牌通道：字符速率桶（等待式 + AIMD）
+# ---------------------------------------------------------------------------
+
+def test_char_bucket_burst_then_wait_and_aimd():
+    """字符桶：突发额度用尽后进入等待；429 减半、成功缓升、不超上限。"""
+    from dba_pipeline import throttle
+
+    b = throttle.CharBucket("t", chars_per_min=6000, max_wait=0.0)
+    assert b.acquire(1000) == 0.0            # 突发额度 = ceiling/6 = 1000，刚好取光
+    b.acquire(1000)                          # 再取：不足且 max_wait=0 → 立即放行
+    assert b.overflow == 1, "超时放行必须记账（fail-open 不能静默）"
+
+    b.note_429()
+    assert b.rate == 3000.0, "AIMD：429 速率减半（下限 2000）"
+    for _ in range(100):
+        b.note_success()
+    assert b.rate <= 6000.0, "回升不得超过配置上限"
+
+
+def test_char_bucket_oversized_request_does_not_stall():
+    """单次请求 > 突发额度不得空转到 max_wait。
+
+    现场：一次 /search 的 rerank 输入 ≈ 50 条 × 1800 字 ≈ 9 万字，而 30 万字/分的桶
+    突发额度只有 5 万。旧实现按 `tokens >= n` 判定，桶上限就是 5 万 → 永远等不到 →
+    空转到 120s 才放行（每次 /search 白等两分钟）。
+    """
+    from dba_pipeline import throttle
+
+    b = throttle.CharBucket("big", chars_per_min=6000, max_wait=30.0)   # 突发额度 = 1000
+    t0 = time.monotonic()
+    assert b.acquire(5000) == 0.0, "桶满即可放行，不该等"
+    assert time.monotonic() - t0 < 1.0, "超大请求被卡住（空转到 max_wait）"
+    assert b.overflow == 0, "正常放行不该计入超时放行"
+    # 整笔记成欠账 → 后续调用排队（平均速率仍被压住）
+    assert b.stats()["tokens"] <= 0, "超大请求应记成欠账（tokens 降到 0 以下）"
+
+
+def test_throttle_singletons_are_opt_in_and_resettable():
+    """默认关（不 configure 就没有桶）；configure 后可取到；都 ≤0 时复位为关。"""
+    from dba_pipeline import throttle
+
+    throttle.configure(0, 0)
+    assert throttle.embed_bucket() is None and throttle.llm_bucket() is None
+    assert throttle.rerank_bucket() is None
+
+    throttle.configure(embed_chars_per_min=12000, llm_chars_per_min=0,
+                       rerank_chars_per_min=9000, max_wait=5.0)
+    assert throttle.embed_bucket() is not None
+    assert throttle.llm_bucket() is None
+    assert throttle.rerank_bucket() is not None
+    assert throttle.snapshot()["embedding"]["rate"] == 12000
+    assert throttle.snapshot()["rerank"]["rate"] == 9000
+    assert throttle.ThrottleCallback is not None
+
+    throttle.configure(0, 0)                 # 复位，避免污染其它用例
+    assert throttle.embed_bucket() is None
+    assert throttle.rerank_bucket() is None
+
+
+def test_throttle_env_parsing(tmp_path, monkeypatch):
+    """#1：节流参数由 ALM_* 解析进配置面。"""
+    monkeypatch.setenv("ALM_EMBED_CHARS_PER_MIN", "300000")
+    monkeypatch.setenv("ALM_LLM_CHARS_PER_MIN", "120000")
+    monkeypatch.setenv("ALM_THROTTLE_MAX_WAIT", "90")
+    cfg = ALMConfig.from_env()
+    assert cfg.embed_chars_per_min == 300000
+    assert cfg.llm_chars_per_min == 120000
+    assert cfg.throttle_max_wait == 90.0
+
+
+# ---------------------------------------------------------------------------
+# #2 TopK 压制：早于检索、按 search_max_items 硬封顶
+# ---------------------------------------------------------------------------
+
+def test_search_topk_capped_and_not_raised(tmp_path, monkeypatch):
+    """#2：请求 100 → 生效 25；请求 7（小于上限）不得被抬高。"""
+    model = ScriptedChatModel(routes=_routes(node_count=3))
+    space = _make_space(tmp_path, model, force_mode="vector", search_max_items=25)
+
+    seen = {}
+
+    def fake_pure(qv, k):
+        seen["k"] = k
+        return []
+
+    monkeypatch.setattr(space, "_pure_vector_search", fake_pure)
+
+    space.search(QUERY, top_k=100)
+    assert seen["k"] == 25, f"TopK 未压制：{seen['k']}"
+    space.search(QUERY, top_k=7)
+    assert seen["k"] == 7, f"小于上限的 TopK 被抬高：{seen['k']}"
+    space.search(QUERY, top_k=0)          # 非法/零值 → 至少 1
+    assert seen["k"] == 1
+
+
+def test_search_max_items_env_override(tmp_path, monkeypatch):
+    """#2：上限可由 ALM_SEARCH_MAX_ITEMS 覆盖"""
+    monkeypatch.setenv("ALM_SEARCH_MAX_ITEMS", "3")
+    cfg = ALMConfig.from_env()
+    assert cfg.search_max_items == 3
+
+
+# ---------------------------------------------------------------------------
+# #3 建图等待窗：running 才等，超时退纯向量兜底
+# ---------------------------------------------------------------------------
+
+def test_search_falls_back_to_vector_when_graph_not_ready(tmp_path, monkeypatch):
+    """归属已是 graph、但回补在跑且等待窗为 0 → 立刻退纯向量兜底（带真实 score）。"""
+    model = ScriptedChatModel(routes=_routes(node_count=3))
+    space = _make_space(tmp_path, model, auto_route=True, backfill_enabled=True,
+                        graph_wait_seconds=0)
+    space.add(_messages(n=6))
+    space.set_space_mode("graph", reason="fixture")
+    space._save_backfill_progress(0, "running")      # 正在建图、图还没节点
+    assert space.graph.node_count == 0
+
+    called = {"vector": False}
+
+    def fake_pure(qv, k):
+        called["vector"] = True
+        return [{"id": "x", "content": "c", "score": 0.5}]
+
+    monkeypatch.setattr(space, "_pure_vector_search", fake_pure)
+
+    items = space.search(QUERY, top_k=5)
+    assert called["vector"], "图未就绪时必须走纯向量兜底，不能返回残缺图结果"
+    assert items and "score" in items[0]
+
+
+def test_search_uses_graph_when_backfill_done(tmp_path):
+    """回补 done → 图就绪 → 正常走图链路（不兜底，无 score）。"""
+    model = ScriptedChatModel(routes=_routes(node_count=3))
+    space = _make_space(tmp_path, model, auto_route=True, backfill_enabled=True)
+    space.add(_messages(n=6))
+    assert space.run_backfill() == 6            # 建图完成，status=done
+    space.set_space_mode("graph", reason="fixture")
+    assert space.backfill_progress()["status"] == "done"
+
+    items = space.search(QUERY, top_k=5)
+    assert items, "图就绪却检索为空"
+    assert all("score" not in it for it in items), "图链路不该带 score"
+
+
+def test_wait_for_graph_polls_running_then_returns_ready(tmp_path, monkeypatch):
+    """回补 running（且有活动线程）→ 轮询；状态一转 done 立即返回就绪（不必等满窗口）。"""
+    model = ScriptedChatModel(routes=_routes(node_count=3))
+    space = _make_space(tmp_path, model, auto_route=True, backfill_enabled=True)
+
+    seq = {"n": 0}
+
+    def fake_progress():
+        seq["n"] += 1
+        return {"done": 0, "status": "running" if seq["n"] == 1 else "done"}
+
+    monkeypatch.setattr(space, "backfill_progress", fake_progress)
+    space._bg_active = True      # liveness 判据：确有线程在推进才算"在建、需等待"
+    assert space._wait_for_graph(5.0) is True
+
+
+def test_wait_for_graph_returns_immediately_when_nothing_building(tmp_path):
+    """没有回补在跑就不该等——否则会把每次 /search 白白拖满等待窗。"""
+    model = ScriptedChatModel(routes=_routes(node_count=3))
+    space = _make_space(tmp_path, model, auto_route=True, backfill_enabled=True)
+    space.add(_messages(n=6))
+    assert space.backfill_progress()["status"] == "pending", "夹具：未起回补"
+
+    t0 = time.monotonic()
+    assert space._wait_for_graph(30.0) is False
+    assert time.monotonic() - t0 < 5.0
+
+
+# ---------------------------------------------------------------------------
+# #4 回补独立批次：口径与在线 Add 解耦，且 estimate 与执行同口径
+# ---------------------------------------------------------------------------
+
+def test_backfill_batches_are_coarser_than_online_add(tmp_path):
+    """同样 12 条：在线 6/批 → 2 组；回补 24/批 → 1 组。"""
+    model = ScriptedChatModel(routes=_routes(node_count=3))
+    space = _make_space(tmp_path, model, auto_route=True, backfill_enabled=True,
+                        add_batch_size=6, backfill_batch_size=24)
+    msgs = _messages(n=12)
+    assert len(space._split_add_batches(msgs)) == 2
+    assert len(space._split_add_batches(
+        msgs, size=space.config.backfill_batch_size,
+        budget=space.config.backfill_max_chars)) == 1
+
+
+def test_backfill_batch_size_drives_stop_loss_estimate(tmp_path):
+    """estimate 用 backfill_batch_* 覆盖值：12 条 / 每批 5 条 = 3 组。"""
+    model = ScriptedChatModel(routes=_routes(node_count=3))
+    space = _l1_only_space(tmp_path, model, backfill_batch_size=5, backfill_max_chars=0)
+    space.add(_messages(n=12))
+    assert space.estimate_backfill_groups() == 3
+
+
+# ---------------------------------------------------------------------------
+# 回补断点必须按「原始消息条数」推进，不能按切片单元数
+# ---------------------------------------------------------------------------
+
+def test_split_add_batches_span_counts_messages_not_chunks(tmp_path):
+    """长消息被切成多片时，每组的"消息条数"按**整条完成**计，逐组求和 = 原始消息数。
+
+    这是回补断点的正确性基础：若按单元数推进，1 条 450 字消息被切成 3 片会让 done
+    越过 `doc_msgs` 的真实下标 → 重启续建跳过尚未建图的消息（丢内容）。
+    """
+    model = ScriptedChatModel(routes=_routes(node_count=3))
+    space = _make_space(tmp_path, model)
+    msgs = [
+        AddMessage(role="user", content="x" * 450),
+        AddMessage(role="assistant", content="short one"),
+        AddMessage(role="user", content="short two"),
+    ]
+    spanned = space._split_add_batches_span(msgs, size=24, budget=100)
+
+    assert len(spanned) > len(msgs), "夹具：长消息应确实被切成多片（组数 > 消息数）"
+    assert sum(n for _, n in spanned) == len(msgs), \
+        f"各组消息数之和应等于原始消息数，实际 {[n for _, n in spanned]}"
+
+
+def test_backfill_progress_never_exceeds_message_count(tmp_path):
+    """回补断点 done 不得越过消息条数（长消息切片后的回归）。"""
+    model = ScriptedChatModel(routes=_routes(node_count=3))
+    space = _l1_only_space(tmp_path, model, backfill_batch_size=24, backfill_max_chars=200)
+    space.add([
+        AddMessage(role="user", content="x" * 450),
+        AddMessage(role="assistant", content="short one"),
+        AddMessage(role="user", content="short two"),
+    ])
+    assert len(space.doc_msgs) == 3
+
+    added = space.run_backfill()
+
+    assert added == 3, f"应补 3 条，实际 {added}"
+    progress = space.backfill_progress()
+    assert progress["done"] == 3, f"done 越过消息条数：{progress}"
+    assert progress["status"] == "done"
+    assert space.graph.node_count > 0
+
+
+# ---------------------------------------------------------------------------
+# 陈旧 running（无活动线程）：不得白等等待窗，且应允许续建
+# ---------------------------------------------------------------------------
+
+def test_stale_running_backfill_does_not_stall_and_can_resume(tmp_path):
+    """回补线程已退出但磁盘遗留 running → 不判"在建"。
+
+    否则 `_wait_for_graph` 永远等不到 done：每次 /search 白等满等待窗；且
+    `start_backfill` 见 running 直接返回 → 回补永不续建（图永久不完整）。
+    """
+    model = ScriptedChatModel(routes=_routes(node_count=3))
+    space = _make_space(tmp_path, model, auto_route=True, backfill_enabled=True,
+                        graph_wait_seconds=30)
+    space.add(_messages(n=6))
+    space.set_space_mode("graph", reason="fixture")
+    space._save_backfill_progress(0, "running")     # 陈旧状态：本实例没有活动线程
+    assert space._bg_active is False
+    assert space._graph_ready() is False
+
+    t0 = time.monotonic()
+    items = space.search(QUERY, top_k=5)            # 必须立刻退向量，不得等满 30s
+    assert time.monotonic() - t0 < 5.0, "陈旧 running 让 /search 白等了等待窗"
+    assert items, "兜底纯向量应有结果"
+
+    thread = space.start_backfill()                 # 陈旧 running 应允许重新拉起
+    assert thread is not None, "遗留 running 且无活动线程时必须允许续建"
+    thread.join(timeout=30)
+    assert space.backfill_progress()["status"] == "done"
+    assert space.graph.node_count > 0
+
+
+# ---------------------------------------------------------------------------
+# Cross-encoder 重排（仅纯向量通道）
+# ---------------------------------------------------------------------------
+
+class _FakeReranker:
+    """按预置规则出结果：success(反转) / fail(None) / boom(抛错)。"""
+
+    def __init__(self, mode: str = "reverse"):
+        self.mode = mode
+        self.seen = {}
+
+    def rerank(self, query, documents, top_n=None):
+        self.seen["n_docs"] = len(documents)
+        self.seen["query"] = query
+        if self.mode == "fail":
+            return None
+        if self.mode == "boom":
+            raise RuntimeError("rerank boom")
+        # 原序倒过来（下标越大排在越前），供断言"重排确实生效"
+        return [(i, float(i)) for i in reversed(range(len(documents)))]
+
+
+def test_reranker_client_request_shape_and_parse(monkeypatch):
+    """请求结构对齐 /v1/rerank：截断、top_n、鉴权头；响应按分数降序。"""
+    from dba_pipeline import rerank as rr
+
+    calls = {}
+
+    class FakeResp:
+        status_code = 200
+
+        def json(self):
+            return {"results": [
+                {"index": 0, "relevance_score": 0.1},
+                {"index": 2, "relevance_score": 0.9},
+                {"index": 1, "relevance_score": 0.5},
+            ]}
+
+    def fake_post(url, json=None, headers=None, timeout=None):
+        calls.update(url=url, json=json, headers=headers)
+        return FakeResp()
+
+    monkeypatch.setattr(rr.requests, "post", fake_post)
+    r = rr.Reranker(model="m", api_base="https://x/v1", api_key="k", max_chars=4)
+    out = r.rerank("q", ["aaaaaa", "bb", "cccc"], top_n=3)
+
+    assert calls["url"] == "https://x/v1/rerank"
+    assert calls["json"]["model"] == "m"
+    assert calls["json"]["documents"] == ["aaaa", "bb", "cccc"], "单条文档须截断到 max_chars"
+    assert calls["json"]["top_n"] == 3
+    assert calls["headers"]["Authorization"] == "Bearer k"
+    assert out == [(2, 0.9), (1, 0.5), (0, 0.1)], "输出须按相关度降序"
+
+
+def test_reranker_returns_none_on_http_failure(monkeypatch):
+    """非 200 / 网络异常 → 返回 None（调用方静默降级），不抛错。"""
+    from dba_pipeline import rerank as rr
+
+    monkeypatch.setattr(rr.time, "sleep", lambda *_a: None)
+
+    class R500:
+        status_code = 500
+        text = "boom"
+
+    monkeypatch.setattr(rr.requests, "post", lambda *a, **k: R500())
+    r = rr.Reranker(model="m", api_base="https://x/v1", api_key="k", max_attempts=2)
+    assert r.rerank("q", ["a", "b"]) is None
+
+
+def test_reranker_single_document_skips_network(monkeypatch):
+    """单条候选无需打分（也省一次网络调用）。"""
+    from dba_pipeline import rerank as rr
+
+    def boom(*_a, **_k):
+        raise AssertionError("单条候选不该发请求")
+
+    monkeypatch.setattr(rr.requests, "post", boom)
+    r = rr.Reranker(model="m", api_base="https://x/v1", api_key="k")
+    assert r.rerank("q", ["only"]) == [(0, 0.0)]
+
+
+def test_reranker_from_env_falls_back_to_embedding(monkeypatch):
+    """端点/密钥缺省回落 EMBEDDING_*；缺项则构造失败返回 None。"""
+    from dba_pipeline import rerank as rr
+
+    for k in ("ALM_RERANK_API_BASE", "ALM_RERANK_API_KEY", "ALM_RERANK_MODEL"):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("EMBEDDING_API_BASE", "https://e/v1")
+    monkeypatch.setenv("EMBEDDING_API_KEY", "ek")
+
+    r = rr.Reranker.from_env()
+    assert r is not None and r.url == "https://e/v1/rerank" and r.api_key == "ek"
+
+    monkeypatch.delenv("EMBEDDING_API_BASE")
+    monkeypatch.delenv("EMBEDDING_API_KEY")
+    assert rr.Reranker.from_env() is None, "缺端点/密钥应构造失败（等同关闭）"
+
+
+def test_rerank_config_env(tmp_path, monkeypatch):
+    """ALM_RERANK / ALM_RERANK_CANDIDATES 进配置面。"""
+    monkeypatch.setenv("ALM_RERANK", "1")
+    monkeypatch.setenv("ALM_RERANK_CANDIDATES", "30")
+    cfg = ALMConfig.from_env()
+    assert cfg.rerank_enabled is True
+    assert cfg.rerank_candidates == 30
+
+
+def test_rerank_reorders_pure_vector_results(tmp_path):
+    """开启重排后：先多召回（候选 > 返回），再按重排顺序截回 top_k。"""
+    base = _make_space(tmp_path / "base", ScriptedChatModel(routes=_routes(node_count=3)),
+                       force_mode="vector", search_max_items=6)
+    base.add(_messages(n=6))
+    cosine_ids = [it["id"] for it in base.search(QUERY, top_k=6)]
+    assert len(cosine_ids) == 6
+
+    rr = _make_space(tmp_path / "rr", ScriptedChatModel(routes=_routes(node_count=3)),
+                     force_mode="vector", search_max_items=3, rerank_candidates=6)
+    rr.add(_messages(n=6))
+    rr.reranker = _FakeReranker("reverse")
+
+    out = rr.search(QUERY, top_k=3)
+
+    assert rr.reranker.seen["n_docs"] == 6, "应先多召回全部候选再重排"
+    assert [it["id"] for it in out] == list(reversed(cosine_ids))[:3], \
+        "返回顺序应是重排结果（而非余弦序）"
+    assert all(isinstance(it.get("score"), float) for it in out), "score 仍保留余弦原值"
+
+
+def test_rerank_failure_falls_back_to_cosine_order(tmp_path):
+    """重排返回 None 或抛错 → 静默降级回余弦序，且影响面只限排序。"""
+    base = _make_space(tmp_path / "b", ScriptedChatModel(routes=_routes(node_count=3)),
+                       force_mode="vector", search_max_items=3)
+    base.add(_messages(n=6))
+    cosine = [it["id"] for it in base.search(QUERY, top_k=3)]
+
+    rr = _make_space(tmp_path / "r", ScriptedChatModel(routes=_routes(node_count=3)),
+                     force_mode="vector", search_max_items=3, rerank_candidates=6)
+    rr.add(_messages(n=6))
+
+    rr.reranker = _FakeReranker("fail")
+    assert [it["id"] for it in rr.search(QUERY, top_k=3)] == cosine, "失败须降级回余弦序"
+
+    rr.reranker = _FakeReranker("boom")
+    assert [it["id"] for it in rr.search(QUERY, top_k=3)] == cosine, "抛错须降级回余弦序"
+
+
+def test_rerank_off_by_default(tmp_path):
+    """默认关：不注入 reranker 时行为与从前一致（召回深度 = top_k）。"""
+    space = _make_space(tmp_path, ScriptedChatModel(routes=_routes(node_count=3)),
+                        force_mode="vector")
+    assert space.reranker is None
+    assert space.config.rerank_enabled is False
+    space.add(_messages(n=6))
+    assert space.search(QUERY, top_k=3)
+
+
+def test_rerank_candidates_are_clamped(tmp_path, monkeypatch):
+    """⑤：误配超大候选数时按上限收敛，不把整库一次性送给 rerank。"""
+    from alm.space import _RERANK_MAX_CANDIDATES
+
+    space = _make_space(tmp_path, ScriptedChatModel(routes=_routes(node_count=3)),
+                        force_mode="vector", rerank_candidates=100000)
+    space.reranker = _FakeReranker("reverse")
+    space.add(_messages(n=3))
+
+    seen = {}
+    real = space.doc_store.search_by_vector
+
+    def spy(vec, k):
+        seen["k"] = k
+        return real(vec, k)
+
+    monkeypatch.setattr(space.doc_store, "search_by_vector", spy)
+    space.search(QUERY, top_k=3)
+    assert seen["k"] == _RERANK_MAX_CANDIDATES, f"候选未按上限收敛：{seen['k']}"
+
+
+def test_rerank_runs_outside_space_lock(tmp_path):
+    """③：重排是网络调用，必须在空间锁**外**——持锁会阻塞同 user_id 的并发 /add。
+
+    用门闩确定性复现（与目的推断同法）：重排一启动就等"add 已完成"。若重排持锁，
+    add 拿不到锁 → 事件永不置位 → 门闩超时，断言即失败。
+    """
+    space = _make_space(tmp_path, ScriptedChatModel(routes=_routes(node_count=3)),
+                        force_mode="vector", search_max_items=6, rerank_candidates=6)
+    space.add(_messages(n=6))
+
+    started = threading.Event()
+    add_done = threading.Event()
+    gate = {"timeout": False}
+
+    class GatedReranker:
+        def rerank(self, query, documents, top_n=None):
+            started.set()
+            if not add_done.wait(timeout=5.0):
+                gate["timeout"] = True
+            return [(i, float(len(documents) - i)) for i in range(len(documents))]
+
+    space.reranker = GatedReranker()
+    err = {}
+
+    def run_search():
+        try:
+            space.search(QUERY, top_k=6)
+        except Exception as exc:                  # 线程内异常必须带回主线程
+            err["exc"] = exc
+
+    t = threading.Thread(target=run_search)
+    t.start()
+    assert started.wait(timeout=5.0), "重排未启动，场景未复现"
+
+    t0 = time.monotonic()
+    space.add(_messages(n=2))                     # 重排"睡眠"期间 add 必须能拿到锁
+    elapsed = time.monotonic() - t0
+    add_done.set()
+    t.join(timeout=10.0)
+
+    assert not gate["timeout"], "重排持锁，add 被阻塞（③ 回归）"
+    assert not err, f"search 线程抛出异常：{err.get('exc')}"
+    assert elapsed < 5.0, f"add 耗时异常：{elapsed:.3f}s"
+
+
+def test_embedding_splits_requests_without_shortening_texts(monkeypatch):
+    """④：批量嵌入按字符预算**拆请求**，但每条文本原样送（不切正文、顺序不变）。"""
+    from dba_pipeline.embedding.store import OpenAIEmbeddings
+
+    emb = OpenAIEmbeddings(api_key="k", api_base="https://x/v1", model="m")
+    emb._MAX_CHARS = 100            # 缩小以便构造边界
+    emb._MAX_CHARS_PER_CALL = 250
+
+    batches = []
+
+    def fake_call(texts):
+        batches.append(list(texts))
+        return [[0.0] for _ in texts]
+
+    monkeypatch.setattr(emb, "_call", fake_call)
+    texts = ["a" * 100, "b" * 100, "c" * 100, "d" * 50]      # 350 字 → 两批（200 / 150）
+
+    out = emb.embed_documents(texts)
+
+    assert len(out) == len(texts), "向量条数必须与入参一致（顺序对齐）"
+    assert batches == [texts[:2], texts[2:]], f"批次划分不符：{batches}"
+    assert batches[0][0] == "a" * 100, "文本被改动了（不应切正文/截断）"
+
+
+
+

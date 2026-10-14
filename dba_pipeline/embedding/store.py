@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 # 云主机上共享 embedding 端点出现 429（限流）/ 连接超时是常态，而这条链路对两端都是
 # 关键路径：Add 侧建图要嵌入全部节点，Search 侧拿不到查询向量就无法判定相关性。
 # 所以在网络层先做有界重试，重试耗尽才向上抛错——ALM 的 /search 会把异常转成 5xx，
-# 交给平台重试，而不是静默降级成「没有相关记忆」。
+# 交给调用方重试，而不是静默降级成「没有相关记忆」。
 _RETRY_STATUS = frozenset({408, 409, 425, 429, 500, 502, 503, 504})
 # 总尝试次数（含首次）。可用 EMBEDDING_MAX_ATTEMPTS 覆盖。
 _EMBED_MAX_ATTEMPTS = max(1, int(os.environ.get("EMBEDDING_MAX_ATTEMPTS", "4")))
@@ -96,6 +96,22 @@ class OpenAIEmbeddings(Embeddings):
     # 注意：改本值会改变长文本的向量，故已纳入 space 的索引指纹（换值即自动重建索引）。
     _MAX_CHARS = 2000
 
+    # 单次 HTTP 请求的**字符预算**（只用来把一批文本拆成多个请求，见 embed_documents）。
+    #
+    # ⚠️ 这不是"切正文"：**任何一条文本都原样整条送进模型**（只受 `_MAX_CHARS` 那条既有
+    # 截断约束），拆的只是"这一批分几次发"。embedding 逐条独立编码，故拆请求**不改变任何
+    # 一条文本的向量**，也就无语义损失（对比：切正文会把"一条记忆"的向量拆成两条，
+    # 可检索单元会变——那是另一回事，本改动不碰）。
+    #
+    # 为什么要拆：
+    #   ① 供应商对单请求的 input 数量/体积有上限；
+    #   ② 出站节流按"一次 acquire 的字符数"计量，而令牌桶的物理上限是突发额度
+    #      （`_cap/6` = 10 秒量）。单请求若远超它，就永远攒不满——虽然 acquire 已改为
+    #      "桶满即放行 + 记欠账"（见 throttle），但那种大请求依然**无法被节流器真正限速**。
+    #      拆到每请求 ≤ 本预算，节流才真正把 TPM 压住。
+    # 20000 字符 ≈ 10 条满预算文本，远低于 300000 字/分的突发额度（5 万），留足余量。
+    _MAX_CHARS_PER_CALL = 20000
+
 
     def _call(self, input_texts: List[str]) -> List[List[float]]:
         url = f"{self.api_base}/embeddings"
@@ -104,6 +120,14 @@ class OpenAIEmbeddings(Embeddings):
             "Content-Type": "application/json",
         }
         texts, budget = [t[: self._MAX_CHARS] for t in input_texts], self._MAX_CHARS
+        # 出站节流（字符速率，见 dba_pipeline/throttle.py）：把"我们发出的字符速率"压到
+        # 供应商配额以内，而不是打爆后吃 429（响应体：`Details: TPM limit reached.`）
+        # → 5xx → 调用方重试 → 流量再放大。默认关闭（未 configure 时为 None）。
+        try:
+            from dba_pipeline import throttle as _throttle
+            _bucket = _throttle.embed_bucket()
+        except Exception:      # 节流绝不阻塞主流程
+            _bucket = None
         attempt = 0
         while True:
             payload = {
@@ -111,6 +135,8 @@ class OpenAIEmbeddings(Embeddings):
                 "input": texts,
                 "encoding_format": "float",
             }
+            if _bucket is not None:
+                _bucket.acquire(sum(len(t) for t in texts))
             try:
                 resp = requests.post(url, json=payload, headers=headers, timeout=30)
             except requests.exceptions.RequestException as exc:
@@ -120,12 +146,24 @@ class OpenAIEmbeddings(Embeddings):
                 attempt += 1
                 continue
             if resp.status_code == 200:
+                if _bucket is not None:
+                    _bucket.note_success()
                 break
             if resp.status_code == 400 and budget > 400:
                 budget //= 2
                 texts = [t[:budget] for t in texts]
                 continue
             if resp.status_code in _RETRY_STATUS:
+                if resp.status_code == 429:
+                    # 诊断：429 响应体通常写明是 RPM 还是 TPM 超限；
+                    # 同时记下本批规模，便于估算我们实际压的是哪条线。
+                    logger.warning(
+                        "Embedding 429 诊断: 本批 inputs=%d chars=%d 第%d次; 响应体=%s",
+                        len(texts), sum(len(t) for t in texts), attempt + 1,
+                        (resp.text or "")[:300],
+                    )
+                    if _bucket is not None:
+                        _bucket.note_429()   # AIMD：速率减半，自动收敛到配额以内
                 if not _sleep_before_retry(attempt, f"HTTP {resp.status_code}", resp):
                     resp.raise_for_status()
                 attempt += 1
@@ -136,7 +174,27 @@ class OpenAIEmbeddings(Embeddings):
         return [item["embedding"] for item in items]
 
     def embed_documents(self, texts: List[str]) -> List[List[float]]:
-        return self._call(texts)
+        """把一批文本**按字符预算拆成多次请求**逐条嵌入（逐条文本原样送，不改语义）。
+
+        顺序严格保持与入参一致（逐段 extend），调用方按 index 对齐向量。
+        """
+        if not texts:
+            return []
+        vectors: List[List[float]] = []
+        batch: List[str] = []
+        size = 0
+        for text in texts:
+            # 与 `_call` 的截断口径一致：按截断后的长度计预算，避免"看着超了其实没超"
+            n = len((text or "")[: self._MAX_CHARS])
+            # 单条超预算也允许独占一批（n ≤ _MAX_CHARS < 预算，故必能装下）
+            if batch and size + n > self._MAX_CHARS_PER_CALL:
+                vectors.extend(self._call(batch))
+                batch, size = [], 0
+            batch.append(text)
+            size += n
+        if batch:
+            vectors.extend(self._call(batch))
+        return vectors
 
     def embed_query(self, text: str) -> List[float]:
         return self._call([text])[0]
@@ -151,7 +209,7 @@ class LocalEmbeddings(Embeddings):
 
     # 与远端 `OpenAIEmbeddings` 对齐的"单条预算"字段：`space._index_digest()` 会读它，
     # 用于判断"改预算后落盘向量是否还与新查询同语义"。本类此前**没有该属性**，指纹里
-    # 该字段恒为 None，与远端路径不一致（0927 审查 D6）。本地路径不按字符截断（交给
+    # 该字段恒为 None，与远端路径不一致。本地路径不按字符截断（交给
     # 模型的序列上限），故这里用模型的 token 上限作代理值：换模型即指纹变化 → 自动重建。
     _MAX_CHARS = 8192
 
@@ -186,7 +244,7 @@ class LocalEmbeddings(Embeddings):
         return embedding.tolist()
 
 
-# ---- 向量落盘：追加式分片（2026-10-01 改）----
+# ---- 向量落盘：追加式分片 ----
 #
 # 为什么不再走 LangChain 的 `save_local` / `load_local`：
 #   ① `save_local` 会把 **docstore 里的全部正文**一并 pickle 到 `index.pkl`，而正文在
@@ -497,7 +555,7 @@ class VectorStore:
         返回**真余弦**（`_relevance`），与图侧的 `_cosine()` 同一把尺，保证
         `max(图余弦, 文档分)` 是合法比较。
 
-        0927 审查 B2：此前返回 `1 / (1 + distance)`。FAISS 返回的是**平方 L2 距离**，
+        此前返回 `1 / (1 + distance)`。FAISS 返回的是**平方 L2 距离**，
         故那个公式等价于 `1/(3−2cos)`——与余弦**不是同一把尺**，且在 cos≈0.5 处交叉
         （cos<0.5 被高估、cos>0.5 被低估），两方向都会错。原因是文档通道的分数会与图
         余弦一起进入 `best_cos`，进而污染弃权阈值标定。
@@ -533,7 +591,7 @@ class VectorStore:
             ]
 
     def _relevance(self, query_vec: np.ndarray, mid: str, distance: float) -> float:
-        """把一次向量命中换算成**与图侧同尺度的余弦**（0927 审查 B2）。
+        """把一次向量命中换算成**与图侧同尺度的余弦**。
 
         优先用缓存向量精确计算余弦（与 embedding 提供方是否归一化无关）；缓存缺失时
         退回距离换算——仅当向量已归一化时 `cos = 1 − 平方L2/2` 才等价。
@@ -567,7 +625,7 @@ class VectorStore:
         with self._lock:
             return len(self._content_vectors) > 0
 
-    # ---- P3b: 快照持久化 ----
+    # ---- 快照持久化 ----
 
     def save(self, path: str):
         """把**本次变更的向量**追加成新分片（不再全量重写索引）
@@ -670,7 +728,7 @@ class VectorStore:
 
         为什么必须有 ②：分片是"每次 save 写一个"，而 `space` 在**每次 Add** 都
         `save()`。追加型负载（绝大多数）没有墓碑，于是 ① 永远不成立 →
-        **文件数随 Add 次数线性增长**（一轮 full 4,378 次 Add 可攒上千个分片），
+        **文件数随 Add 次数线性增长**（一轮完整运行 4,378 次 Add 可攒上千个分片），
         而 `load()` 要**逐个打开**、`_shard_files()` 每次 save 都要重扫目录——
         O(n log n) 每 Add → O(n² log n)。文件数必须有与"存活性"无关的上限。
 

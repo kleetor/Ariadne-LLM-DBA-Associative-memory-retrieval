@@ -244,7 +244,7 @@ class GraphBuilder:
             except Exception as e:
                 # ID 解析阶段本不该抛异常（缺 from/to 的畸形边已在 _resolve_edge_ids 内丢弃）。
                 # 真出了意外也只放弃本批的边，绝不能让整个维护请求失败——否则该批内容
-                # 完全不落库、平台收到 5xx（见 0927 审查 A1）。此时节点已写入，不回滚。
+                # 完全不落库、调用方收到 5xx。此时节点已写入，不回滚。
                 logger.error("边操作 ID 解析失败，已跳过本批全部边: %s", e)
                 resolved_edge_ops = []
             for op in resolved_edge_ops:
@@ -275,8 +275,8 @@ class GraphBuilder:
 
     def _apply_node_op(self, op: Dict, id_mapping: Dict[str, str], txn: _WriteTransaction) -> Optional[str]:
         """执行单个节点操作，返回新创建的节点 ID（或 None）"""
-        # `action` 省略即 create（P1-2 输出瘦身：实测 99.8% 的节点 op 都是 create，
-        # 让它成为默认值可省掉约 5% 的输出 token，见 版本变更记录 §4.26）
+        # `action` 省略即 create（输出瘦身：实测 99.8% 的节点 op 都是 create，
+        # 让它成为默认值可省掉约 5% 的输出 token）
         action = op.get("action") or "create"
         txn.snapshot_stats(self.stats)
 
@@ -420,7 +420,7 @@ class GraphBuilder:
     def _apply_edge_op(self, op: Dict, txn: _WriteTransaction):
         """执行单个边操作"""
         # 同 `_apply_node_op`：省略 `action` 即 create
-        # （实测 100% 的边 op 都是 create，见 版本变更记录 §4.26）
+        # （实测 100% 的边 op 都是 create）
         action = op.get("action") or "create"
 
         if action == "create":
@@ -642,7 +642,7 @@ class GraphBuilder:
         缺 `from`/`to`（或值为空）的畸形边直接丢弃并记 WARNING，不抛异常：
         LLM 输出被截断后经 `_salvage_truncated_ops` 救回的对象**只保证是合法 JSON，
         不保证字段完整**，这种形态必然存在。此前用 `op["from"]` 直接取值会让整个
-        `maintain` 抛 KeyError → Add 请求 5xx、该批内容完全不落库（见 0927 审查 A1）。
+        `maintain` 抛 KeyError → Add 请求 5xx、该批内容完全不落库。
         """
         resolved = []
         dropped = 0

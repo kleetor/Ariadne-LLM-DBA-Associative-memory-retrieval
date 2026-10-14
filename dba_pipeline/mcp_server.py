@@ -422,7 +422,7 @@ class DBAServer:
                     ts = int(time.time() * 1000)
                     result = self.dba.maintain(conversation, timestamp=ts)
                     # triage 判 SKIP 时内容原本被直接丢弃（MCP 没有 ALM 的文档通道）。
-                    # 补一步原文兜底，保证「已存储且可检索」（见 0927 审查 B5）。
+                    # 补一步原文兜底，保证「已存储且可检索」。
                     if result.get("skipped"):
                         raw_ids = self.dba.store_raw(conversation, timestamp=ts)
                         result.setdefault("result", {}).setdefault("created_ids", []).extend(raw_ids)
@@ -483,7 +483,7 @@ class DBAServer:
                     stories = stories[:rerank_k]
                 return {
                     "stories": stories,
-                    # 0927：StoryRank 只回 `used` 计数，不再回采纳/丢弃的 id 列表
+                    # StoryRank 只回 `used` 计数，不再回采纳/丢弃的 id 列表
                     # （理由见 InferenceEngine.story_rank 的 Returns）。
                     "story_used": result.get("story_used", 0),
                     "total_matched": result.get("total_candidates", 0),
@@ -616,9 +616,9 @@ class DBAServer:
         return self.idle_seconds() >= idle_seconds
 
     def review_sources(self, batch_id: str = None, max_batches: int = 3) -> dict:
-        """溯源巡检（C3）：把"该批原文 + 该批产出的节点"交给 LLM 核对，**只报不改**。
+        """溯源巡检：把"该批原文 + 该批产出的节点"交给 LLM 核对，**只报不改**。
 
-        依赖 C1（原文按批次落盘，`ARIADNE_SOURCE_STORE=1`）。仅读取 `sources/` 目录，
+        依赖原文按批次落盘（`ARIADNE_SOURCE_STORE=1`）。仅读取 `sources/` 目录，
         不写图谱；LLM 调用在锁外进行（持锁只做一次节点快照）。
 
         与 review_graph 共用 `_review_running` 非阻塞互斥（该锁为 RLock：空闲巡检整轮
@@ -1703,7 +1703,7 @@ def main():
                 print("错误: 需要配置 LLM API Key（--llm-api-key 或环境变量 OPENAI_API_KEY）"
                       "或指定 --llm-base-url（本地模型）", file=sys.stderr)
                 sys.exit(1)
-            # 思考模式默认关闭（依据见 Plan/alm/0921——thinking档位对照实验报告.md）。该参数只有
+            # 思考模式默认关闭。该参数只有
             # deepseek 系端点认，其它模型带上会 400，故统一由 provider.thinking_kwargs 判定。
             llm_extra = thinking_kwargs(args.llm_model, args.llm_base_url, args.llm_thinking)
             llm = ChatOpenAI(
@@ -1721,7 +1721,7 @@ def main():
                 vector_store=vector_store,
                 graph_builder=builder,
                 # 「决策与取舍」补充规则（把"被放弃的选项 / 选择依据"也抽成 REASON 节点）。
-                # 仅 MCP 侧开启；ALM 侧保持关闭，避免动到待提交的评测行为。
+                # 仅 MCP 侧开启；ALM 侧保持关闭，避免影响 ALM 的运行行为。
                 enable_choice_extraction=True,
                 # 每条节点附带 evidence（原文支撑片段），供核查与后续溯源巡检使用；
                 # 不进检索/叙事，仅在 inspect_graph 可见，且受子串校验兜底。

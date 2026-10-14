@@ -1289,7 +1289,7 @@ def create_app(api: MemoryGraphAPI, config: VizConfig,
     app.add_middleware(
         webauth.AuthMiddleware, store=store, signer=signer,
         # 登录页要显示站点图标、要用图谱数据铺 3D 背景，故单独放行这两个静态资源。
-        # graph.json 由 data/LiFEMem.yaml 烘成，只含 id/type/group，不含记忆正文。
+        # graph.json 由图谱 YAML 烘成，只含 id/type/group，不含记忆正文。
         exempt_paths=webauth.ALWAYS_EXEMPT + ("/static/icon.png", "/static/graph.json"),
     )
     app.state.log_bus = bus

@@ -267,12 +267,12 @@ class MaintenanceScheduler:
                 dropped = conversations[:-self.config.max_batch_rounds]
                 conversations = conversations[-self.config.max_batch_rounds:]
                 # 被截断丢弃的早期轮次同样要兜底落库，否则是静默丢内容
-                # （与下面的自动跳过分支同口径，见 0927 审查 B5）
+                # （与下面的自动跳过分支同口径）
                 dropped_merged = "\n\n".join(_format_round(ts, text) for ts, text in dropped)
                 dropped_ts = next((ts for ts, _ in reversed(dropped) if ts), None)
                 self.dba.store_raw(dropped_merged, timestamp=dropped_ts)
 
-            # P3a: 自动跳过 — 连续空转太多，不再调用 LLM
+            # 自动跳过 — 连续空转太多，不再调用 LLM
             auto_skip = False
             if reason not in (TriggerReason.SESSION_END, TriggerReason.MANUAL):
                 with self._lock:
@@ -285,7 +285,7 @@ class MaintenanceScheduler:
                     f"丢弃 {batch_count} 轮对话"
                 )
                 # 自动跳过的本意是「省下一次 LLM 调用」，不是「丢内容」——原文兜底
-                # 落库后再返回（见 0927 审查 B5）。store_raw 内含网络嵌入，必须在
+                # 落库后再返回。store_raw 内含网络嵌入，必须在
                 # self._lock **之外**调用，否则会长时间阻塞所有需要该锁的公共入口。
                 skipped_merged = "\n\n".join(
                     _format_round(ts, text) for ts, text in conversations
@@ -305,7 +305,7 @@ class MaintenanceScheduler:
             result = self.dba.maintain(merged, timestamp=batch_ts, source_rounds=source_rounds)
 
             # triage 判 SKIP 时内容原本被静默丢弃（MCP 没有 ALM 的文档通道）。
-            # 补一步原文兜底落库（见 0927 审查 B5）。这**不**改变下面的空转判定——
+            # 补一步原文兜底落库。这**不**改变下面的空转判定——
             # 兜底不消耗 LLM，把"跳过"算成"有效"会让连续空转保护失效。
             if result.get("skipped"):
                 self.dba.store_raw(merged, timestamp=batch_ts)

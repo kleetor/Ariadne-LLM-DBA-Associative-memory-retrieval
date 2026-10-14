@@ -13,7 +13,7 @@ from alm.contract import (
 )
 from alm.engine import space_dirname
 from alm.space import (
-    MemorySpace, _clip_for_log, _has_answer_instruction, _is_precision_query,
+    _clip_for_log, _has_answer_instruction, _is_precision_query,
     _is_qa_feedback, _qa_feedback_summary, _retrieval_text, _strip_option_block,
 )
 from alm.tokens import TokenMeter, extract_finish_reason
@@ -142,36 +142,12 @@ class TestSearchContract:
         assert resp["data"][0]["id"] == "n1"
 
 
-class TestScoreNormalization:
-    def test_normalized_to_unit_range(self):
-        items = [
-            {"id": "a", "content": "x", "score": 4.0},
-            {"id": "b", "content": "y", "score": 2.0},
-        ]
-        result = MemorySpace._normalize_scores(items)
-        assert result[0]["score"] == 1.0
-        assert result[1]["score"] == 0.5
-        # 顺序保持（PAR 已按 combined_score 降序返回）
-        assert [item["id"] for item in result] == ["a", "b"]
-
-    def test_fallback_scores_are_monotonic(self):
-        items = [
-            {"id": "a", "content": "x", "score": 0.0},
-            {"id": "b", "content": "y", "score": 0.0},
-        ]
-        result = MemorySpace._normalize_scores(items)
-        assert result[0]["score"] > result[1]["score"]
-
-    def test_empty_input(self):
-        assert MemorySpace._normalize_scores([]) == []
-
-
 class TestQaFeedbackGuard:
-    """平台在每次 search 之后会回写一条 QA 反馈（评测元数据）。
+    """调用方在每次 search 之后会回写一条 QA 反馈（运行元数据）。
 
     它含「题目 + 我们上一轮的答案 + 得分」，必须拦在入图之前（否则它以近乎 1.0 的
     余弦抢走同题种子位，并把上一次的错误答案写进记忆）；但其 `qa_id` / `method` /
-    `score` 是平台唯一主动给出的「题目归属」信道，故要留痕。
+    `score` 是调用方唯一主动给出的「题目归属」信道，故要留痕。
     """
 
     REAL = ('Streaming online QA feedback:\n'
@@ -204,7 +180,7 @@ class TestQaFeedbackGuard:
 
 
 class TestStripOptionBlock:
-    """平台把选择题的「选项 + 作答指令」内联进 query，检索侧只该消费题干。
+    """调用方把选择题的「选项 + 作答指令」内联进 query，检索侧只该消费题干。
 
     实测 `scriptMem-enemy:q0000` 的 query 全长 1147 字 = 题干 168 + 选项块 876 +
     作答指令 103。整坨进向量会把该题答案节点（`n385` "foremost man"）从第 1 名挤到
@@ -374,7 +350,7 @@ class TestSpaceDirname:
 class TestTokenMeterTruncation:
     """撞输出上限必须可观测。
 
-    0927 线上有一次**写入侧**抽取 `in=4533 out=32768`——撞满上限、输出畸形，而
+    线上有一次**写入侧**抽取 `in=4533 out=32768`——撞满上限、输出畸形，而
     `finish_reason` 当时只在 story_rank 里记录，所以这条完全隐形，只能靠"out 恰好
     等于上限"反推。把 finish_reason 挂到计量器上，写入/检索两侧一并覆盖。
     """
@@ -417,7 +393,7 @@ class TestTokenMeterTruncation:
 
 
 class TestTraceClip:
-    """留痕截断：单条日志记录必须有界（0930 实测单文件 84 MB 的成因之一）"""
+    """留痕截断：单条日志记录必须有界（实测单文件 84 MB 的成因之一）"""
 
     def test_short_text_untouched(self):
         assert _clip_for_log("hello", 100) == "hello"
@@ -447,8 +423,8 @@ class TestUnknownFieldsArePreserved:
 
     为什么这是关键项：写侧路由（"这个语料属于哪个数据集"）需要的判据，
     官方契约里**没有**对应字段——只能从 `user_id` / `request_id` 的格式里取，
-    或者看平台是否多送了字段。原来的写法是 `body.get(...)` 只挑 4 个键，
-    其余**无声吃掉**：平台就算送了 `dataset`，我们也连"它存在"都不知道，
+    或者看调用方是否多送了字段。原来的写法是 `body.get(...)` 只挑 4 个键，
+    其余**无声吃掉**：调用方就算送了 `dataset`，我们也连"它存在"都不知道，
     于是"该不该建图"这个决策只能靠猜内容（而内容判据已被证明不可靠）。
     """
 

@@ -178,9 +178,9 @@ def patch_pointer_in(directory: str, **fields) -> Dict:
 def list_graphs(yaml_path: Optional[str]) -> List[Dict]:
     """列出图谱目录下的**图谱**文件。
 
-    同目录里常混着别的 YAML（如 LiFEMem_queries.yaml 这类评测数据），它们既不是
+    同目录里常混着别的 YAML（如各类 *_queries.yaml 查询数据），它们既不是
     图谱、也不该被面板的「删除」按钮碰到，故按「能被解析成图谱」过滤——否则用户
-    一次误点就可能删掉评测数据。解析结果按 (mtime, size) 缓存，避免每次开面板
+    一次误点就可能删掉查询数据。解析结果按 (mtime, size) 缓存，避免每次开面板
     都重新解析全部文件。
     """
     directory = graph_dir(yaml_path)

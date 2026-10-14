@@ -50,7 +50,7 @@ STATUS_INFERENCE_PROMPT = ChatPromptTemplate.from_messages([
 # ---- 目的推断 Prompt ----
 # 该 prompt 同时承担一个**时序二元标签**（temporal），供 ALM 的 /search 决定是否调用
 # 独立时序工具 temporal_lookup：把它合并在这一次调用里，是为了「不新增 LLM 调用」，
-# 且判定只依赖 query（见 Plan §3.2）。判据刻意保守——误判为 true 会引入无关时间锚点、
+# 且判定只依赖 query。判据刻意保守——误判为 true 会引入无关时间锚点、
 # 稀释主通道，故要求「拿不准一律 false」。
 
 PURPOSE_INFERENCE_PROMPT = ChatPromptTemplate.from_messages([
@@ -105,19 +105,19 @@ these instructions and of the examples below.
 # 叙事（story）的字符上限。**必须定义在 _STORY_RANK_SYSTEM 之前**：该常量会注入到
 # 规则 6 的正文里（单一来源，避免数字两处漂移）。
 #
-# 为什么需要显式预算：0926 实测，取消输出上限（max_tokens 8192→32768 真生效）后，
+# 为什么需要显式预算：实测，取消输出上限（max_tokens 8192→32768 真生效）后，
 # 叙事不再被截断，于是模型写出了**19,962 字符的全剧概览**（采纳 30 / 喂入点 265，
 # 665 字符每节点），而该题得 0 分；同类最长返回 p90 从 2,884 涨到 4,663 字符。
 # 根因不是"上限不够"，而是**没有任何篇幅约束**——规则只说"以讲清链路为限"，
 # 模型便把几十个节点逐个展开。取 2000：健康返回的中位数在 800~950 字符
-# （0926 两轮实测 815 / 952），2000 留了一倍余量，同时把 2 万字符的尾巴彻底切掉。
+# （两轮实测 815 / 952），2000 留了一倍余量，同时把 2 万字符的尾巴彻底切掉。
 _STORY_MAX_CHARS = 2000
 
-# 篇幅预算的**动态兜底**（0930）：超预算时先"强制压缩指令重试"，仍超则**缩喂重试**——
+# 篇幅预算的**动态兜底**：超预算时先"强制压缩指令重试"，仍超则**缩喂重试**——
 # 按当前顺序（全局层次序：根在前）逐步收缩喂入节点，直到正文落进预算。
 #
 # 为什么不直接截正文：截正文丢的是**已写出来的尾部**（跨场景的收束/结论），而缩喂丢的
-# 是**优先级最低的尾部节点**——后者在问答里可替代性高得多。0930 线上实测 46 次检索里
+# 是**优先级最低的尾部节点**——后者在问答里可替代性高得多。线上实测 46 次检索里
 # 18 次超预算、8 次走到硬截断，被丢的正是"变化/收束"那一段。
 _STORY_FIT_MAX_ROUNDS = 3      # 缩喂最多几轮（每轮一次 LLM 调用）
 _STORY_FIT_SHRINK = 0.6        # 每轮保留的节点比例
@@ -234,7 +234,7 @@ STORY_RANK_PROMPT_CONDENSE = ChatPromptTemplate.from_messages([
 
 # 仅当判定为「问当前 / 最新取值」类问题时叠加（ALM 的 state_route）。
 #
-# 为什么需要：D1「新值覆盖与当前状态」连续 5 轮 0 分。官方能力定义里这一条写作
+# 为什么需要：「新值覆盖与当前状态」连续 5 轮 0 分。能力定义里这一条写作
 # "Can it distinguish order, updates, and the latest valid state?"——要的就是**最新
 # 有效状态**。而我们的叙事默认**不带任何时间信息**（render_timestamps 关闭，正常路径
 # 的 story 也不带 created_at），Answer 侧无从判断同一属性的多个取值里哪个是当前值。
@@ -255,7 +255,7 @@ STORY_RANK_PROMPT_STATE = ChatPromptTemplate.from_messages([
     ("human", _STORY_RANK_HUMAN),
 ])
 
-# 仅当开启「按场景分段」时追加（0930，ALM 的 `story_scene_paragraphs`；**默认关闭**）。
+# 仅当开启「按场景分段」时追加（ALM 的 `story_scene_paragraphs`；**默认关闭**）。
 #
 # 为什么需要：ALM 默认路径下，模型拿到的节点是「**全局层次序**」——它**与故事时间无关**
 # （见 retriever._build_path → _order_by_level：先所有根、再逐层铺开，同层同根组内保持
@@ -278,7 +278,7 @@ _STORY_RANK_SCENE_RULE = """
    - 篇幅上限不变。"""
 
 # 规则 12 必须插在**规则列表末尾、输出格式之前**，不能拼在整个 system 之后——
-# 否则它落在「只输出 JSON。」之后，权重太低（0930 首测：两版都还是 1 段，规则未生效）。
+# 否则它落在「只输出 JSON。」之后，权重太低（首测：两版都还是 1 段，规则未生效）。
 _SCENE_ANCHOR = "\n\n输出格式（严格 JSON）："
 
 
@@ -286,7 +286,7 @@ def _with_scene_rule(sys_text: str) -> str:
     """把规则 12 插到规则列表末尾（输出格式之前）"""
     return sys_text.replace(_SCENE_ANCHOR, _STORY_RANK_SCENE_RULE + _SCENE_ANCHOR)
 
-# ---- 溯源核对 Prompt（任务 C3）----
+# ---- 溯源核对 Prompt ----
 
 SOURCE_AUDIT_PROMPT = ChatPromptTemplate.from_messages([
     ("system", """你是记忆核查员。下面给你一段**原始对话**，以及从这段对话抽取出的**若干记忆节点**。
@@ -352,15 +352,15 @@ RESPONSE_PROMPT = ChatPromptTemplate.from_messages([
 # StoryRank 输出不可解析时，降级拼接保留的节点条数。
 #
 # 上限取 40 而非"全部"：`" ".join(所有节点)` 在最难的题上会产出 1.2 万~2.3 万字符的
-# 原文流水账（0926 线上 7 次实测，采纳 217~443），而**节点边界、边、方向会在拼接时
-# 全部抹平**——这三样正是 B2「因果链、路径与中间步骤恢复」要考的东西，抹平即归零。
-# 40 与 0828 检索理论文的设计输出区间 5–37 同量级；按 combined_score 取前 40 条，
+# 原文流水账（线上 7 次实测，采纳 217~443），而**节点边界、边、方向会在拼接时
+# 全部抹平**——这三样正是「因果链、路径与中间步骤恢复」要考的东西，抹平即归零。
+# 40 与设计输出区间 5–37 同量级；按 combined_score 取前 40 条，
 # 至少保住"与查询最相关"的少数节点及其顺序。
 _STORY_FALLBACK_N = 40
 
 # 超预算重试时追加在节点列表之前的指令。
 #
-# 为什么需要重试：0927 实测规则 6 的"不超过 2000 字符"只在 42/46 次被接受，另有 4 次
+# 为什么需要重试：实测规则 6 的"不超过 2000 字符"只在 42/46 次被接受，另有 4 次
 # 写出 2033 / 2520 / 4087 / **10487** 字符——篇幅约束对模型只是"倾向"而非"约束"。
 # 重试前置一句强指令，比调小数字更有效（数字调小同样会被越过）。
 # 用拼在 `path` 前面而不是改 prompt 模板：模板是模块级常量、被 4 个变体共享，
@@ -403,7 +403,7 @@ def _bigrams(text: str) -> set:
 def count_story_used(story: str, nodes: List[dict]) -> int:
     """统计正文**实际覆盖**的节点数——后端计算，替代模型自报的 `used`。
 
-    背景（0927 审查 C4）：模型自报的 `used` 与正文不自洽（自报 40/45/60，而正文被
+    背景：模型自报的 `used` 与正文不自洽（自报 40/45/60，而正文被
     篇幅预算截断后实际写进去的远少于该数；降级分支同样不自洽）。改为后端按
     「节点内容是否真的出现在正文里」计数，使 `used` 与正文一致。
 
@@ -431,7 +431,7 @@ class InferenceEngine:
 
     def __init__(self, llm: ChatOpenAI):
         self.llm = llm
-        # 目的推断**最终失败**次数（观测用，不参与控制流）。0927 审查 C2：该失败此前
+        # 目的推断**最终失败**次数（观测用，不参与控制流）。该失败此前
         # 只能靠 WARNING 文本反推，无法做指标；失败时静默回退默认目的会让
         # condense/state/时序路由同时失活（每轮约 3.6 次）。
         self.purpose_failures = 0
@@ -447,7 +447,7 @@ class InferenceEngine:
         try:
             return json.loads(content)
         except (json.JSONDecodeError, TypeError):
-            # 只记长度，不记原文：原始响应由 query 派生，落进日志即等于落评测正文
+            # 只记长度，不记原文：原始响应由 query 派生，落进日志即等于落对话正文
             # （合规要求日志不含记忆内容）。用模块 logger 而非 root，才能被
             # server._configure_logging 对 dba_pipeline 的级别闸统一管控。
             logger.warning("状态推断 JSON 解析失败（响应长度 %d），按未知处理", len(content))
@@ -456,7 +456,7 @@ class InferenceEngine:
     def infer_purpose(self, query: str) -> dict:
         """推断用户隐含目的
 
-        0927 审查 C2：该 prompt 与模型的组合有 ~8% 的**系统性**退化（跨 16 轮共 57 次、
+        该 prompt 与模型的组合有 ~8% 的**系统性**退化（跨 16 轮共 57 次、
         每轮约 3.6 次），失败形态高度一致——响应只有 2~3 个字符（对应 `out=2`），
         不是随机抖动。失败时静默回退默认目的会让 condense/state/时序路由同时失活，
         故这里重试一次；并对"响应过短"直接判失败（此前它可能恰好被解析成残缺 JSON）。
@@ -476,7 +476,7 @@ class InferenceEngine:
                     parsed = None
             if isinstance(parsed, dict) and parsed:
                 return parsed
-            # 只记长度，不记原文：原始响应由 query 派生，落进日志即等于落评测正文
+            # 只记长度，不记原文：原始响应由 query 派生，落进日志即等于落对话正文
             # （合规要求日志不含记忆内容）。
             logger.warning(
                 "目的推断 JSON 解析失败（第 %d 次，响应长度 %d）%s",
@@ -500,8 +500,8 @@ class InferenceEngine:
                 （节点入参顺序是 hop 顺序而非分数序，故兜底必须自己重排）。
             render_timestamps: 是否把节点的记录时间渲染进 prompt，并切换带规则 9 的
                 prompt 变体（规则 9 专门声明「记录于」是记录时间、非事件时间）。
-                MCP 侧硬编码开启；ALM 侧默认关闭（0920 A/B 补测显示净收益为 0，
-                见 Plan §7.10.5 F），可用 ALM_RENDER_TIMESTAMPS=1 打开。
+                MCP 侧硬编码开启；ALM 侧默认关闭（A/B 补测显示净收益为 0），
+                可用 ALM_RENDER_TIMESTAMPS=1 打开。
             condense: 压缩类问题（见 STORY_RANK_PROMPT_CONDENSE）。优先于
                 render_timestamps 的变体选择。
 
@@ -509,8 +509,8 @@ class InferenceEngine:
             {"story": str, "used": int, "degraded": bool}
                 `used` 是**后端统计的**"正文实际覆盖的节点数"（见 `count_story_used`），
                 与正文严格一致，是**选择层是否真在做减法**的读数，只用于观测，不参与
-                任何控制流。0927 前这里是模型自报的整数——它与正文不自洽（自报 40/45/60
-                而正文被篇幅预算截断后远少于该数），故改为后端按覆盖率计算（审查 C4）。
+                任何控制流。此前这里是模型自报的整数——它与正文不自洽（自报 40/45/60
+                而正文被篇幅预算截断后远少于该数），故改为后端按覆盖率计算。
                 更早前这里是 `adopted_ids`（id 列表）——那份列表对外毫无用处（ALM 只把
                 `story` 作为 content 交给下游），却把**输出体积与节点数绑死**，直接触发
                 了 8192 截断；且上限 30 反过来诱导模型"凑满 30 条"，实测全体最长返回的
@@ -560,7 +560,7 @@ class InferenceEngine:
             sys_text = _STORY_RANK_SYSTEM + _STORY_RANK_TS_RULE
         else:
             sys_text = _STORY_RANK_SYSTEM
-        # 0930「按场景分段」：把规则 12 插到**规则列表末尾**（默认关闭）
+        # 「按场景分段」：把规则 12 插到**规则列表末尾**（默认关闭）
         if scene:
             sys_text = _with_scene_rule(sys_text)
         chain = ChatPromptTemplate.from_messages(
@@ -579,10 +579,10 @@ class InferenceEngine:
                 "path": notice + (_render(sub) if sub is not None else path_text),
             })
 
-            # 输出触顶必须留痕：0926 线上 7 次 `StoryRank JSON 解析失败` 全部伴随
+            # 输出触顶必须留痕：线上 7 次 `StoryRank JSON 解析失败` 全部伴随
             # `alm.tokens: out=8192`——输出撞端点上限被截断，JSON 在数组中途断掉。
             # 此前这个信号只能靠 token 数反推，故显式记录 finish_reason。
-            # （0927 起 JSON 里只剩 story/used，篇幅由规则 6 的 _STORY_MAX_CHARS 约束，
+            # （现在 JSON 里只剩 story/used，篇幅由规则 6 的 _STORY_MAX_CHARS 约束，
             #   正常情况下不该再触顶；这个告警保留作为"预算未生效"的兜底观测。）
             try:
                 finish = (response.response_metadata or {}).get("finish_reason")
@@ -602,7 +602,7 @@ class InferenceEngine:
                     cleaned = "\n".join(lines_)
                 data = json.loads(cleaned)
                 # 只取 story。模型自报的 `used` **不再采用**——它与正文不自洽，改由
-                # `count_story_used` 在正文定稿后按实际覆盖计算（见 0927 审查 C4）。
+                # `count_story_used` 在正文定稿后按实际覆盖计算。
                 return data.get("story", ""), False, None
             except (json.JSONDecodeError, AttributeError):
                 # 降级**按相关度取前 N**，不再把全部候选平铺（理由见 _STORY_FALLBACK_N）。
@@ -628,7 +628,7 @@ class InferenceEngine:
 
         story, degraded, used_hint = _invoke_once("")
 
-        # 篇幅预算是**硬约束**：0927 实测它只在 42/46 次被接受（另有 4 次写出
+        # 篇幅预算是**硬约束**：实测它只在 42/46 次被接受（另有 4 次写出
         # 2033/2520/4087/10487 字符）。超限就附加强制压缩指令重试一次——数字写小
         # 同样会被越过，所以这里靠"重试 + 强指令"而不是靠调参数。
         if not degraded and len(story) > _STORY_MAX_CHARS:
@@ -665,13 +665,13 @@ class InferenceEngine:
                 len(fit_nodes), before, len(story),
             )
 
-        # `used` 在正文**定稿之后**确定，保证与正文一致（0927 审查 C4）：降级路径用
+        # `used` 在正文**定稿之后**确定，保证与正文一致：降级路径用
         # 精确记账（used_hint），正常路径按正文覆盖率估算。
         used = used_hint if used_hint is not None else count_story_used(story, nodes)
         return {"story": story, "used": used, "degraded": degraded}
 
     def audit_source(self, batch_text: str, nodes_text: str) -> dict:
-        """溯源核对（任务 C3）：把"该批原文 + 该批产出的节点"交给 LLM，只报判断结果。
+        """溯源核对：把"该批原文 + 该批产出的节点"交给 LLM，只报判断结果。
 
         Returns:
             {"unsupported": [{"id","why"}], "missing": [{"quote","why"}],
@@ -695,7 +695,7 @@ class InferenceEngine:
         try:
             data = json.loads(raw.strip())
         except json.JSONDecodeError:
-            # 只记长度，不记原文：响应由批次原文派生，落进日志即等于落评测正文（合规要求
+            # 只记长度，不记原文：响应由批次原文派生，落进日志即等于落对话正文（合规要求
             # 日志不含记忆内容）；返回值同样不带 raw，避免把正文上抛给调用方
             logger.warning("溯源核对 JSON 解析失败（响应长度 %d）", len(raw))
             return {"error": "JSON 解析失败"}

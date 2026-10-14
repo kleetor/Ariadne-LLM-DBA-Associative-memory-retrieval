@@ -83,6 +83,8 @@ engine*
 /alm/almlog/
 /alm/almplan/
 /alm/tools/
+# 本地材料（不入库）
+/alm/材料
 # 导出的镜像 tar 不入库：GitHub 单文件硬上限 100MB，且二进制会永久膨胀历史。
 # 需要分发预构建镜像时，用 `docker save` 导出后作为 **GitHub Release 附件**上传。
 /alm/dist/

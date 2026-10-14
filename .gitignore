@@ -1,5 +1,9 @@
 # 本地环境变量（含真实密钥，切勿提交）
 .env
+.env.bak*
+# ALM 服务专用配置（含服务 API Key 与上游模型密钥，同样不入库）
+.env.alm
+.env.alm.bak*
 
 # 测试依赖本地安装目录（pip install pytest --target=.test_deps 生成）
 .test_deps/
@@ -16,19 +20,74 @@ dist/
 
 # 大体积打包/归档产物（超出 GitHub 100MB 限制，不入库）
 *.tar
+# 数据归档（形如 alm_data_<id>.tar.gz，内含真实 user_id 与记忆正文，不入库）
+*.tar.gz
 
-# LiFEMem 评测产物（2026-08-18 起不提交）
+# 本地评测与基准对比产物（不入库）
 .mem0_db/
 .mem0_dir/
 .venv_mem0/
 .venv_graphiti/
+.venv/
 eval/
 frameworks/
 build_lifemem.py
 dba_eval/
 LiFEMem*
 
-# 介绍网站产物（2026-08-25 起不提交，仅本地视频介绍用）
+# 介绍网站产物（仅本地使用，不入库）
 website/
 website/scripts/bake_graph.py
 website/public/graph.json
+
+# 本地模型缓存与权重（仅本地运行用；超出 GitHub 100MB 限制，不入库）
+models/
+
+# IDE 个人配置（不入库）
+.vscode/
+
+# 运行期产物：跨进程写锁 / 日志 / 导入备份（不入库）
+*.yaml.lock
+*.yaml.bak
+# 日志一律不入库，其中也包括从容器导出的 json-file 日志（形如 <container-id>-json.log，
+# 会带 user_id 与运行期诊断信息）。
+*.log
+
+# 会话 Cookie 签名密钥（自动生成，含密钥信息，不入库）
+.ariadne_secret
+
+# 面板/MCP 凭据文件（自动生成，含密码散列，不入库）
+auth.json
+auth.json.broken
+
+# 图谱库共享指针（运行期状态：记录面板/MCP 各自当前用哪份图谱，随机器而变）
+active_graph.json
+active_graph.lock
+
+# ALM 服务的运行期数据：**每个 user_id 一个目录**，目录内是该空间全部产物
+# （graph.yaml、graph.index/、docs.yaml、docs.log、docs.index/），属纯运行产物，不入库。
+data/alm/
+data/alm*/
+*.index/
+
+engine*
+# 注：`engine*` 无斜杠，会匹配任意层级下以 engine 开头的文件，会误伤 `alm/engine.py`
+# （ALM 包的核心模块）。故必须显式放行，否则它会静默漏提交。
+!alm/engine.py
+
+# `alm/` 下只收录源码与部署文件；以下子目录为运行期数据与本地资料，不入库。
+#
+# ⚠️ 规则必须带**前导斜杠**（`/alm/xxx/`）：裸 `alm/` 会匹配**任意层级**下名为 alm
+# 的目录，把非预期路径一并忽略。
+/alm/almdata/
+/alm/almlog/
+/alm/almplan/
+/alm/tools/
+# 导出的镜像 tar 不入库：GitHub 单文件硬上限 100MB，且二进制会永久膨胀历史。
+# 需要分发预构建镜像时，用 `docker save` 导出后作为 **GitHub Release 附件**上传。
+/alm/dist/
+# 本地规划与过程记录（不入库）；对外发布的是 docs/ 下的时间线汇总。
+/Plan/
+
+# 本地运维脚本与部署凭据（不入库）
+/Server/

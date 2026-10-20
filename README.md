@@ -4,7 +4,7 @@
 
 LLM 驱动的记忆图谱构建、检索、可视化全链路管线。
 
-根目录的文档已经过整理，将其交由AI进行分析可快速掌握本系统的功能与实现价值。data/目录下包含一个空数据集sample供初次使用，以及一个预设数据集memory供快速体验系统效果。
+`docs/` 目录下的文档已经过整理，可交由 AI 快速掌握本系统的功能与实现价值。`data/` 目录包含一份空数据集 sample 供初次使用，以及一份预设数据集 memory 供快速体验系统效果。
 
 后续方向：针对检索算法部分进行深入研究，在不同的使用场景下，基础权重表与其他配合部分或可经过参数调整实现不同的检索效果（如开放分类学权重或可实现知识库查询功能）
 
@@ -19,82 +19,16 @@ LLM 驱动的记忆图谱构建、检索、可视化全链路管线。
 
 **语言**：[中文](README.md) · [English](README.en.md)
 
-***
-
-## ALM 服务：部署与架构差异
-
-除 MCP 形态外，仓库还提供一套**面向外部调用方的同步 HTTP 记忆服务**（`alm/`：Add / Search / Health），
-适用于「由外部程序按固定契约批量写入与检索记忆」的场景。
-
-### 与 MCP 版的架构差异
-
-| 维度 | MCP 版 | ALM 版 |
-| --- | --- | --- |
-| 接入形态 | MCP 协议（stdio / SSE），暴露 9 个工具供 Agent 调用 | 同步 HTTP：`POST /add`、`POST /search`、`GET /health` |
-| 调用方 | Agent 运行时（对话中按需调用工具） | 外部程序 / 服务（按契约直接调用） |
-| 记忆组织 | 单一图谱，由共享指针切换 | **每个 `user_id` 一个独立空间**（目录隔离 + LRU 换出） |
-| 写侧策略 | 全部内容都建成图 | **按形态分流 + 按空间决定建不建图**（见下节） |
-| 鉴权 | 面板 / MCP 凭据（`auth.json` + Cookie / Basic / Bearer） | `ALM_API_KEYS`（`X-Api-Key` 或 Bearer）；非回环监听且为空时**拒绝启动** |
-| 可视化 | 3D 面板 + 离线 HTML | 无（纯 API） |
-| 依赖 | LLM + Embedding | LLM + Embedding（均为 API 模式） |
-
-两者**共用同一套核心链路**（抽取 / 存储 / 检索 / 输出），ALM 只是把「接入层」换成了同步 HTTP 契约，
-并按 `user_id` 做了空间隔离与 LRU 缓存。
-
-### 两层架构：ALM 不是「把一切都建成图」
-
-这是与 MCP 版**最容易混淆**的一点。MCP 版面向单个 Agent 会话、默认**全量建图**；而 ALM 面对的是外部
-批量灌入的**异构语料**（对话与长文档混在一起），实测「什么都建图」反而是**负收益**——因此它把记忆拆成
-**两层**，并且只在划算的地方建图。
-
-**两层分别是什么**
-
-| 层 | 内容 | 来源 | LLM 开销 |
-| --- | --- | --- | --- |
-| **原文层（L1）** | 原始消息 + 长文档分块 | 调用方直接写入 | **零** |
-| **图谱层（L2）** | 抽取出的类型化节点与边（6 类节点 × 8 类关系） | 从原文层**派生** | 抽取 / 连边时调用 |
-
-原文层永远保留、是**权威内容**；图谱层只是它的一张派生视图。
-
-**写入时的两级路由**
-
-1. **按形态分流**（在 `/add` 入口，只看条数与长度、零 LLM）：**文档型**（长文档）→ **文档通道**，
-   切块 + 向量化后存入与图谱**完全隔离**的文档区，**不进图**；**会话型** → 走抽取链路建节点与边；
-   **噪音** → 丢弃。
-2. **按空间决定「建不建图」**（默认 `ALM_FORCE_MODE=auto`）：新空间从 **`vector`** 起步，写侧
-   **零 LLM**、语料先落在原文层；前 2 题到达时**一次性判定**该空间归属并**冻结**；判成 **`graph`**
-   后，若开启回补（`ALM_BACKFILL=1`）则由后台把判定前留在原文层的语料**补建成图**；判成 `vector`
-   则整站不建图。
-
-**读侧**：`vector` 空间走纯向量召回（可叠加 cross-encoder 重排）或文档通道检索；`graph` 空间走
-图扩展 + 目的推断，并按 `story` / `evidence` 形态输出。
-
-> **为什么必须分层**：写侧（抽取建图）是 LLM 开销的绝对大头（实测约占九成）。对「知识库式长文档」做
-> 节点/边抽取是**范畴错误**——抽取产出为空，原文会被切成几百个孤立节点灌进图（边数恰好为 0），这些
-> 孤立块又会被当成记忆种子，让图扩展退化成零跳。分层之后：不建图 = 写侧**零 LLM**，而原文仍可被向量
-> 检索到——**不丢内容**。
-
-### 部署
-
-```bash
-# 1) 创建 ALM 专用配置（与仓库根目录的 .env 完全隔离）
-#    模板已列出必填项（ALM_API_KEYS / LLM / Embedding），其余调参项按需追加
-cd alm && cp .env.alm.example .env.alm && vim .env.alm
-
-# 2) 构建并启动
-docker compose --env-file .env.alm -f docker-compose.alm.yml up -d --build
-
-# 3) 只读自检（不写入任何记忆）
-python -m alm.status --base-url http://127.0.0.1:8770 --api-key <your-key>
-```
-
-- 默认只监听 `127.0.0.1:8770`；公网部署需前置反向代理终止 TLS（本服务自身不做 TLS）。
-- 记忆持久化在具名卷 `alm-data`（容器内 `/data`）——容器重启 / 镜像升级不丢。
-- 仓库**不收录**镜像 tar（体积大）；镜像用上面的 `--build` 现场构建即可。若需分发预构建镜像，
-  把 `docker save` 的产物作为 **GitHub Release 附件**上传，不要提交进 git。
-- 健康检查、清理与压测：`GET /health`、`python -m alm.cleanup`、`python -m alm.loadtest`。
+**文档**：[文档索引](docs/README.md) · [ALM](docs/ALM.md) · [MCP](docs/MCP.md) · [架构](docs/architecture.md)
 
 ***
+
+## ALM 同步 HTTP 服务
+
+面向外部程序的 `POST /add`、`POST /search`、`GET /health` 同步接口，按 `user_id` 隔离空间，
+并采用「原文层 L1 + 图谱层 L2」两层架构。
+
+- 架构差异、两层路由与部署说明：[docs/ALM.md](docs/ALM.md)
 
 ## 项目的目标与思考
 
@@ -125,7 +59,7 @@ Ariadne 的长期目标是回答一个问题：**Agent 应如何像人类一样�
 
 ## 目录
 
-- [ALM 服务：部署与架构差异](#alm-服务部署与架构差异)
+- [ALM 同步 HTTP 服务](#alm-同步-http-服务)
 - [项目的目标与思考](#项目的目标与思考)
 - [项目简介](#项目简介)
 - [核心特性](#核心特性)
@@ -134,9 +68,8 @@ Ariadne 的长期目标是回答一个问题：**Agent 应如何像人类一样�
 - [快速开始](#快速开始)
 - [Docker 部署](#docker-部署)
 - [检索方法：PAR 基线](#检索方法par-基线)
-- [MCP 服务详解](#mcp-服务详解)
-- [数据格式](#数据格式)
-- [类型体系](#类型体系)
+- [MCP 服务](#mcp-服务)
+- [数据格式与类型体系](#数据格式与类型体系)
 - [项目结构](#项目结构)
 - [参考与论文](#参考与论文)
 - [许可证](#许可证)
@@ -297,11 +230,11 @@ ariadne-render --yaml data/sample_graph.yaml -o output.html
 
 ```bash
 cp .env.example .env        # 填入模型信息
-docker compose up -d --build
+docker compose --env-file .env -f deploy/docker-compose.yml up -d --build
 ```
 
 - **面板**：`http://<主机>:8765`（`ARIADNE_VIZ_PORT` 可改），默认账号 `ariadne / ariadne`，首次登录强制改密；
-- **MCP**：默认**不发布宿主端口**，仅供同一 compose 网络内的容器访问 `http://ariadne-mcp:8766/sse`。若本机 IDE 要直连，把 `docker-compose.yml` 里那段 `ports` 注释打开（已绑定回环，无需开防火墙）；
+- **MCP**：默认**不发布宿主端口**，仅供同一 compose 网络内的容器访问 `http://ariadne-mcp:8766/sse`。若本机 IDE 要直连，把 `deploy/docker-compose.yml` 里那段 `ports` 注释打开（已绑定回环，无需开防火墙）；
 - 两个服务都挂载 `./data:/app/data`，因此**宿主机的 `./data` 就是图谱库**：在面板里切换图谱会在那里生成/更新 `active_graph.json`。
 
 ### 方式二：加载预构建镜像
@@ -328,7 +261,7 @@ docker run -d --name ariadne-mcp -p 8766:8766 \
 | **API**（默认） | `--build-arg EMBEDDING_LOCAL=false` | `EMBEDDING_LOCAL=false` + `EMBEDDING_API_KEY/BASE/MODEL` | 约 700 MB |
 | **本地** | `--build-arg EMBEDDING_LOCAL=true` | `EMBEDDING_LOCAL=true` | 需额外装 CPU 版 torch，2 GB+ |
 
-> 若只认 `"true"` 而 `.env` 写的是 `1`，构建时会跳过 torch，运行时却按本地模式走，容器一起步就 ImportError——Dockerfile 已按同一套真值判断。
+> 若只认 `"true"` 而 `.env` 写的是 `1`，构建时会跳过 torch，运行时却按本地模式走，容器一起步就 ImportError——`deploy/Dockerfile` 已按同一套真值判断。
 > 本地模式首次运行要下载模型，建议挂载 HF 缓存（compose 已建 `hf-cache` 卷）或预置缓存后设 `HF_HUB_OFFLINE=1` 离线运行。
 
 ### 容器内的图谱库
@@ -349,8 +282,8 @@ docker run -d --name ariadne-mcp -p 8766:8766 \
 
 | 场景 | 需要替换 |
 | --- | --- |
-| 用预构建镜像 | 重新 `docker load` 新 tar；`docker-compose.yml` 若缺 `ariadne-viz` 的 `env_file` / `ARIADNE_MCP_URL`，建议一并替换 |
-| 在部署机上构建 | `Dockerfile`、`.dockerignore`、`docker-compose.yml`、`dba_pipeline/`、`data/*.yaml`、`pyproject.toml`、`requirements.txt` |
+| 用预构建镜像 | 重新 `docker load` 新 tar；`deploy/docker-compose.yml` 若缺 `ariadne-viz` 的 `env_file` / `ARIADNE_MCP_URL`，建议一并替换 |
+| 在部署机上构建 | `deploy/Dockerfile`、`.dockerignore`、`deploy/docker-compose.yml`、`dba_pipeline/`、`data/*.yaml`、`pyproject.toml` |
 
 > **`.dockerignore` 必须一起更新**，否则新构建的镜像会把 `data/` 下的凭据与密钥重新打进去。
 
@@ -383,260 +316,34 @@ PAR 检索产出的是由「节点 + 关系」构成的**因果链路**，而非
 
 入口为 `retrieve_with_story`（库内方法），产物含 `stories`（叙事文本）、`story_used`（正文实际覆盖的节点数，**后端计算**）、`story_degraded`（是否为降级拼接）。
 
-> 详见 [0828PAR检索理论文.md](0828PAR检索理论文.md)
+> 详见 [0828PAR检索理论文档.md](docs/theory/0828PAR检索理论文档.md)
 
-## MCP 服务详解
+## MCP 服务
 
-基于 [Model Context Protocol（MCP）](https://modelcontextprotocol.io/) 开放协议，将 Ariadne 的记忆图谱封装为可被任意 MCP 客户端调用的 Server。协议规范详见 [MCP Specification](https://spec.modelcontextprotocol.io/)。
+MCP Server 将记忆图谱暴露为 9 个工具，支持 stdio 与 SSE 两种传输模式。
 
-### 传输模式
+- 工具清单、环境变量、图谱切换与 Agent 接入：[docs/MCP.md](docs/MCP.md)
+- 一键启动：`python start_all.py`
 
-| 模式            | 用法                                              | 适用场景                       |
-| ------------- | ----------------------------------------------- | -------------------------- |
-| **stdio**（默认） | `ariadne-mcp`                                   | Claude Desktop 等本地拉起进程的客户端 |
-| **SSE**       | `ariadne-mcp --sse --port 8766`                 | Cursor 等通过网络 URL 连接的客户端    |
+## 数据格式与类型体系
 
-> `--yaml` / `--graph-dir` 均为可选：用哪份图谱优先取共享指针里记录的选择，没有记录时才回落到 `--yaml`，再回落到图谱目录内的空图谱占位 `sample_graph.yaml`。
-
-> ⚠️ SSE 默认端口 `8765` 与 `ariadne-api` 相同，同时运行需改端口（如 `--port 8766`）。一键启动（`start_all.py`）会自动错开为 8766。
-
-### 环境变量配置（可选）
-
-LLM / Embedding 配置除命令行传参外，也可写入项目根 `.env`（或系统环境变量），启动时自动读取；**命令行参数优先级更高**。
-
-| 命令行参数                  | 环境变量                 |
-| ---------------------- | -------------------- |
-| `--llm-model`          | `OPENAI_MODEL`       |
-| `--llm-api-key`        | `OPENAI_API_KEY`     |
-| `--llm-base-url`       | `OPENAI_API_BASE`    |
-| `--embedding-model`    | `EMBEDDING_MODEL`    |
-| `--embedding-api-key`  | `EMBEDDING_API_KEY`  |
-| `--embedding-base-url` | `EMBEDDING_API_BASE` |
-| `--embedding-local`    | `EMBEDDING_LOCAL`    |
-
-```bash
-# 项目根 .env 示例
-OPENAI_API_KEY=sk-xxx
-OPENAI_API_BASE=https://api.deepseek.com/v1
-OPENAI_MODEL=deepseek-v4-flash
-EMBEDDING_MODEL=BAAI/bge-large-zh-v1.5
-EMBEDDING_LOCAL=true
-```
-
-> 设置 `EMBEDDING_LOCAL=true` 需先安装本地依赖 `pip install -e ".[local]"`，否则启动时报错退出。
-
-### 启动参数补充
-
-| 参数                  | 说明 |
-| --------------------- | ---- |
-| `--yaml`              | 初始图谱路径（**可选**）。只在共享指针没有记录时作为「第一次用哪份」的提示 |
-| `--graph-dir`         | 图谱库目录（可选）。默认取 `--yaml` 所在目录，都没有则用 `./data`；也可用 `ARIADNE_GRAPHS_DIR` 指定 |
-| `--vector-index`      | FAISS 索引文件路径（可选），用于恢复已有向量索引 |
-| `--restore-dir`       | 从 checkpoint 目录完整恢复（图谱 + 向量 + 构建器 + 调度器状态） |
-
-> 与 `dba_checkpoint` 配合使用：运行期用 `dba_checkpoint` 落盘，启动时用 `--restore-dir` 恢复。
-
-### 图谱切换（面板 ↔ MCP）
-
-面板与 MCP 是两个进程：面板的 SSE 服务只暴露 MCP 协议端点，MCP 也不暴露控制接口，因此二者通过**共享指针文件**协作：
-
-```text
-<图谱目录>/active_graph.json     # 请求与回执（panel_active / active / generation）
-<图谱目录>/active_graph.lock     # 跨进程读写锁
-```
-
-- 面板里点「切换」→ 只切面板自己，并记 `panel_active`；
-- 面板里点「载入 MCP」→ 递增 `generation` 登记请求，MCP 轮询到后自行切换并**全量重建向量索引**，结果写回同一文件供面板展示；
-- 两端启动时都优先读各自字段，因此都跨重启记住上次的选择；轮询间隔可用 `ARIADNE_GRAPH_POLL` 调整（默认 3 秒）。
-
-> 图谱库限制在**同一目录**内：`auth.json`、`.ariadne_secret`、`operations.log`、`ariadne.log`、`retrieval_params.yaml` 都按图谱目录存放，同目录切换因此不会影响登录态与运行时参数。
-
-### 运行模式
-
-当前仅保留**完整 DBA 模式**：需配置 LLM（`--llm-model` 或 `OPENAI_MODEL`）。启动后 `dba_add_conversation` 会调用内部 LLM 完成记忆维护：**节点抽取（Step 1）与边连接（Step 2）是两次独立的 LLM 调用**——先抽节点并落地，再基于「本轮全部新节点 + 相关旧节点/一跳邻居/已有边」连边，避免单次输出受可见节点集合限制。缺少 LLM / DBA 依赖时直接报错退出（不再降级为存根模式）。
-
-> Agent 客户端的 LLM 与 Ariadne 内部的维护 LLM 是**两个独立模型**：Agent 的 LLM 负责理解意图、调用工具；Ariadne 的 LLM 负责把对话变成图谱事实。两者通过图谱（而非上下文窗口）共享记忆。
-
-### Embedding 三种配置
-
-| 模式          | 参数                                        | 说明                                 |
-| ----------- | ----------------------------------------- | ---------------------------------- |
-| **API**（默认） | `--embedding-model`                       | 调用任意 OpenAI 兼容 `/v1/embeddings` 端点 |
-| **本地**      | `--embedding-model ... --embedding-local` | 使用 sentence-transformers，无需网络      |
-| **不使用**     | 不传 `--embedding-model`                    | 仅图谱操作，不启用向量检索                      |
-
-`--embedding-base-url` / `--embedding-api-key` 未指定时，自动复用 `--llm-base-url` / `--llm-api-key`。
-
-```bash
-# API embedding（OpenAI）
-ariadne-mcp --yaml data.yaml --llm-model gpt-4o-mini --llm-api-key sk-xxx \
-    --llm-base-url https://api.openai.com/v1 --embedding-model text-embedding-3-small
-
-# 本地 embedding
-ariadne-mcp --yaml data.yaml --llm-model gpt-4o-mini --llm-api-key sk-xxx \
-    --embedding-model BAAI/bge-large-zh-v1.5 --embedding-local
-```
-
-### 9 个 Tool
-
-| Tool                   | 说明                             |
-| ---------------------- | ------------------------------ |
-| `dba_add_conversation` | 追加对话，优先进入调度器批量累积，达阈值后异步维护 |
-| `dba_query_memory`     | 目的驱动联想检索（PAR 链路：跳转轴 + 目的回归 + 寻峰） |
-| `dba_temporal_lookup`  | 独立单跳时序查询（仅"时间→事件"反向），用于定位某时间点发生的事 |
-| `dba_inspect_graph`    | 展开节点 1-hop 邻居                  |
-| `dba_intervene`        | 人工 CRUD 节点和边                   |
-| `dba_checkpoint`       | 保存完整检查点                        |
-| `dba_get_stats`        | 图谱统计信息                         |
-| `dba_review_graph`     | 图谱体检（只读）：报出疑似重复节点对与孤立节点，不改图 |
-| `dba_review_sources`   | 溯源巡检（只读）：用原始对话核对抽取质量，需 `ARIADNE_SOURCE_STORE=1` |
-
-### 检索说明（`dba_query_memory`）
-
-- 走完整 PAR 链路：跳转轴有向扩展 + 目的回归过滤 + 寻峰终止。
-- `rerank_k` 控制返回条数上限（rank-k，默认 20）；`total_matched` 是真实候选总数，`returned` 是本次实际返回数。若 `total_matched > returned`，可调大 `rerank_k` 取回剩余记忆。
-- 已废弃/遗忘的节点会被过滤，不出现在结果中。
-
-### Agent 接入配置
-
-**Claude Desktop（stdio）**：
-
-```json
-{
-  "mcpServers": {
-    "ariadne": {
-      "command": "python",
-      "args": ["-m", "dba_pipeline.mcp_server", "--yaml", "/path/to/memory_graph.yaml"],
-      "cwd": "/path/to/dba_pipeline"
-    }
-  }
-}
-```
-
-**Cursor / SSE 客户端**（先启动 Server，再填 URL）：
-
-```bash
-# 推荐：一键启动（面板 8765 + MCP 8766），模型配置从 .env 读取
-python start_all.py --yaml /path/to/memory_graph.yaml
-
-# 或单独启动 SSE（模型配置同样从 .env 读取，也可用命令行覆盖）
-ariadne-mcp --yaml /path/to/memory_graph.yaml --sse --port 8766
-```
-
-```json
-{
-  "mcpServers": {
-    "ariadne": { "url": "http://127.0.0.1:8766/sse" }
-  }
-}
-```
-
-## 数据格式
-
-图谱以 YAML 作为持久化格式，节点与边分别存放在 `nodes` / `edges` 两个顶层列表中：
-
-```yaml
-nodes:
-  - id: n1
-    content: "用户在互联网公司做后端开发"
-    type: status
-    deprecated: false
-    forgotten: false
-  - id: n2
-    content: "用户经常加班到晚上十点"
-    type: reason
-    deprecated: false
-    forgotten: false
-
-edges:
-  - from: n2
-    to: n1
-    type: causal
-    bidirectional: false
-```
-
-| 字段                      | 说明                                             |
-| ----------------------- | ---------------------------------------------- |
-| `nodes[].type`          | 节点角色类型（见下方 6 种节点类型）                            |
-| `nodes[].deprecated`    | 是否已废弃（不再参与检索）                                  |
-| `nodes[].forgotten`     | 是否已遗忘（不再参与检索）                                  |
-| `edges[].type`          | 关系类型（见下方 8 种边类型）                               |
-| `edges[].bidirectional` | 是否双向（`SCENARIO` / `SOCIAL` / `ATTRIBUTE` 默认双向） |
-
-## 类型体系
-
-**节点（6 种）**：
-
-| 类型        | 语义      |
-| --------- | ------- |
-| `STATUS`  | 状态 / 现状 |
-| `REASON`  | 原因      |
-| `ACTION`  | 行为 / 动作 |
-| `THING`   | 事物 / 对象 |
-| `PERSON`  | 人物      |
-| `EMOTION` | 情绪      |
-
-**边（8 种）**：
-
-| 类型           | 语义      | 方向   |
-| ------------ | ------- | ---- |
-| `CAUSAL`     | 因果      | 指向结果 |
-| `SCENARIO`   | 场景归属    | 双向   |
-| `SEQUENCE`   | 时序先后    | 指向后序 |
-| `PREFERENCE` | 态度 / 偏好 | 指向对象 |
-| `SOCIAL`     | 社交关系    | 双向   |
-| `ATTRIBUTE`  | 属性归属    | 双向   |
-| `TEMPORAL`   | 时间定位    | 指向时间 |
-| `TAXONOMIC`  | 分类 / 本体 | 指向父类 |
+图谱 YAML 结构、6 类节点与 8 类关系的完整定义见
+[docs/architecture.md](docs/architecture.md#数据格式与类型体系)。
 
 ## 项目结构
 
-```
-.
-├── start_all.py                    # 一键启动（面板 + MCP SSE）
-├── alm/                            # 同步 HTTP 记忆服务（Add / Search / Health）
-├── data/                           # 图谱库目录（面板列出其中所有图谱供切换）
-│   ├── sample_graph.yaml           # 空图谱占位（0 节点，首次启动的默认落点）
-│   ├── memory_graph.yaml           # 预设数据集
-│   └── active_graph.json           # 共享指针：面板 / MCP 各自当前的图谱（运行期生成）
-├── docs/                           # 时间线与 ALM 运维记录
-├── tests/                          # pytest 测试
-└── dba_pipeline/
-    ├── core/                       # 检索核心：跳转轴、目的回归、寻峰
-    │   ├── jump_axis.py
-    │   ├── purpose.py
-    │   ├── peak_find.py
-    │   └── path_tracker.py
-    ├── graph/                      # 图结构
-    │   └── memory_graph.py
-    ├── embedding/                  # 向量存储
-    │   └── store.py
-    ├── extraction/                 # DBA 抽取与批量维护
-    │   ├── dba.py
-    │   ├── graph_builder.py
-    │   └── maintenance_scheduler.py
-    ├── llm/                        # 推理引擎
-    │   └── inference.py
-    ├── retrieval/                  # PAR 检索 + StoryRank
-    │   └── retriever.py
-    ├── viz/                        # WebUI 服务端、静态前端、日志总线、渲染、导出
-    │   ├── api_server.py           # Starlette REST + SSE 服务
-    │   ├── logbus.py               # 应用日志捕获 + 操作日志 tail + SSE 分发
-    │   ├── chain_runner.py         # 面板内复用 MCP 检索链路（调用测试）
-    │   ├── renderer.py             # 离线自包含 HTML 生成
-    │   ├── exporter.py
-    │   └── static/                 # WebUI 前端（index.html / css / js）
-    ├── mcp_server.py               # MCP Server 入口
-    ├── graphlib.py                 # 图谱库与共享指针（面板与 MCP 共用）
-    ├── webauth.py                  # 统一鉴权（会话 Cookie / Basic / Bearer）
-    └── loader.py                   # 图 / 查询加载
-```
+完整目录与模块职责见 [docs/architecture.md](docs/architecture.md)。核心组成：
+
+- `dba_pipeline/`：检索、抽取、图谱、LLM、WebUI 与 MCP Server
+- `alm/`：同步 HTTP 记忆服务
+- `data/`：图谱库与示例数据
+- `tests/`：pytest 测试
 
 ## 参考与论文
 
-- [0828前置数据管理与后处理.md](0828前置数据管理与后处理.md)（前置数据管理 / LLM DBA 理论部分）
-- [0828PAR检索理论文档.md](0828PAR检索理论文档.md)（目的驱动联想记忆检索模型 / 检索理论部分）
-- [0908e2e实验文档.md](0908e2e实验文档.md)（端到端实验记录）
+- [0828前置数据管理与后处理.md](docs/theory/0828前置数据管理与后处理.md)（前置数据管理 / LLM DBA 理论部分）
+- [0828PAR检索理论文档.md](docs/theory/0828PAR检索理论文档.md)（目的驱动联想记忆检索模型 / 检索理论部分）
+- [0908e2e实验文档.md](docs/theory/0908e2e实验文档.md)（端到端实验记录）
 
 ## 许可证
 

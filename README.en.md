@@ -4,7 +4,7 @@
 
 A full-pipeline system for LLM-driven memory graph construction, retrieval, and visualization.
 
-The root-level documents are curated so that handing them to an AI lets it quickly grasp this system's functionality and implementation value. The `data/` directory contains an empty `sample` dataset for first-time use and a pre-populated `memory` dataset for quickly experiencing the system.
+The documents under `docs/` are curated so that handing them to an AI lets it quickly grasp this system's functionality and implementation value. The `data/` directory contains an empty `sample` dataset for first-time use and a pre-populated `memory` dataset for quickly experiencing the system.
 
 Future direction: further research on the retrieval algorithm — in different usage scenarios, the base weight table and other collaborating parts may be tuned via parameters to achieve different retrieval behaviors (e.g. opening up taxonomic weights could enable a knowledge-base-style query mode).
 
@@ -17,89 +17,16 @@ Future direction: further research on the retrieval algorithm — in different u
 
 **Language**: [English](README.en.md) · [中文](README.md)
 
----
-
-## ALM Service: Deployment & Architectural Differences
-
-Besides the MCP form, the repository also ships a **synchronous HTTP memory service for external callers**
-(`alm/`: Add / Search / Health), suited to "an external program writes and retrieves memory in bulk under a
-fixed contract".
-
-### Differences from the MCP version
-
-| Aspect | MCP version | ALM version |
-| --- | --- | --- |
-| Interface | MCP protocol (stdio / SSE), exposes 9 tools to the Agent | Synchronous HTTP: `POST /add`, `POST /search`, `GET /health` |
-| Caller | Agent runtime (calls tools on demand during a conversation) | External program / service (calls directly under the contract) |
-| Memory organization | A single graph, switched via a shared pointer | **One isolated space per `user_id`** (directory isolation + LRU eviction) |
-| Write strategy | Everything is built into the graph | **Route by content shape + decide per space whether to build a graph** (see below) |
-| Auth | Panel / MCP credentials (`auth.json` + Cookie / Basic / Bearer) | `ALM_API_KEYS` (`X-Api-Key` or Bearer); **refuses to start** when bound to a non-loopback address with no keys |
-| Visualization | 3D panel + offline HTML | None (pure API) |
-| Dependencies | LLM + Embedding | LLM + Embedding (both API mode) |
-
-Both **share the same core pipeline** (extraction / storage / retrieval / output), and ALM only swaps the
-"access layer" for a synchronous HTTP contract plus per-`user_id` space isolation with an LRU cache.
-
-### Two-Layer Architecture: ALM Does *Not* Build a Graph for Everything
-
-This is the **most easily confused** point versus the MCP version. The MCP version serves a single Agent session
-and **builds a graph for everything** by default. ALM, however, takes **heterogeneous corpora** pushed in bulk by
-external callers (dialogue mixed with long documents), and empirically "graph everything" is a **net negative** —
-so it splits memory into **two layers** and only builds a graph where it pays off.
-
-**What the two layers are**
-
-| Layer | Content | Origin | LLM cost |
-| --- | --- | --- | --- |
-| **Raw layer (L1)** | Original messages + long-document chunks | Written directly by the caller | **Zero** |
-| **Graph layer (L2)** | Extracted typed nodes and edges (6 node roles × 8 relation types) | **Derived** from the raw layer | Used during extraction / linking |
-
-The raw layer is always kept and is the **authoritative content**; the graph layer is just a derived view of it.
-
-**Two-stage routing on write**
-
-1. **Route by content shape** (at the `/add` entry point — only counts and lengths, zero LLM): **documents**
-   (long text) → the **document channel**, chunked and embedded into a document store **fully isolated** from the
-   graph, **never entering the graph**; **conversations** → the extraction pipeline, producing nodes and edges;
-   **noise** → dropped.
-2. **Decide per space whether to build a graph** (default `ALM_FORCE_MODE=auto`): a new space starts in
-   **`vector`** — zero LLM on the write side, content landing in the raw layer first; on the first 2 questions the
-   space's attribution is **decided once and then frozen**; if it resolves to **`graph`** and backfill is enabled
-   (`ALM_BACKFILL=1`), the content already in the raw layer is **backfilled into the graph** in the background;
-   if it stays `vector`, nothing is graphed for that space.
-
-**Read side**: a `vector` space uses pure-vector recall (optionally with a cross-encoder rerank) or document-channel
-retrieval; a `graph` space uses graph expansion + purpose inference and renders as `story` / `evidence`.
-
-> **Why the split is necessary**: the write side (extraction + graph building) is by far the dominant LLM cost
-> (measured at roughly 90%). Running node/edge extraction on "knowledge-base-style long documents" is a **category
-> error** — extraction yields nothing, the raw text is chopped into hundreds of isolated nodes dumped into the graph
-> (with exactly zero edges), and those isolated blocks then get picked as memory seeds, degrading graph expansion to
-> zero hops. After the split: no graph means **zero LLM on the write side**, while the raw text is still retrievable
-> by vector — **nothing is lost**.
-
-### Deployment
-
-```bash
-# 1) Create the ALM-specific config (fully isolated from the repository-root .env)
-#    The template lists the required entries (ALM_API_KEYS / LLM / Embedding); add optional ones as needed
-cd alm && cp .env.alm.example .env.alm && vim .env.alm
-
-# 2) Build and start
-docker compose --env-file .env.alm -f docker-compose.alm.yml up -d --build
-
-# 3) Read-only self-check (writes no memory)
-python -m alm.status --base-url http://127.0.0.1:8770 --api-key <your-key>
-```
-
-- Listens on `127.0.0.1:8770` by default; public deployment requires a reverse proxy terminating TLS (the service
-  itself does not do TLS).
-- Memory is persisted in the named volume `alm-data` (container `/data`) — surviving restarts and image upgrades.
-- The repository **does not ship** the image tarball (too large); just build it on site with `--build` above. To
-  distribute a prebuilt image, upload the `docker save` output as a **GitHub Release asset** instead of committing it.
-- Health check, cleanup and load testing: `GET /health`, `python -m alm.cleanup`, `python -m alm.loadtest`.
+**Docs**: [Index](docs/README.md) · [ALM](docs/ALM.en.md) · [MCP](docs/MCP.en.md) · [Architecture](docs/architecture.en.md)
 
 ---
+
+## ALM Service
+
+A synchronous HTTP memory service (`POST /add`, `POST /search`, `GET /health`) that isolates
+spaces by `user_id` and uses a two-layer architecture (raw-text layer L1 + graph layer L2).
+
+- Architecture, routing and deployment: [docs/ALM.en.md](docs/ALM.en.md)
 
 ## Goals & Rationale
 
@@ -140,8 +67,7 @@ The ultimate goal is to let an Agent **recall an experience like a person rememb
 - [Docker Deployment](#docker-deployment)
 - [Retrieval Method: PAR Baseline](#retrieval-method-par-baseline)
 - [MCP Server](#mcp-server)
-- [Data Format](#data-format)
-- [Type System](#type-system)
+- [Data Format and Type System](#data-format-and-type-system)
 - [Project Structure](#project-structure)
 - [References](#references)
 - [License](#license)
@@ -281,11 +207,11 @@ A single image provides both entry points — the MCP server (`ariadne-mcp`) and
 
 ```bash
 cp .env.example .env        # fill in your model settings
-docker compose up -d --build
+docker compose --env-file .env -f deploy/docker-compose.yml up -d --build
 ```
 
 - **Panel**: `http://<host>:8765` (override with `ARIADNE_VIZ_PORT`); default account `ariadne / ariadne`, with a forced password change on first login.
-- **MCP**: host ports are **not published** by default; it is reachable only from other containers on the same compose network at `http://ariadne-mcp:8766/sse`. To connect from an IDE on the host, uncomment the `ports:` block in `docker-compose.yml` (it binds to loopback, so no firewall change is needed).
+- **MCP**: host ports are **not published** by default; it is reachable only from other containers on the same compose network at `http://ariadne-mcp:8766/sse`. To connect from an IDE on the host, uncomment the `ports:` block in `deploy/docker-compose.yml` (it binds to loopback, so no firewall change is needed).
 - Both services mount `./data:/app/data`, so **the host's `./data` is the graph library**: switching graphs in the panel creates/updates `active_graph.json` there.
 
 ### Option 2: load a prebuilt image
@@ -312,7 +238,7 @@ docker run -d --name ariadne-mcp -p 8766:8766 \
 | **API** (default) | `--build-arg EMBEDDING_LOCAL=false` | `EMBEDDING_LOCAL=false` + `EMBEDDING_API_KEY/BASE/MODEL` | ~700 MB |
 | **Local** | `--build-arg EMBEDDING_LOCAL=true` | `EMBEDDING_LOCAL=true` | extra CPU-only torch, 2 GB+ |
 
-> If the build only accepted `"true"` while `.env` said `1`, torch would be skipped but the runtime would still take the local path, failing with an ImportError on startup — the Dockerfile now uses the same truthiness rules.
+> If the build only accepted `"true"` while `.env` said `1`, torch would be skipped but the runtime would still take the local path, failing with an ImportError on startup — `deploy/Dockerfile` uses the same truthiness rules.
 > Local mode downloads the model on first run; mount the HF cache (compose already defines an `hf-cache` volume) or pre-seed the cache and run offline with `HF_HUB_OFFLINE=1`.
 
 ### Graph library inside the container
@@ -333,8 +259,8 @@ Identical to a local run: which graph is in use comes from the shared pointer. T
 
 | Scenario | What to replace |
 | --- | --- |
-| Using a prebuilt image | `docker load` the new tar; if your `docker-compose.yml` lacks `env_file` / `ARIADNE_MCP_URL` on `ariadne-viz`, replace it too |
-| Building on the deploy host | `Dockerfile`, `.dockerignore`, `docker-compose.yml`, `dba_pipeline/`, `data/*.yaml`, `pyproject.toml`, `requirements.txt` |
+| Using a prebuilt image | `docker load` the new tar; if your `deploy/docker-compose.yml` lacks `env_file` / `ARIADNE_MCP_URL` on `ariadne-viz`, replace it too |
+| Building on the deploy host | `deploy/Dockerfile`, `.dockerignore`, `deploy/docker-compose.yml`, `dba_pipeline/`, `data/*.yaml`, `pyproject.toml` |
 
 > **`.dockerignore` must be updated too**, otherwise a freshly built image will bake the credentials and signing key under `data/` back in.
 
@@ -367,243 +293,34 @@ PAR retrieval produces a **causal chain** of "nodes + relations" rather than a f
 
 The entry point is `retrieve_with_story` (a library method); its output includes `stories` (narrative text), `story_used` (number of nodes the narrative actually covers, **computed backend-side**), and `story_degraded` (whether it fell back to concatenation).
 
-> See also the theory paper: [0828PAR检索理论文档.md](0828PAR检索理论文档.md) *(in Chinese)*.
+> See also the theory paper: [0828PAR检索理论文档.md](docs/theory/0828PAR检索理论文档.md) *(in Chinese)*.
 
 ## MCP Server
 
-Built on the open [Model Context Protocol (MCP)](https://modelcontextprotocol.io/), Ariadne's memory graph is exposed as a server callable by any MCP client. See the [MCP Specification](https://spec.modelcontextprotocol.io/) for protocol details.
+The MCP server exposes the memory graph as 9 tools over stdio or SSE.
 
-### Transport modes
+- Tool reference, environment variables, graph switching and agent setup: [docs/MCP.en.md](docs/MCP.en.md)
+- One-command start: `python start_all.py`
 
-| Mode | Usage | Use case |
-|------|-------|----------|
-| **stdio** (default) | `ariadne-mcp` | clients that spawn a local process, e.g. Claude Desktop |
-| **SSE** | `ariadne-mcp --sse --port 8766` | clients connecting via a network URL, e.g. Cursor |
+## Data Format and Type System
 
-> `--yaml` / `--graph-dir` are both optional: which graph to use comes first from the shared pointer, falling back to `--yaml`, then to the empty placeholder `sample_graph.yaml` inside the graph directory.
-
-> ⚠️ The SSE default port `8765` clashes with `ariadne-api`; change it (e.g. `--port 8766`) when running both. The one-command start (`start_all.py`) auto-separates to 8766.
-
-### Environment variables (optional)
-
-Besides CLI flags, LLM/Embedding config can live in the project root `.env` (or system env vars) and is loaded at startup; **CLI flags take precedence**.
-
-| CLI flag | Environment variable |
-|----------|---------------------|
-| `--llm-model` | `OPENAI_MODEL` |
-| `--llm-api-key` | `OPENAI_API_KEY` |
-| `--llm-base-url` | `OPENAI_API_BASE` |
-| `--embedding-model` | `EMBEDDING_MODEL` |
-| `--embedding-api-key` | `EMBEDDING_API_KEY` |
-| `--embedding-base-url` | `EMBEDDING_API_BASE` |
-| `--embedding-local` | `EMBEDDING_LOCAL` |
-
-```bash
-# project root .env example
-OPENAI_API_KEY=sk-xxx
-OPENAI_API_BASE=https://api.deepseek.com/v1
-OPENAI_MODEL=deepseek-v4-flash
-EMBEDDING_MODEL=BAAI/bge-large-zh-v1.5
-EMBEDDING_LOCAL=true
-```
-
-> With `EMBEDDING_LOCAL=true`, install local dependencies first (`pip install -e ".[local]"`); otherwise startup errors out.
-
-### Extra startup flags
-
-| Flag | Description |
-|------|-------------|
-| `--vector-index` | path to a FAISS index file (optional), to restore an existing vector index |
-| `--restore-dir` | fully restore from a checkpoint directory (graph + vectors + builder + scheduler state) |
-
-> Pairs with `dba_checkpoint`: save at runtime with `dba_checkpoint`, restore at startup with `--restore-dir`.
-
-### Run mode
-
-Only the **full DBA mode** is currently supported: an LLM must be configured (`--llm-model` or `OPENAI_MODEL`). On startup, `dba_add_conversation` invokes the internal LLM for memory maintenance: **node extraction (Step 1) and edge linking (Step 2) are two separate LLM calls** — nodes are extracted and applied first, then edges are linked using all of this round's new nodes plus related old nodes / one-hop neighbors / existing edges, avoiding the visibility limits of a single-pass output. Missing LLM / DBA dependencies cause an immediate error exit (no stub-mode fallback).
-
-> The agent's LLM and Ariadne's internal maintenance LLM are **two separate models**: the agent's LLM understands intent and calls tools, while Ariadne's LLM turns conversations into graph facts. They share memory through the graph, not the context window.
-
-### Embedding configurations
-
-| Mode | Parameters | Description |
-|------|-----------|-------------|
-| **API** (default) | `--embedding-model` | calls any OpenAI-compatible `/v1/embeddings` endpoint |
-| **Local** | `--embedding-model ... --embedding-local` | uses sentence-transformers, no network |
-| **None** | omit `--embedding-model` | graph-only operations, no vector retrieval |
-
-When `--embedding-base-url` / `--embedding-api-key` are omitted, they fall back to `--llm-base-url` / `--llm-api-key`.
-
-```bash
-# API embedding (OpenAI)
-ariadne-mcp --yaml data.yaml --llm-model gpt-4o-mini --llm-api-key sk-xxx \
-    --llm-base-url https://api.openai.com/v1 --embedding-model text-embedding-3-small
-
-# Local embedding
-ariadne-mcp --yaml data.yaml --llm-model gpt-4o-mini --llm-api-key sk-xxx \
-    --embedding-model BAAI/bge-large-zh-v1.5 --embedding-local
-```
-
-### 9 tools
-
-| Tool | Description |
-|------|-------------|
-| `dba_add_conversation` | append a conversation; queued in the scheduler first and maintained asynchronously once a threshold is reached |
-| `dba_query_memory` | purpose-driven associative retrieval (PAR pipeline: Jump Axis + Purpose Regression + Peak Finding) |
-| `dba_temporal_lookup` | standalone single-hop temporal query (only "time → event", reverse direction) for "what happened at a given time" |
-| `dba_inspect_graph` | expand a node's 1-hop neighbors |
-| `dba_intervene` | manually CRUD nodes and edges |
-| `dba_checkpoint` | save a full checkpoint |
-| `dba_get_stats` | graph statistics |
-| `dba_review_graph` | graph health check (read-only): reports likely duplicate pairs and isolated nodes, never edits the graph |
-| `dba_review_sources` | source tracing (read-only): checks extraction quality against the original conversations; requires `ARIADNE_SOURCE_STORE=1` |
-
-### Query notes (`dba_query_memory`)
-
-- Runs the full PAR pipeline: Jump Axis directed expansion + Purpose Regression filtering + Peak Finding termination.
-- `rerank_k` caps the number of returned items (rank-k, default 20); `total_matched` is the true candidate count and `returned` is the number actually returned. If `total_matched > returned`, raise `rerank_k` to retrieve the remaining memories.
-- Deprecated/forgotten nodes are filtered out and never appear in results.
-
-### Agent integration
-
-**Claude Desktop (stdio)**:
-
-```json
-{
-  "mcpServers": {
-    "ariadne": {
-      "command": "python",
-      "args": ["-m", "dba_pipeline.mcp_server", "--yaml", "/path/to/memory_graph.yaml"],
-      "cwd": "/path/to/dba_pipeline"
-    }
-  }
-}
-```
-
-**Cursor / SSE clients** (start the server first, then set the URL):
-
-```bash
-# Recommended: one-command start (panel 8765 + MCP 8766), config read from .env
-python start_all.py --yaml /path/to/memory_graph.yaml
-
-# Or start SSE alone (config also read from .env, overridable via CLI)
-ariadne-mcp --yaml /path/to/memory_graph.yaml --sse --port 8766
-```
-
-```json
-{
-  "mcpServers": {
-    "ariadne": { "url": "http://127.0.0.1:8766/sse" }
-  }
-}
-```
-
-## Data Format
-
-The graph persists as YAML, with nodes and edges stored in two top-level lists, `nodes` and `edges`:
-
-```yaml
-nodes:
-  - id: n1
-    content: "The user does backend development at an internet company"
-    type: status
-    deprecated: false
-    forgotten: false
-  - id: n2
-    content: "The user often works overtime until 10 PM"
-    type: reason
-    deprecated: false
-    forgotten: false
-
-edges:
-  - from: n2
-    to: n1
-    type: causal
-    bidirectional: false
-```
-
-| Field | Description |
-|-------|-------------|
-| `nodes[].type` | node role type (see the 6 node types below) |
-| `nodes[].deprecated` | whether deprecated (excluded from retrieval) |
-| `nodes[].forgotten` | whether forgotten (excluded from retrieval) |
-| `edges[].type` | relation type (see the 8 edge types below) |
-| `edges[].bidirectional` | whether bidirectional (`SCENARIO` / `SOCIAL` / `ATTRIBUTE` are bidirectional by default) |
-
-## Type System
-
-**Nodes (6 types)**:
-
-| Type | Meaning |
-|------|---------|
-| `STATUS` | status / current state |
-| `REASON` | reason |
-| `ACTION` | behavior / action |
-| `THING` | thing / object |
-| `PERSON` | person |
-| `EMOTION` | emotion |
-
-**Edges (8 types)**:
-
-| Type | Meaning | Direction |
-|------|---------|-----------|
-| `CAUSAL` | causation | points to the result |
-| `SCENARIO` | scenario membership | bidirectional |
-| `SEQUENCE` | temporal order | points to the successor |
-| `PREFERENCE` | attitude / preference | points to the object |
-| `SOCIAL` | social relation | bidirectional |
-| `ATTRIBUTE` | attribute ownership | bidirectional |
-| `TEMPORAL` | temporal positioning | points to the time |
-| `TAXONOMIC` | classification / ontology | points to the parent class |
+See [docs/architecture.en.md](docs/architecture.en.md#data-format-and-type-system) for the
+YAML schema and the full lists of 6 node types and 8 relation types.
 
 ## Project Structure
 
-```
-.
-├── start_all.py                    # one-command start (panel + MCP SSE)
-├── alm/                            # synchronous HTTP memory service (Add / Search / Health)
-├── data/                           # graph library directory (panel lists every graph in it)
-│   ├── sample_graph.yaml           # empty placeholder (0 nodes, default landing spot on first start)
-│   ├── memory_graph.yaml           # preset dataset
-│   └── active_graph.json           # shared pointer: each side's current graph (runtime-generated)
-├── docs/                           # timeline and ALM operations notes
-├── tests/                          # pytest suite
-└── dba_pipeline/
-    ├── core/                       # retrieval core: Jump Axis, Purpose, Peak Finding
-    │   ├── jump_axis.py
-    │   ├── purpose.py
-    │   ├── peak_find.py
-    │   └── path_tracker.py
-    ├── graph/                      # graph structure
-    │   └── memory_graph.py
-    ├── embedding/                  # vector store
-    │   └── store.py
-    ├── extraction/                 # DBA extraction & batched maintenance
-    │   ├── dba.py
-    │   ├── graph_builder.py
-    │   └── maintenance_scheduler.py
-    ├── llm/                        # inference engine
-    │   └── inference.py
-    ├── retrieval/                  # PAR retrieval + StoryRank
-    │   └── retriever.py
-    ├── viz/                        # WebUI server, static frontend, log bus, export
-    │   ├── api_server.py           # Starlette REST + SSE server
-    │   ├── logbus.py               # app-log capture + oplog tail + SSE fan-out
-    │   ├── chain_runner.py         # reuses the MCP retrieval chain inside the panel
-    │   ├── renderer.py             # offline self-contained HTML
-    │   ├── exporter.py
-    │   └── static/                 # WebUI frontend (index.html / css / js)
-    ├── mcp_server.py               # MCP server entry point
-    ├── graphlib.py                 # graph library + shared pointer (panel & MCP)
-    ├── webauth.py                  # unified auth (session cookie / Basic / Bearer)
-    └── loader.py                   # graph / query loading
-```
+See [docs/architecture.en.md](docs/architecture.en.md) for the full tree and module responsibilities.
+
+- `dba_pipeline/`: retrieval, extraction, graph, LLM, WebUI and MCP server
+- `alm/`: synchronous HTTP memory service
+- `data/`: graph library and sample data
+- `tests/`: pytest suite
 
 ## References
 
-- [0828前置数据管理与后处理.md](0828前置数据管理与后处理.md) *(data management / LLM DBA theory, in Chinese)*
-- [0828PAR检索理论文档.md](0828PAR检索理论文档.md) *(purpose-driven associative retrieval theory, in Chinese)*
-- [0908e2e实验文档.md](0908e2e实验文档.md) *(end-to-end experiments, in Chinese)*
+- [0828前置数据管理与后处理.md](docs/theory/0828前置数据管理与后处理.md) *(data management / LLM DBA theory, in Chinese)*
+- [0828PAR检索理论文档.md](docs/theory/0828PAR检索理论文档.md) *(purpose-driven associative retrieval theory, in Chinese)*
+- [0908e2e实验文档.md](docs/theory/0908e2e实验文档.md) *(end-to-end experiments, in Chinese)*
 
 ## License
 

@@ -408,11 +408,11 @@ def test_search_shape_story_is_the_default(tmp_path):
 def test_auto_route_initial_state_is_vector(tmp_path):
     """开启 auto_route 后，**新空间初态必须是 vector**（零 LLM）
 
-    这是前置条件而不是优化：判断器要到前 2 题才表态，若初态是 graph，
-    那 2 题的语料**已经建完图了**——判断器白判、钱白花。
+    这是前置条件而不是优化：判断器表态之前若已建图，判成 vector 的钱就白花了。
+    本用例固定观察窗 N=2，以便在"判定尚未发生"的状态下断言零 LLM。
     """
     model = ScriptedChatModel(routes=_routes(node_count=3))
-    space = _make_space(tmp_path, model, auto_route=True)
+    space = _make_space(tmp_path, model, auto_route=True, route_probe_questions=2)
 
     assert space.space_mode == "vector", "无 mode.yaml 时必须按初态 vector"
     space.add(_messages())
@@ -423,10 +423,61 @@ def test_auto_route_initial_state_is_vector(tmp_path):
     assert space.docs, "内容必须落进文档区（零调用不等于把内容丢掉）"
 
 
-def test_auto_route_decides_then_freezes(tmp_path):
-    """前 N 题判一次 → 写入 mode.yaml → **冻结**（此后不再路由）"""
+def test_auto_route_decides_on_first_question_by_default(tmp_path):
+    """默认观察窗 = 1：只被问一次的空间也必须有机会判成 graph。
+
+    否则这类空间（本轮占 55.5%）会永远停在 vector，哪怕语料很大。
+    """
     model = ScriptedChatModel(routes=_routes(node_count=3, route_p=0.9))
     space = _make_space(tmp_path, model, auto_route=True)
+    assert space.config.route_probe_questions == 1
+
+    space.add(_messages(n=6))
+    space.search(QUERY, top_k=5)                    # 第 1 题即触发判定
+
+    assert model.call_count(M_ROUTE) == 1, "默认应在第 1 题判定"
+    assert space.space_mode == "graph"
+
+
+def test_doc_only_space_skips_route_judge(tmp_path):
+    """纯文档型空间不判定、不建图：文档通道的分流必须延续到判定环节。"""
+    model = ScriptedChatModel(routes=_routes(node_count=3, route_p=0.9))
+    space = _make_space(tmp_path, model, auto_route=True)
+    space.add([AddMessage(role="user", content="长文档内容" * 5000)])   # 1 条 2.5 万字 → 文档型
+
+    space.search(QUERY, top_k=5)
+
+    assert model.call_count(M_ROUTE) == 0, "文档型空间不该触发归属判定（白花 LLM）"
+    assert space.space_mode == "vector", "文档型空间应冻结为 vector"
+    assert space.graph.node_count == 0
+
+
+def test_backfill_skips_document_channel_records(tmp_path):
+    """回补只抽取会话型记录；文档型记录直接跳过（否则等于绕过文档通道）。"""
+    model = ScriptedChatModel(routes=_routes(node_count=3))
+    space = _make_space(tmp_path, model, auto_route=True, backfill_enabled=True)
+    space.add([AddMessage(role="user", content="一段简短的会话内容")])
+    space.add([AddMessage(role="user", content="长文档内容" * 5000)])   # 文档型
+
+    assert [r.get("channel") for r in space.doc_msgs] == ["conv", "doc"]
+
+    added = space.run_backfill()
+
+    assert added == 1, "只应回补会话型那 1 条"
+    assert space.graph.node_count > 0
+    progress = space.backfill_progress()
+    assert progress["status"] == "done"
+    assert progress["done"] == 2, "文档型记录也应计入已消费，避免反复扫描"
+
+
+def test_auto_route_decides_then_freezes(tmp_path):
+    """前 N 题判一次 → 写入 mode.yaml → **冻结**（此后不再路由）
+
+    固定 N=2，专门验证"窗口未满不判、满了只判一次"的语义。
+    """
+    model = ScriptedChatModel(routes=_routes(node_count=3, route_p=0.9))
+    space = _make_space(tmp_path, model, auto_route=True, route_probe_questions=2)
+    space.add(_messages(n=6))          # 空空间不判定（没有语料可判）
 
     space.search(QUERY, top_k=5)
     assert model.call_count(M_ROUTE) == 0, "第 1 题不该触发判定（观察窗未满）"
@@ -694,13 +745,14 @@ def test_backfill_resumes_from_checkpoint(tmp_path):
 
 
 def test_backfill_stop_loss_skips_when_too_large(tmp_path):
-    """启动前止损：估算超上限就**不启动**（宁可不建图，不可占满线程 / 超预算）
+    """启动前止损：预测耗时超预算就**不启动**（宁可不建图，不可超预算）
 
-    显式把回补批大小调回 6（默认已是更粗的 24），否则 12 条只算 1 组、验不出止损。
+    预算闸门是"分钟"口径：12 条 / 每批 6 条 = 2 组 ≈ 0.17 分钟；
+    把阈值设成 0.01 分钟即可稳定触发。
     """
     model = ScriptedChatModel(routes=_routes(node_count=3))
-    space = _l1_only_space(tmp_path, model, backfill_max_groups=1, backfill_batch_size=6)
-    space.add(_messages(n=12))                      # 12 条 / 每批 6 条 = 2 组 > 上限 1
+    space = _l1_only_space(tmp_path, model, graph_max_pred_min=0.01, backfill_batch_size=6)
+    space.add(_messages(n=12))                      # 12 条 / 每批 6 条 = 2 组 ≈ 0.17 分钟
 
     added = space.run_backfill()
 
@@ -951,9 +1003,9 @@ def test_add_threads_request_id_into_document_channel(tmp_path, monkeypatch):
 
     original = space._store_documents
 
-    def spy(messages, batch_ts=None, rid=None):
+    def spy(messages, batch_ts=None, rid=None, channel="conv"):
         seen["rid"] = rid
-        return original(messages, batch_ts, rid=rid)
+        return original(messages, batch_ts, rid=rid, channel=channel)
 
     monkeypatch.setattr(space, "_store_documents", spy)
     space.add(_messages(n=2), request_id="REQ-42")
@@ -1029,7 +1081,8 @@ def test_auto_route_deciding_query_keeps_llm_out_of_lock(tmp_path):
                                      run_manager=run_manager, **kwargs)
 
     model = GatedPurposeModel(routes=_routes(node_count=3, route_p=0.9))
-    space = _make_space(tmp_path, model, auto_route=True)
+    # 固定 N=2：本用例需要"第 1 题不判定、第 2 题判定"的两段结构来复现锁竞争。
+    space = _make_space(tmp_path, model, auto_route=True, route_probe_questions=2)
 
     space.add(_messages(n=4))                 # 判定前：落 L1（零 LLM）
     # #3 建图等待窗上线后：判成 graph 会先检查图是否就绪，未就绪就退纯向量（不推断目的）。
@@ -1584,10 +1637,11 @@ def test_backfill_progress_never_exceeds_message_count(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_stale_running_backfill_does_not_stall_and_can_resume(tmp_path):
-    """回补线程已退出但磁盘遗留 running → 不判"在建"。
+    """回补线程已退出但磁盘遗留 running → 检索时**就地续建**，不再永久僵尸。
 
-    否则 `_wait_for_graph` 永远等不到 done：每次 /search 白等满等待窗；且
-    `start_backfill` 见 running 直接返回 → 回补永不续建（图永久不完整）。
+    旧行为只做到"不傻等"，但没有任何人会重新触发建图 → 图永久不完整
+    （正是上一轮 161 个 graph 空间停在 done=0 的原因）。
+    现在 `search()` 发现 running 且无线程时会重新入队，并本次等到图。
     """
     model = ScriptedChatModel(routes=_routes(node_count=3))
     space = _make_space(tmp_path, model, auto_route=True, backfill_enabled=True,
@@ -1599,15 +1653,106 @@ def test_stale_running_backfill_does_not_stall_and_can_resume(tmp_path):
     assert space._graph_ready() is False
 
     t0 = time.monotonic()
-    items = space.search(QUERY, top_k=5)            # 必须立刻退向量，不得等满 30s
-    assert time.monotonic() - t0 < 5.0, "陈旧 running 让 /search 白等了等待窗"
+    items = space.search(QUERY, top_k=5)            # 陈旧 running 应被就地续建
+    assert time.monotonic() - t0 < 30.0, "续建耗时应远小于等待窗上限"
     assert items, "兜底纯向量应有结果"
-
-    thread = space.start_backfill()                 # 陈旧 running 应允许重新拉起
-    assert thread is not None, "遗留 running 且无活动线程时必须允许续建"
-    thread.join(timeout=30)
-    assert space.backfill_progress()["status"] == "done"
+    assert space.backfill_progress()["status"] == "done", "遗留 running 必须被续建完成"
     assert space.graph.node_count > 0
+
+
+# ---------------------------------------------------------------------------
+# 判定时刻的预算闸门 / 兜底止损 / 回补槽位优先级
+# ---------------------------------------------------------------------------
+
+def test_budget_gate_forces_vector_before_enqueue(tmp_path):
+    """预测回补超预算 → 判定即 vector，且**不起回补线程**（不产生任何建图 token）。"""
+    model = ScriptedChatModel(routes=_routes(node_count=3, route_p=0.9))
+    space = _make_space(tmp_path, model, auto_route=True, backfill_enabled=True,
+                        graph_max_pred_min=0.001)   # 任何非空语料都会超预算
+    space.add(_messages(n=6))
+    space.search(QUERY, top_k=5)
+    space.search(QUERY, top_k=5)                    # 第 2 题触发判定
+
+    assert space.space_mode == "vector", "超预算空间不应判成 graph"
+    assert space._bg_active is False, "超预算空间不应起回补线程"
+    assert space.backfill_progress()["status"] != "running"
+
+    mode_file = tmp_path / "data" / "conv0" / "mode.yaml"
+    assert "预算超限" in mode_file.read_text(encoding="utf-8")
+
+
+def test_abandon_backfill_flips_mode_to_vector(tmp_path):
+    """向量兜底后的放弃：置取消标志，并把归属翻回 vector。
+
+    翻 mode 是必须的——`_graph_ready()` 只看"图上有没有节点"，
+    半成品图会被当成可用图，比纯向量更差。
+    """
+    model = ScriptedChatModel(routes=_routes(node_count=3))
+    # 先在未判定（vector）状态下写入，让语料落进 L1 的 doc_msgs——
+    # 这正是"判定前积累的语料要靠回补建图"的真实现场。
+    space = _make_space(tmp_path, model, auto_route=True, backfill_enabled=True)
+    space.add(_messages(n=6))
+    space.set_space_mode("graph", reason="fixture")
+    space._bg_active = True                          # 模拟回补线程正在跑
+
+    space.abandon_backfill()
+
+    assert space._bg_cancel is True
+    assert space.space_mode == "vector", "放弃后必须翻回 vector"
+    mode_file = tmp_path / "data" / "conv0" / "mode.yaml"
+    assert "回补放弃" in mode_file.read_text(encoding="utf-8")
+
+
+def test_fallback_abandon_only_after_threshold(tmp_path):
+    """单次落空不放弃（后面的题还能再等一轮），连续达到阈值才翻回 vector。"""
+    model = ScriptedChatModel(routes=_routes(node_count=3))
+    space = _make_space(tmp_path, model, auto_route=True, backfill_enabled=True,
+                        abandon_after_misses=2)
+    space.add(_messages(n=6))
+    space.set_space_mode("graph", reason="fixture")
+    space._bg_active = True                          # 模拟回补线程正在跑
+
+    space._note_fallback()
+    assert space.space_mode == "graph", "第一次落空不应放弃回补"
+    assert space._bg_cancel is False
+
+    space._note_fallback()
+    assert space.space_mode == "vector", "达到阈值应放弃并翻回 vector"
+    assert space._bg_cancel is True
+
+
+def test_backfill_gate_prefers_most_recently_searched_space():
+    """槽位按"最近被检索"发放，而不是先到先得（否则被查的空间永远排不上）。"""
+    from alm.space import _BackfillGate
+
+    class _S:
+        def __init__(self, p):
+            self._backfill_priority = p
+
+    gate = _BackfillGate(1)
+    holder = _S(0.0)
+    gate.acquire(holder)                             # 占住唯一槽位
+
+    low, high = _S(1.0), _S(2.0)
+    order = []
+
+    def run(s):
+        gate.acquire(s)
+        order.append(s is high)
+        gate.release()
+
+    t_low = threading.Thread(target=run, args=(low,))
+    t_low.start()
+    time.sleep(0.1)                                  # 确保 low 先进入等待队列
+    t_high = threading.Thread(target=run, args=(high,))
+    t_high.start()
+    time.sleep(0.1)
+    gate.release()                                   # 让出槽位
+
+    t_low.join(timeout=5)
+    t_high.join(timeout=5)
+
+    assert order == [True, False], "优先级更高的空间必须先拿到槽位"
 
 
 # ---------------------------------------------------------------------------

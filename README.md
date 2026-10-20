@@ -11,7 +11,7 @@ LLM 驱动的记忆图谱构建、检索、可视化全链路管线。
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue)](https://www.python.org/)
 [![MCP](https://img.shields.io/badge/MCP-Model_Context_Protocol-orange)](https://modelcontextprotocol.io/)
 [![License](https://img.shields.io/badge/License-AGPLv3-blue)](LICENSE)
-![Version](https://img.shields.io/badge/Version-0.1.0-lightgrey)
+![Version](https://img.shields.io/badge/Version-0.1.2-lightgrey)
 
 > *"A thread through the labyrinth of memory."*
 >
@@ -594,10 +594,13 @@ edges:
 ```
 .
 ├── start_all.py                    # 一键启动（面板 + MCP SSE）
+├── alm/                            # 同步 HTTP 记忆服务（Add / Search / Health）
 ├── data/                           # 图谱库目录（面板列出其中所有图谱供切换）
 │   ├── sample_graph.yaml           # 空图谱占位（0 节点，首次启动的默认落点）
 │   ├── memory_graph.yaml           # 预设数据集
 │   └── active_graph.json           # 共享指针：面板 / MCP 各自当前的图谱（运行期生成）
+├── docs/                           # 时间线与 ALM 运维记录
+├── tests/                          # pytest 测试
 └── dba_pipeline/
     ├── core/                       # 检索核心：跳转轴、目的回归、寻峰
     │   ├── jump_axis.py
@@ -632,8 +635,8 @@ edges:
 ## 参考与论文
 
 - [0828前置数据管理与后处理.md](0828前置数据管理与后处理.md)（前置数据管理 / LLM DBA 理论部分）
-- [0828PAR检索理论文.md](0828PAR检索理论文.md)（目的驱动联想记忆检索模型 / 检索理论部分）
-- [0828对比评测数据.md](0828对比评测数据.md)（检索层与故事质量层多系统对比测评）
+- [0828PAR检索理论文档.md](0828PAR检索理论文档.md)（目的驱动联想记忆检索模型 / 检索理论部分）
+- [0908e2e实验文档.md](0908e2e实验文档.md)（端到端实验记录）
 
 ## 许可证
 

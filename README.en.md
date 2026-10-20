@@ -11,7 +11,7 @@ Future direction: further research on the retrieval algorithm — in different u
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue)](https://www.python.org/)
 [![MCP](https://img.shields.io/badge/MCP-Model_Context_Protocol-orange)](https://modelcontextprotocol.io/)
 [![License](https://img.shields.io/badge/License-AGPLv3-blue)](LICENSE)
-![Version](https://img.shields.io/badge/Version-0.1.0-lightgrey)
+![Version](https://img.shields.io/badge/Version-0.1.2-lightgrey)
 
 > *"A thread through the labyrinth of memory."*
 
@@ -367,7 +367,7 @@ PAR retrieval produces a **causal chain** of "nodes + relations" rather than a f
 
 The entry point is `retrieve_with_story` (a library method); its output includes `stories` (narrative text), `story_used` (number of nodes the narrative actually covers, **computed backend-side**), and `story_degraded` (whether it fell back to concatenation).
 
-> See also the theory paper: [0828PAR检索理论文.md](0828PAR检索理论文.md) *(in Chinese)*.
+> See also the theory paper: [0828PAR检索理论文档.md](0828PAR检索理论文档.md) *(in Chinese)*.
 
 ## MCP Server
 
@@ -561,10 +561,13 @@ edges:
 ```
 .
 ├── start_all.py                    # one-command start (panel + MCP SSE)
+├── alm/                            # synchronous HTTP memory service (Add / Search / Health)
 ├── data/                           # graph library directory (panel lists every graph in it)
 │   ├── sample_graph.yaml           # empty placeholder (0 nodes, default landing spot on first start)
 │   ├── memory_graph.yaml           # preset dataset
 │   └── active_graph.json           # shared pointer: each side's current graph (runtime-generated)
+├── docs/                           # timeline and ALM operations notes
+├── tests/                          # pytest suite
 └── dba_pipeline/
     ├── core/                       # retrieval core: Jump Axis, Purpose, Peak Finding
     │   ├── jump_axis.py
@@ -599,8 +602,8 @@ edges:
 ## References
 
 - [0828前置数据管理与后处理.md](0828前置数据管理与后处理.md) *(data management / LLM DBA theory, in Chinese)*
-- [0828PAR检索理论文.md](0828PAR检索理论文.md) *(purpose-driven associative retrieval theory, in Chinese)*
-- [0828对比评测数据.md](0828对比评测数据.md) *(retrieval & story-quality multi-system comparison, in Chinese)*
+- [0828PAR检索理论文档.md](0828PAR检索理论文档.md) *(purpose-driven associative retrieval theory, in Chinese)*
+- [0908e2e实验文档.md](0908e2e实验文档.md) *(end-to-end experiments, in Chinese)*
 
 ## License
 

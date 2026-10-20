@@ -128,14 +128,14 @@ Ariadne 将 LLM 对话中的事实抽取、纠错、去重、废弃等数据库�
 **环境要求**：Python 3.10+
 
 ```bash
-# 基础安装
-pip install -e .
+# 基础安装（constraints.txt 提供安全版本下限）
+pip install -c constraints.txt -e .
 
 # 需要本地 embedding 模型时（可选）
-pip install -e ".[local]"
+pip install -c constraints.txt -e ".[local]"
 
 # 开发依赖（可选）
-pip install -e ".[dev]"
+pip install -c constraints.txt -e ".[dev]"
 ```
 
 ## 快速开始

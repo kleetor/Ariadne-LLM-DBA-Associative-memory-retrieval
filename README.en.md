@@ -125,14 +125,14 @@ Conversation ──► DBA Maintenance ──► MemoryGraph + VectorStore ─�
 **Requires**: Python 3.10+
 
 ```bash
-# Base install
-pip install -e .
+# Base install (constraints.txt provides secure version floors)
+pip install -c constraints.txt -e .
 
 # With local embedding models (optional)
-pip install -e ".[local]"
+pip install -c constraints.txt -e ".[local]"
 
 # Development dependencies (optional)
-pip install -e ".[dev]"
+pip install -c constraints.txt -e ".[dev]"
 ```
 
 ## Quick Start

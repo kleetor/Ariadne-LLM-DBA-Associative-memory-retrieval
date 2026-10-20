@@ -49,8 +49,10 @@ Signed-off-by: kleetor <you@example.com>
 ## 测试
 
 ```bash
-pip install -e ".[dev]"
+pip install -c constraints.txt -e ".[dev]"
 pytest tests/ -q
 ```
+
+> `constraints.txt` 只约束传递依赖的安全版本下限；新增直接依赖仍写入 `pyproject.toml`。
 
 > 部分测试（如涉及 LLM / embedding 的端到端用例）需要配置 `.env` 与 API Key。

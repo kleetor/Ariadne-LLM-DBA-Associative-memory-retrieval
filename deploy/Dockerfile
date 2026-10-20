@@ -28,12 +28,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 # 项目代码与元数据；依赖统一从 pyproject.toml 安装
-COPY pyproject.toml README.md LICENSE ./
+COPY pyproject.toml README.md LICENSE constraints.txt ./
 COPY dba_pipeline ./dba_pipeline
 COPY data ./data
 
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel \
-    && pip install --no-cache-dir .
+    && pip install --no-cache-dir -c constraints.txt .
 
 # 可选：本地 embedding（CPU 版 torch + sentence-transformers）。默认关闭（API 模式），
 # 避免服务器虚拟硬件上跑本地模型效果差；如需本地 embedding，构建时传 --build-arg EMBEDDING_LOCAL=true

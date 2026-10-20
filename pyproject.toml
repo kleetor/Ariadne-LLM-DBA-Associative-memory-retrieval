@@ -15,17 +15,17 @@ authors = [
 ]
 
 dependencies = [
-    "networkx>=3.0",
-    "numpy>=1.24",
-    "pyyaml>=6.0",
-    "langchain>=0.2",
-    "langchain-openai>=0.1",
-    "langchain-community>=0.2",
-    "faiss-cpu>=1.7",
-    "requests>=2.31",
-    "mcp>=2.0",
-    "uvicorn>=0.30",
-    "starlette>=0.37",
+    "networkx>=3.0,<4",
+    "numpy>=1.24,<3",
+    "pyyaml>=6.0,<7",
+    "langchain>=0.2,<2",
+    "langchain-openai>=0.1,<2",
+    "langchain-community>=0.2,<2",
+    "faiss-cpu>=1.7,<2",
+    "requests>=2.31,<3",
+    "mcp>=2.2.0,<3",
+    "uvicorn>=0.30,<1",
+    "starlette>=0.37,<1",
 ]
 
 [project.optional-dependencies]

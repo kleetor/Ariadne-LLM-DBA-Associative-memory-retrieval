@@ -22,9 +22,11 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
-          cache-dependency-path: pyproject.toml
+          cache-dependency-path: |
+            pyproject.toml
+            constraints.txt
       - name: Install
-        run: pip install -e ".[dev]"
+        run: pip install -c constraints.txt -e ".[dev]"
       - name: Ruff
         run: ruff check .
 
@@ -41,9 +43,11 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
-          cache-dependency-path: pyproject.toml
+          cache-dependency-path: |
+            pyproject.toml
+            constraints.txt
       - name: Install
-        run: pip install -e ".[dev]"
+        run: pip install -c constraints.txt -e ".[dev]"
       - name: Test
         run: pytest -q
 
@@ -56,9 +60,11 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
-          cache-dependency-path: pyproject.toml
+          cache-dependency-path: |
+            pyproject.toml
+            constraints.txt
       - name: Install (non-editable)
-        run: pip install .
+        run: pip install -c constraints.txt .
       - name: Console scripts
         run: |
           ariadne-api --help > /dev/null

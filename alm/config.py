@@ -351,13 +351,16 @@ class ALMConfig:
     #
     # 旧模式（`write_mode` / `read_mode` / `auto_route`）已**整体删除**，理由见 config.force_mode。
 
-    # 归属判定的观察窗：前 N 题到达后**一次性**判定（不是逐题投票）。
+    # 归属判定的观察窗：第 N 题到达后**一次性**判定（不是逐题投票）。默认 1。
     #
-    # N=2 的来历（实测）：
-    #   · 实测扫描 N=2/5/10/20，**N 越大越差**——题喂得多，覆盖主题越杂，模型会把
-    #     "主题多样性"误读成"需要扩散"（N=10/20 在 2/3 个空间上判错，N=2 只在 1 个上错）；
-    #   · 且生产日志里每题只问一次、首题 query 仅 48~81 字符，样本本来就小。
-    route_probe_questions: int = 2
+    # 早期取 N=2：实测扫描 N=2/5/10/20，N 越大越差（题喂得多、主题越杂，模型会把
+    # "主题多样性"误读成"需要扩散"）。但本轮评测暴露了 N=2 的代价——
+    # 55.5% 的空间只被问过 1 次，永远等不到判定，整站停留在 vector；
+    # 而这些空间的语料并不小（未判定空间合计约 9,900 万字符，7.2% 超过 20 万字符）。
+    #
+    # 故改为 1：首题就判，唯一的那次检索才有可能用上图。小空间通常数秒到 1 分钟
+    # 即建完，配合 10 分钟等待窗完全来得及；需要更稳的信号时可显式设回 2。
+    route_probe_questions: int = 1
 
     # 归属判定的**布尔**阈值：p ≥ 本值 → graph。
     #
@@ -394,10 +397,6 @@ class ALMConfig:
     # 默认 False：形态类改动一律「加开关、默认关」。
     backfill_enabled: bool = False
 
-    # 启动前止损：估算组数超过它就**不启动**（宁可不建图，不可占满线程 / 超预算）。
-    # 估算用的单价与分批函数都取自实测与生产同款代码，所以它是批次数本身、不是近似。
-    backfill_max_groups: int = 400
-
     # 回补建图的**独立批次**（不复用 add 的 6 条/1500 字）。
     #
     # 为什么必须单独一套：回补是"从 L1 重新建图"，语料已经完整落盘、且**没有调用方在等**
@@ -406,6 +405,16 @@ class ALMConfig:
     # 消解上下文被切断；但**整段一次灌入**又会"压缩更深、联想路径断裂"。故取中间值。
     backfill_batch_size: int = 24
     backfill_max_chars: int = 8000
+
+    # 回补并发槽位（全进程共享）。上游实测 32 并发仍无 429（928 次/分、p50 1.8s），
+    # 但**首次上线取 8**：相对旧值 2 是 4 倍，实测吞吐约 267 次/分（旧实测 9 次/分，
+    # 约 30 倍），单轮全量回补约 90 分钟——已能放进检索窗口，同时给 add/search 与
+    # 磁盘 I/O 留出余量。观察稳定后再按 `ALM_BACKFILL_SLOTS` 上调。
+    backfill_slots: int = 8
+
+    # 单组回补的耗时估算（秒）。用于判定时刻的预算闸门：
+    # 预测时长 = 组数 × 本值。实测（上游 p50 1.8s、每组 2 次调用 + 落盘）约 4~5s。
+    backfill_group_seconds: float = 5.0
 
     # ---- 返回量上限（TopK 压制）----
     #
@@ -417,8 +426,25 @@ class ALMConfig:
     #
     # 判定当刻图还是空的（回补刚在后台起线程）。此时若立刻按图检索，只会回文档块——
     # 与"想用图"的意图不符。故：回补**正在跑**时最多等这么久，仍不就绪则本次**退回纯向量**。
-    # 调用方单请求允许 30 分钟，30s 是很保守的取值。
-    graph_wait_seconds: float = 30.0
+    #
+    # 单位是**一次检索请求**（最小粒度），不是"一个空间总共等多久"——同一个空间的
+    # 每一题都可以各自等满这个窗口，先到的题一旦把图等出来，后续题就直接走图。
+    # 取 10 分钟：与 embedding 节流下单空间的建图耗时对齐，且远小于调用方 30 分钟上限。
+    graph_wait_seconds: float = 600.0
+
+    # 判定时刻的**预算闸门**（唯一的成本护栏）：预测回补时长超过它就直接判 vector。
+    #
+    # 这是「兜底的兜底」：前面已有两道判断——文档通道拦掉长文档、语义判定决定该不该建图，
+    # 这里只处理「判成 graph 但体量异常大、明显建不完」的残余情况。
+    # 判定时刻与回补启动时刻各校验一次（后者防止排队期间语料继续增长）。
+    # 0 = 关闭。本轮最大空间 147 组 ≈ 12 分钟，30 分钟只挡 400 组以上的异常空间。
+    graph_max_pred_min: float = 30.0
+
+    # 允许"等满一轮仍落空"的次数；达到后才放弃回补。0 = 永不放弃。
+    #
+    # 为什么不是第一次就放弃：等待单位是**一次检索请求**，同一空间后面的题还可以
+    # 再等一轮（10 分钟/题）。大空间需要 2~3 轮才能建完，第一次就放弃等于让它永远建不成。
+    abandon_after_misses: int = 3
 
     # ---- 出站配额节流（字符/分；0 = 关闭）----
     #
@@ -756,15 +782,18 @@ class ALMConfig:
             force_mode=_env_choice("ALM_FORCE_MODE", ("auto", "vector", "graph"), "auto"),
             search_shape=_env_choice("ALM_SEARCH_SHAPE", ("story", "evidence"), "story"),
             evidence_legend=_env_bool("ALM_EVIDENCE_LEGEND", True),
-            route_probe_questions=_env_int("ALM_ROUTE_PROBE_QUESTIONS", 2, minimum=1),
+            route_probe_questions=_env_int("ALM_ROUTE_PROBE_QUESTIONS", 1, minimum=1),
             route_min_p=_env_float("ALM_ROUTE_MIN_P", 0.5),
             route_sample_chars=_env_int("ALM_ROUTE_SAMPLE_CHARS", 700, minimum=100),
             backfill_enabled=_env_bool("ALM_BACKFILL", False),
-            backfill_max_groups=_env_int("ALM_BACKFILL_MAX_GROUPS", 400, minimum=1),
             backfill_batch_size=_env_int("ALM_BACKFILL_BATCH_SIZE", 24, minimum=0),
             backfill_max_chars=_env_int("ALM_BACKFILL_MAX_CHARS", 8000, minimum=0),
+            backfill_slots=_env_int("ALM_BACKFILL_SLOTS", 8, minimum=1),
+            backfill_group_seconds=_env_float("ALM_BACKFILL_GROUP_SECONDS", 5.0),
             search_max_items=_env_int("ALM_SEARCH_MAX_ITEMS", 25, minimum=1),
-            graph_wait_seconds=_env_float("ALM_GRAPH_WAIT", 30.0),
+            graph_wait_seconds=_env_float("ALM_GRAPH_WAIT", 600.0),
+            graph_max_pred_min=_env_float("ALM_GRAPH_MAX_PRED_MIN", 30.0),
+            abandon_after_misses=_env_int("ALM_ABANDON_AFTER_MISSES", 3, minimum=0),
             embed_chars_per_min=_env_int("ALM_EMBED_CHARS_PER_MIN", 0, minimum=0),
             llm_chars_per_min=_env_int("ALM_LLM_CHARS_PER_MIN", 0, minimum=0),
             throttle_max_wait=_env_float("ALM_THROTTLE_MAX_WAIT", 120.0),

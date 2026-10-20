@@ -325,9 +325,12 @@ def _print_status(config: ALMConfig, engine: ALMEngine) -> None:
         # 它们的失效模式全是**静默**的（省下的是钱与稳定性，不是报错），只能在启动时核。
         f"  回补建图   : {'开启' if config.backfill_enabled else '关闭'} "
         f"批次={config.backfill_batch_size or '不限'}条/{config.backfill_max_chars or '不限'}字 "
-        f"止损上限={config.backfill_max_groups}组",
+        f"槽位={config.backfill_slots}",
         f"  稳定措施   : TopK上限={config.search_max_items} "
-        f"建图等待={config.graph_wait_seconds}s（超时退纯向量）",
+        f"建图等待={config.graph_wait_seconds:.0f}s（超时退纯向量）"
+        + (f" 预算闸门={config.graph_max_pred_min:.0f}min" if config.graph_max_pred_min > 0 else "")
+        + (f" 兜底{config.abandon_after_misses}次后放弃回补"
+           if config.abandon_after_misses > 0 else " 兜底不放弃回补"),
         "  出站节流   : " + (
             "关闭（不限速）"
             if not (config.embed_chars_per_min or config.llm_chars_per_min

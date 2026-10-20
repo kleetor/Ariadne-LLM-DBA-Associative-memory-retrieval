@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Optional
 
 from alm.config import ALMConfig
 from alm.contract import AddRequest, SearchRequest
-from alm.space import MemorySpace, RetrievalStats
+from alm.space import MemorySpace, RetrievalStats, _BackfillGate
 from alm.tokens import TokenMeter
 from dba_pipeline import throttle
 from dba_pipeline.llm.provider import thinking_kwargs
@@ -95,6 +95,9 @@ class ALMEngine:
         self.retrieval_stats = RetrievalStats()
 
         self._spaces: "OrderedDict[str, MemorySpace]" = OrderedDict()
+        # 回补槽位闸门（全进程共享，按"最近被检索"优先放行）。放在 Engine 上而不是
+        # 类级变量：并发度属于本次运行配置（`ALM_BACKFILL_SLOTS`），不该跨实例泄漏。
+        self._backfill_gate = _BackfillGate(config.backfill_slots)
         # 正在被使用的空间（user_id → 租用计数）。换出必须跳过这些，
         # 否则同一 user_id 会出现两个实例并发覆盖写同一个 YAML（见 _lease）。
         self._in_use: Dict[str, int] = {}
@@ -191,6 +194,7 @@ class ALMEngine:
             yaml_path=graph_path,
             stats=self.retrieval_stats,
             reranker=self.reranker,
+            backfill_gate=self._backfill_gate,
         )
         self._spaces[user_id] = space
         return space

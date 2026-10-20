@@ -428,15 +428,50 @@ class RetrievalStats:
         return "\n".join(lines)
 
 
+class _BackfillGate:
+    """回补槽位闸门：**按优先级**放行，而不是按到达顺序。
+
+    为什么不用 Semaphore：Semaphore 先到先得，但回补队列里最该先跑的，是
+    「刚刚有检索在等它的那个空间」——否则那次检索要白等到 `graph_wait_seconds`
+    超时才落空，等图建好时已经没人要了。
+
+    优先级由 `MemorySpace._backfill_priority`（最近一次检索的时间戳）给出，且**动态**
+    生效：等待中的线程每次被唤醒都重新排序，所以「后来被检索」能立即插队。
+    """
+
+    def __init__(self, slots: int):
+        self._cv = threading.Condition()
+        self._free = max(1, int(slots))
+        self._waiters = []       # [(seq, space)]
+        self._seq = 0
+
+    def acquire(self, space) -> None:
+        with self._cv:
+            self._seq += 1
+            ticket = (self._seq, space)
+            self._waiters.append(ticket)
+            while True:
+                self._waiters.sort(
+                    key=lambda t: (-getattr(t[1], "_backfill_priority", 0.0), t[0])
+                )
+                if self._free > 0 and self._waiters[0] is ticket:
+                    self._waiters.pop(0)
+                    self._free -= 1
+                    return
+                self._cv.wait()
+
+    def release(self) -> None:
+        with self._cv:
+            self._free += 1
+            self._cv.notify_all()
+
+
+# 直接构造 MemorySpace（不经过 Engine）时的默认闸门，例如单元测试。
+_DEFAULT_BACKFILL_GATE = _BackfillGate(8)
+
+
 class MemorySpace:
     """单个 user_id 的完整记忆栈：图谱 + 向量 + DBA 维护 + PAR 检索"""
-
-    # 回补建图的并发闸门（**类级** = 全进程共享，按"同时在跑的回补作业数"限流）。
-    #
-    # 为什么必须限：回补是"每个判成 graph 的空间起一个线程"。48h / 16 并发下会有
-    # 数十个空间被判成 graph，若不限制，它们会**同时**调 LLM，与 add/search 抢额度
-    # 与连接——而回补只是后台补偿，可以慢，主链路不能被挤。
-    _BACKFILL_SLOTS = threading.Semaphore(2)
 
     def __init__(
         self,
@@ -447,6 +482,7 @@ class MemorySpace:
         yaml_path: Path,
         stats: Optional[RetrievalStats] = None,
         reranker=None,
+        backfill_gate: Optional[_BackfillGate] = None,
     ):
         if not HAS_DEPS:
             raise RuntimeError(
@@ -498,6 +534,10 @@ class MemorySpace:
         # 视图（见 `_chunks_from_msgs`），不作为持久化内容——切片抹平了消息边界与角色，
         # 而"重新抽取"（回补建图）与"局部建边"都要求能还原出原始消息序列。
         self.doc_msgs: List[Dict[str, Any]] = []
+        # 是否见过**会话型**内容。仅当它为真时才值得跑归属判定 / 回补：
+        # 纯文档型空间（长文档、抽取兜底）无论如何都该走向量通道。
+        # 旧数据没有 channel 字段 → 载入时按 conv 处理（保持旧行为）。
+        self._conv_seen = False
         # 已持久化到盘上的**消息**条数（快照 + 增量日志合计）。落盘只写
         # `self.doc_msgs` 中**超出这一位**的新增部分——文档区只增不改，故不需要全量重写。
         self._msgs_logged = 0
@@ -547,6 +587,15 @@ class MemorySpace:
         # `save()`（整图覆盖写 YAML），把重建期间写入的内容抹掉。
         # 与 `_lease` 防的是同一类丢数据，区别只是"占用者"是后台线程而非请求线程。
         self._bg_active = False
+        # 回补的**取消**标志：向量兜底后置位，循环在下一批之前退出（见 abandon_backfill）。
+        self._bg_cancel = False
+        # 回补闸门的排序键：最近一次检索的时间戳。越大越优先（见 _BackfillGate）。
+        self._backfill_priority = 0.0
+        # 连续"等满一轮仍落空"的次数。达到 `abandon_after_misses` 才真正放弃回补：
+        # 等待单位是单次检索，同一空间后面的题还能再等一轮，大空间需要多轮才建得完。
+        self._fallback_misses = 0
+        # 全进程共享的回补槽位闸门（由 Engine 注入；直接构造时用默认值）。
+        self._backfill_gate = backfill_gate or _DEFAULT_BACKFILL_GATE
         # 串行化落盘。`save()` 会被**请求线程**（engine.add 之后）与**回补线程**
         # （run_backfill 每批）**同时**调用，而它是整图 / 整文档区的覆盖写——
         # 不加锁时两线程交错写同一个 YAML 会把文件写坏（48h / 16 并发下高频）。
@@ -741,6 +790,14 @@ class MemorySpace:
         """
         if self.config.force_mode != "auto" or self._space_mode is not None:
             return
+        # 纯文档型空间（长文档 / 抽取兜底）**不判定、不建图**：
+        # 文档通道本就是为这类语料设计的，让它们进入图链路等于绕过形态分流，
+        # 既白花一次判定 LLM，又会在回补时把整篇文档重抽成孤立节点。
+        # 空空间也不判——等有内容再说（否则会按空语料冻结成 vector）。
+        if not self._conv_seen:
+            if self.doc_msgs:
+                self.set_space_mode("vector", reason="仅文档型语料（文档通道）")
+            return
         with self._lock:
             # 双检：并发下可能已被前一题判掉（或已冻结），此时不再收窗口。
             if self._space_mode is not None or self._route_deciding:
@@ -774,6 +831,18 @@ class MemorySpace:
             return
         if score is None:
             self.set_space_mode("vector", reason="判定失败")
+            return
+        # 预算闸门：与语义判定并列的第二道判据——语义回答"该不该建图"，
+        # 这里回答"来不来得及建完"。超预算的空间若判成 graph，只会在检索结束后
+        # 才建好（对成绩零贡献），却把整段回补的 token 照付一遍。
+        pred_min = self._predict_backfill_minutes()
+        if (self.config.graph_max_pred_min > 0
+                and pred_min > self.config.graph_max_pred_min):
+            self.set_space_mode(
+                "vector",
+                reason=(f"p={score:.2f} 题数={len(questions)} "
+                        f"预算超限(pred={pred_min:.0f}min)"),
+            )
             return
         mode = "graph" if score >= self.config.route_min_p else "vector"
         self.set_space_mode(
@@ -881,6 +950,9 @@ class MemorySpace:
         止损判断与实际执行不会出现口径差（两处都传同一组 `backfill_*` 覆盖值）。
         """
         records = self.doc_msgs if pending is None else pending
+        # 只统计**会话型**记录：doc 记录（长文档 / 抽取兜底）永远不参与回补，
+        # 否则等于绕回文档通道把整篇文档重抽成孤立节点。
+        records = [r for r in records if r.get("channel") != "doc"]
         if not records:
             return 0
         return len(self._split_add_batches(
@@ -888,6 +960,25 @@ class MemorySpace:
             size=self.config.backfill_batch_size,
             budget=self.config.backfill_max_chars,
         ))
+
+    def _predict_backfill_minutes(
+        self, pending: Optional[List[Dict[str, Any]]] = None
+    ) -> float:
+        """预测把待补语料建完需要多少分钟（判定时刻 / 续建时刻的预算闸门用）。
+
+        组数直接复用 `estimate_backfill_groups`（与真实分批同一函数，不是近似），
+        单组耗时取配置（实测 4~5s，含两次 LLM 调用与落盘）。
+
+        `pending` 为 None 时按**全部原文**估算（判定时刻：图还是空的）；
+        续建场景应传 `backfill_pending()`，否则会把已补部分重复计入。
+
+        异常一律按 0 处理：宁可建图，不可因估算失败把该建的空间错判成 vector。
+        """
+        try:
+            groups = self.estimate_backfill_groups(pending)
+        except Exception:
+            return 0.0
+        return groups * float(self.config.backfill_group_seconds) / 60.0
 
     @staticmethod
     def _record_to_message(record: Dict[str, Any]) -> AddMessage:
@@ -911,26 +1002,45 @@ class MemorySpace:
             self._save_backfill_progress(progress["done"], "done")
             return 0
 
-        # 启动前止损：估算超预算就直接不启动——宁可不建图，不可占满线程。
+        # 只有 conv 记录需要建图。doc 记录（长文档 / 抽取兜底）**直接跳过**并计入
+        # 已消费：否则等于绕过文档通道，把整篇文档重抽成孤立节点。
+        conv_items = [
+            (i, r) for i, r in enumerate(pending) if r.get("channel") != "doc"
+        ]
+        skipped_docs = len(pending) - len(conv_items)
+        if not conv_items:
+            self._save_backfill_progress(len(self.doc_msgs), "done")
+            return 0
+
+        # 启动前止损（与判定时刻同一把预算闸门，改用"分钟"口径）：
+        # 排队期间可能又收到新语料，判定时刻的估算会过期，这里按**当前待补**复核一次。
         groups = self.estimate_backfill_groups(pending)
-        if groups > self.config.backfill_max_groups:
+        pred_min = self._predict_backfill_minutes(pending)
+        if (self.config.graph_max_pred_min > 0
+                and pred_min > self.config.graph_max_pred_min):
             logger.warning(
-                "空间 %s 回补中止（启动前止损）: 估算 %d 组 > 上限 %d",
-                self._masked_id(), groups, self.config.backfill_max_groups,
+                "空间 %s 回补中止（超预算）: 估算 %d 组 ≈ %.0f 分钟 > 上限 %.0f 分钟",
+                self._masked_id(), groups, pred_min, self.config.graph_max_pred_min,
             )
             self._save_backfill_progress(progress["done"], "skipped")
             return 0
 
-        logger.info("空间 %s 回补开始: 待补 %d 条消息 / %d 组",
-                    self._masked_id(), len(pending), groups)
-        msgs = [self._record_to_message(r) for r in pending]
+        logger.info("空间 %s 回补开始: 待补 %d 条会话消息 / %d 组（跳过 %d 条文档型）",
+                    self._masked_id(), len(conv_items), groups, skipped_docs)
+        msgs = [self._record_to_message(r) for _, r in conv_items]
         done = progress["done"]
+        extracted = 0
+        cursor = 0
         self._save_backfill_progress(done, "running")
         for group, n_msgs in self._split_add_batches_span(
             msgs,
             size=self.config.backfill_batch_size,
             budget=self.config.backfill_max_chars,
         ):
+            # 取消检查放在**每批之前**：粒度 ≤ 1 组（约 4~5 秒），
+            # 既能让槽位尽快让给下一项，又不会把正在写的一批截断成半张图。
+            if self._bg_cancel:
+                break
             try:
                 # ② 逐批持锁：临界区 1~3 秒，与正常 add 同量级——不阻塞并发检索。
                 with self._lock:
@@ -942,15 +1052,36 @@ class MemorySpace:
                 logger.warning("空间 %s 回补某批失败，保留已补部分: %s", self._masked_id(), exc)
                 break
             # ③ 按**原始消息条数**推进（不是单元数）：长消息被切成多片时，只有整条建完
-            #    才计入 done，跨组的半条消息本组记 0（下次整条重做，宁重不漏）。
-            done += n_msgs
+            #    才计入 extracted，跨组的半条消息本组记 0（下次整条重做，宁重不漏）。
+            #    done 是 doc_msgs 的下标，需映射回"本组最后一条记录之后"，
+            #    这样夹在中间的 doc 记录也会被一并标记为已消费。
+            cursor += n_msgs
+            extracted += n_msgs
+            done = progress["done"] + conv_items[cursor - 1][0] + 1
             self._save_backfill_progress(done, "running")   # 每批落进度：重启可续
             self.save()
+        if self._bg_cancel:
+            # 竞态：取消信号可能与"最后一批刚写完"同时到达。此时语料其实已经补全，
+            # 不能记成 skipped（那会让一张完整的图被永久判死）。
+            if cursor >= len(conv_items):
+                done = len(self.doc_msgs)
+                self._save_backfill_progress(done, "done")
+                logger.info("空间 %s 回补完成（取消信号到达时已补全）: %d 条会话消息",
+                            self._masked_id(), extracted)
+            else:
+                # 检索已经用向量答完，继续建图只会烧钱；且半张图没有消费者，
+                # 归属已被 `abandon_backfill` 翻回 vector，这里只负责收尾。
+                self._save_backfill_progress(done, "skipped")
+                logger.info("空间 %s 回补放弃: 已补 %d / %d 条会话消息（向量已兜底）",
+                            self._masked_id(), extracted, len(conv_items))
+            return extracted
+        if cursor >= len(conv_items):
+            done = len(self.doc_msgs)      # 收尾：尾部 doc 记录一并标记已消费
         finished = done >= len(self.doc_msgs)
         self._save_backfill_progress(done, "done" if finished else "running")
-        logger.info("空间 %s 回补结束: 累计 %d / %d 条消息",
-                    self._masked_id(), done, len(self.doc_msgs))
-        return done - progress["done"]
+        logger.info("空间 %s 回补结束: 累计 %d / %d 条会话消息",
+                    self._masked_id(), extracted, len(conv_items))
+        return extracted
 
     def start_backfill(self) -> Optional[threading.Thread]:
         """在**后台线程**里跑回补。返回线程对象；未启动时返回 None。
@@ -962,7 +1093,8 @@ class MemorySpace:
             return None
         with self._lock:
             progress = self.backfill_progress()
-            if progress["status"] == "done":
+            # done = 已建完；skipped = 已判定放弃（止损或向量兜底），重跑只会重复撞墙。
+            if progress["status"] in ("done", "skipped"):
                 return None
             # 用**内存态** `_bg_active` 做"已在跑"判据，而不是磁盘状态：磁盘上的
             # `running` 可能是上次中断 / 进程重启遗留的陈旧值（那时并没有线程在推进），
@@ -976,25 +1108,73 @@ class MemorySpace:
             # 必须在 `thread.start()` **之前**置位：否则 start() 与 worker 首次执行之间
             # 存在窗口，空间可能正好在这个窗口里被换出 → 丢数据。
             self._bg_active = True
+            self._bg_cancel = False
             self._save_backfill_progress(progress["done"], "running")
 
         def _worker():
-            # 限并发（见 _BACKFILL_SLOTS）：拿不到槽位就在此等待。等待期间
-            # `_bg_active` 仍为 True（该空间不可换出）——有意如此：宁可少换出，
+            # 槽位由 `_BackfillGate` 按优先级发放（最近被检索的空间先拿）。
+            # 等待期间 `_bg_active` 仍为 True（该空间不可换出）——有意如此：宁可少换出，
             # 也不要回补作业被换出后继续写旧实例而丢数据。
-            with self._BACKFILL_SLOTS:
-                try:
-                    self.run_backfill()
-                except Exception as exc:   # 线程内异常不能冒泡（daemon 线程里冒泡只进 stderr）
-                    logger.warning("空间 %s 回补线程异常: %s", self._masked_id(), exc)
-                finally:
-                    self._bg_active = False   # 释放"后台在跑"标记，让该空间重新可被换出
+            gate = self._backfill_gate
+            # 排队期间可能已被放弃：先看一眼取消标志，避免白占一次槽位。
+            if self._bg_cancel:
+                self._bg_active = False
+                self._save_backfill_progress(
+                    self.backfill_progress().get("done", 0), "skipped"
+                )
+                return
+            gate.acquire(self)
+            try:
+                self.run_backfill()
+            except Exception as exc:   # 线程内异常不能冒泡（daemon 线程里冒泡只进 stderr）
+                logger.warning("空间 %s 回补线程异常: %s", self._masked_id(), exc)
+            finally:
+                gate.release()
+                self._bg_active = False   # 释放"后台在跑"标记，让该空间重新可被换出
 
         thread = threading.Thread(
             target=_worker, name=f"backfill-{self._masked_id()}", daemon=True
         )
         thread.start()
         return thread
+
+    def _note_fallback(self) -> None:
+        """记一次「等满等待窗仍落空」。
+
+        只在**达到阈值**时才放弃回补：等待单位是单次检索请求，同一空间后面的题
+        还能再等一轮；大空间需要 2~3 轮才建得完，第一次落空就放弃等于让它永远建不成。
+        阈值 0 = 永不放弃（仅受预算闸门与止损上限约束）。
+        """
+        self._fallback_misses += 1
+        limit = int(self.config.abandon_after_misses)
+        if limit > 0 and self._fallback_misses >= limit:
+            self.abandon_backfill(reason=f"连续{self._fallback_misses}次未就绪")
+
+    def abandon_backfill(self, reason: str = "向量已兜底") -> None:
+        """放弃回补，并把归属**翻回 vector**。
+
+        为什么必须翻 mode：`_graph_ready()` 只看"图上有没有节点"，半成品图会被
+        当成可用图——那比纯向量更差（图残缺、扩展路径断裂）。翻成 vector 后，
+        后续检索稳定走向量通道，行为可预测。
+
+        线程侧只置取消标志：正在跑的那一批会写完（≤1 组），再在下一批之前退出，
+        这样既不会写出半个批次，也能让槽位尽快让给下一个空间。
+        """
+        if not self._bg_active:
+            return
+        # 竞态保护：线程可能刚好补完最后一批（此时 `_bg_active` 尚未复位）。
+        # 这种情况**不能**降级——那张图是完整的，翻成 vector 等于白建。
+        try:
+            if self.backfill_progress().get("done", 0) >= len(self.doc_msgs):
+                return
+        except Exception:
+            pass
+        self._bg_cancel = True
+        try:
+            self.set_space_mode("vector", reason=f"回补放弃({reason})")
+        except Exception as exc:
+            logger.warning("空间 %s 回补放弃时改写 mode 失败: %s", self._masked_id(), exc)
+        logger.info("空间 %s 回补放弃信号已发出: %s", self._masked_id(), reason)
 
     # ---- 向量索引持久化 ----
     # 无索引落盘时，每次空间载入（LRU 换出后再访问、或进程重启）都要把整图重新嵌入
@@ -1204,6 +1384,11 @@ class MemorySpace:
             self.doc_msgs, self._doc_seq = [], 0
         # 回放增量日志（快照之后新追加的消息都在这里）。
         self._replay_docs_log()
+        # 是否包含会话型内容：决定该空间要不要参与归属判定与回补。
+        # 旧数据没有 channel 字段 → 按 conv 处理（保持旧行为）。
+        self._conv_seen = any(
+            str(r.get("channel") or "conv") != "doc" for r in self.doc_msgs
+        )
         # 切片是**派生视图**：由原始消息在载入时重建。id 由 (doc_id, 批内块序)
         # 决定 → 重建结果与落盘索引**逐条对齐**，故条数校验照旧成立。
         self.docs = self._chunks_from_msgs(self.doc_msgs)
@@ -1374,6 +1559,7 @@ class MemorySpace:
         messages: List[AddMessage],
         batch_ts: Optional[int] = None,
         rid: Optional[str] = None,
+        channel: str = "conv",
     ) -> List[str]:
         """把原文切块存入文档区：不抽节点、不建边、不进图。
 
@@ -1404,6 +1590,9 @@ class MemorySpace:
                 # rid 随 msgs 自动进日志、自动进快照，compact 后幂等信息不会丢。
                 # rid 由调用方**显式传入**（不读 self 上的状态），见 `add()` 的说明。
                 "rid": rid,
+                # 内容通道：conv = 会话型（判定前暂存 L1，判成 graph 后要被回补建图）；
+                # doc = 文档型 / 抽取失败兜底（**永不回补**，否则等于绕过文档通道）。
+                "channel": channel,
             }
             for i, (msg, text) in enumerate(
                 ((m, (m.content or "").strip()) for m in messages)
@@ -1423,6 +1612,8 @@ class MemorySpace:
             [d["id"] for d in new_docs], [d["content"] for d in new_docs]
         )
         self.doc_msgs.extend(msgs)
+        if channel != "doc":
+            self._conv_seen = True
         self.docs.extend(new_docs)
         self._doc_index = {d["id"]: i for i, d in enumerate(self.docs)}
         return [d["id"] for d in new_docs]
@@ -1631,6 +1822,9 @@ class MemorySpace:
         # 形态判定不受 trace 开关影响：路由本身是行为，不是观测。
         # doc_route=False 时全部按对话处理（A/B 对照用）。
         kind = self._classify_batch(payload) if self.config.doc_route else "conversation"
+        # 形态判定要在被 `documents` 模式覆盖**之前**存一份：覆盖只表示"这一批暂不进图"，
+        # 不代表它天生是文档。回补建图与归属判定都依赖这个原始形态。
+        raw_kind = kind
         # 写侧模式：`documents` 表示**整个空间不建图**。
         # 它盖过形态判定——因为这一档的意义正是"这个语料到底值不值得建图"，
         # 此时不该再让形态判据把任何一批放回图链路。噪音仍照常丢弃。
@@ -1672,7 +1866,10 @@ class MemorySpace:
             with self._lock:
                 # 先置位再写：中途抛错时保持 dirty，让退出路径仍会落盘。
                 self._dirty = True
-                created = self._store_documents(messages, batch_ts, rid=rid)
+                created = self._store_documents(
+                    messages, batch_ts, rid=rid,
+                    channel="doc" if raw_kind == "document" else "conv",
+                )
             logger.info(
                 "空间 %s 文档通道: messages=%d 字符=%d 块=%d（不建节点、不建边）",
                 self._masked_id(), len(messages),
@@ -1690,6 +1887,8 @@ class MemorySpace:
         groups = self._split_add_batches(payload)
         created = []
         with self._lock:
+            # 走到会话通道即证明该空间有对话型内容——归属判定与回补只对这类空间有意义。
+            self._conv_seen = True
             # 先置位再改图：maintain 中途抛错时图谱可能已被部分修改，
             # 此时保持 dirty 让退出路径仍会落盘，宁多写一次也不丢内容。
             self._dirty = True
@@ -1723,7 +1922,11 @@ class MemorySpace:
                     "空间 %s 单次 Add %d 条超过维护上限 %d，超出 %d 条改走兜底落库",
                     self._masked_id(), len(messages), limit, len(overflow),
                 )
-                created = created + self._divert_raw(overflow, batch_ts, rid=rid)
+                # 溢出的是**会话内容**（本该进图，只是超过单次维护上限），标 conv：
+                # 若后续被回补，仍应建图；与"抽取失败兜底"的 doc 区分开。
+                created = created + self._divert_raw(
+                    overflow, batch_ts, rid=rid, channel="conv"
+                )
 
         # 节点操作计数与兜底原因已在上面的分组循环里聚合（acts / fallback_reasons）。
         #
@@ -1936,6 +2139,7 @@ class MemorySpace:
         messages: List[AddMessage],
         batch_ts: Optional[int] = None,
         rid: Optional[str] = None,
+        channel: str = "doc",
     ) -> List[str]:
         """存放**未经抽取**的原文内容（契约要求「已完整存储且可被检索」）。
 
@@ -1952,7 +2156,9 @@ class MemorySpace:
         `doc_route=false` 时退回旧行为（图内兜底块），用于 A/B 对照。
         """
         if self.config.doc_route:
-            return self._store_documents(messages, batch_ts, rid=rid)
+            # 兜底原文默认标 doc：**永不回补建图**，否则等于绕过文档通道。
+            # 只有"超量溢出"这类本应进图的会话内容才显式传 conv（见调用点）。
+            return self._store_documents(messages, batch_ts, rid=rid, channel=channel)
         return self._store_raw_fallback(messages, batch_ts)
 
     def _store_raw_fallback(
@@ -2240,7 +2446,19 @@ class MemorySpace:
         top_k = max(1, min(int(top_k), self.config.search_max_items))
 
         retrieval_query = _retrieval_text(query)
+        # 回补闸门的优先级：刚被检索的空间最该先建图（见 _BackfillGate）。
+        self._backfill_priority = time.time()
         self._maybe_decide_space_mode(retrieval_query)
+
+        # 重启恢复：磁盘上遗留 `running`、但本进程**没有线程在推进**的空间，
+        # 若此刻正好被检索到，就地在后台续建。惰性恢复而不是启动横扫，
+        # 免得启动时把几百个空间一次性读进内存。
+        # 预算复核由 `run_backfill` 在启动时统一做（唯一一处闸门），这里不再重复。
+        if (self.config.backfill_enabled
+                and self._effective_read_mode() == "graph"
+                and not self._bg_active
+                and self.backfill_progress().get("status") == "running"):
+            self.start_backfill()
 
         # 建图等待窗（#3）：判成 graph 后，图是后台回补（backfill）**逐步**建起来的，
         # 期间直接检索会拿到残缺的图。正确语义是——**等图建完**：回补在跑就轮询等待，
@@ -2251,6 +2469,10 @@ class MemorySpace:
                 and self._effective_read_mode() != "vector"
                 and not self._graph_ready()):
             force_vector = not self._wait_for_graph(self.config.graph_wait_seconds)
+
+        # 兜底止损：第一次落空只计数（后面的题还能再等一轮），达到阈值才放弃回补。
+        if force_vector:
+            self._note_fallback()
 
         purpose_info: Optional[Dict[str, Any]] = None
         if self._effective_read_mode() != "vector" and not force_vector:

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ariadne"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Ariadne: LLM DBA管理与目的驱动的联想记忆检索系统 — A thread through the labyrinth of memory"
 readme = "README.md"
 license = "AGPL-3.0-only"
@@ -31,6 +31,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
+    "ruff>=0.9",
 ]
 local = [
     "sentence-transformers>=2.2",
@@ -48,6 +49,9 @@ ariadne-alm-cleanup = "alm.cleanup:main"
 where = ["."]
 include = ["dba_pipeline*", "alm*"]
 
+[tool.setuptools.dynamic]
+version = {attr = "dba_pipeline.__version__"}
+
 [tool.setuptools.package-data]
 # 静态前端要随包一起安装：容器里 `ariadne-api`（控制台脚本）从 site-packages 导入，
 # 漏声明就会导致 /static/icon.png 与 /static/graph.json 404（本地从源码树跑则正常，
@@ -58,4 +62,20 @@ dba_pipeline = [
     "viz/static/*.json",
     "viz/static/css/*.css",
     "viz/static/js/*.js",
+]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+extend-exclude = ["memory", "Plan", "Server", "website", "models", "frameworks", "eval"]
+
+[tool.ruff.lint]
+# 先以低风险规则建立门禁；I/UP/B/SIM 等规则待单独批次清理后再启用。
+select = ["E4", "E7", "E9", "F"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "network: 需要外部网络或真实 API Key 的用例",
+    "e2e: 端到端用例",
 ]

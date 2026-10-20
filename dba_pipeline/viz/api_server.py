@@ -56,8 +56,7 @@ import uvicorn
 from starlette.applications import Starlette
 from starlette.datastructures import MutableHeaders
 from starlette.requests import Request
-from starlette.responses import (JSONResponse, PlainTextResponse,
-                                 RedirectResponse, Response, StreamingResponse)
+from starlette.responses import (JSONResponse, RedirectResponse, Response, StreamingResponse)
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
@@ -1385,7 +1384,8 @@ def _read_version() -> str:
         from importlib.metadata import version
         return version("ariadne")
     except Exception:
-        return "0.1.0"
+        from dba_pipeline import __version__
+        return __version__
 
 
 def _resolve_startup_graph(args) -> str:

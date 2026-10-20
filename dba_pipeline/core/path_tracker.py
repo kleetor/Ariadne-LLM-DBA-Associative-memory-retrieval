@@ -18,8 +18,8 @@
   - 路径由 (节点序列, 边类型序列) 定义，精确匹配才算同一路径
 """
 
-from typing import Dict, List, Tuple, Optional
-from dataclasses import dataclass, field
+from typing import Dict, List, Tuple
+from dataclasses import dataclass
 from collections import defaultdict, deque
 
 

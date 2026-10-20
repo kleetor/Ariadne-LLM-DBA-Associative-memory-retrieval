@@ -6,7 +6,7 @@ LangChain LLM 封装：状态推断 + 目的推断 + 回复生成
 
 from datetime import datetime
 import logging
-from typing import List, Optional
+from typing import List
 
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
@@ -598,7 +598,7 @@ class InferenceEngine:
                 cleaned = response.content.strip()
                 if cleaned.startswith("```"):
                     lines_ = cleaned.split("\n")
-                    lines_ = [l for l in lines_ if not l.startswith("```")]
+                    lines_ = [line for line in lines_ if not line.startswith("```")]
                     cleaned = "\n".join(lines_)
                 data = json.loads(cleaned)
                 # 只取 story。模型自报的 `used` **不再采用**——它与正文不自洽，改由
@@ -678,7 +678,6 @@ class InferenceEngine:
              "granularity": [{"id","why"}]}；解析失败时返回 {"error": ...}
         """
         import json
-        import logging
 
         if not batch_text or not nodes_text:
             return {"unsupported": [], "missing": [], "granularity": []}

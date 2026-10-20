@@ -1571,9 +1571,9 @@ def _print_status(graph, dba, retriever, vector_ready, args) -> None:
     print(f"  向量索引   : {'已就绪' if vector_ready else '未启用'}", file=sys.stderr)
     print(f"  传输模式   : {transport}", file=sys.stderr)
     print(f"  图谱规模   : {graph.node_count} 节点 / {graph.edge_count} 边", file=sys.stderr)
-    print(f"  工具        : dba_add_conversation / dba_query_memory / dba_temporal_lookup / "
-          f"dba_inspect_graph / dba_intervene / dba_review_graph / dba_review_sources / "
-          f"dba_checkpoint / dba_get_stats", file=sys.stderr)
+    print("  工具        : dba_add_conversation / dba_query_memory / dba_temporal_lookup / "
+          "dba_inspect_graph / dba_intervene / dba_review_graph / dba_review_sources / "
+          "dba_checkpoint / dba_get_stats", file=sys.stderr)
     print("=" * 60, file=sys.stderr)
 
 

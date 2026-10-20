@@ -973,7 +973,7 @@ class MemoryDBA:
             )
             return salvaged
 
-        logger.error(f"无法从 LLM 输出中提取有效的 JSON 操作指令")
+        logger.error("无法从 LLM 输出中提取有效的 JSON 操作指令")
         return {"node_ops": [], "edge_ops": []}
 
     @staticmethod

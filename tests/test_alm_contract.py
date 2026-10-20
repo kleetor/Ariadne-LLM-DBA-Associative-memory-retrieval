@@ -13,7 +13,7 @@ from alm.contract import (
 )
 from alm.engine import space_dirname
 from alm.space import (
-    _clip_for_log, _has_answer_instruction, _is_precision_query,
+    _clip_for_log, _is_precision_query,
     _is_qa_feedback, _qa_feedback_summary, _retrieval_text, _strip_option_block,
 )
 from alm.tokens import TokenMeter, extract_finish_reason

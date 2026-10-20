@@ -67,7 +67,9 @@ def test_exact_match_dedup_without_vectors():
 def test_cosine_dedup_with_vectors():
     # 有向量能力时用精确余弦相似度去重
     vectors = {"n1": np.array([1.0, 0.0])}
-    embed_fn = lambda text: np.array([1.0, 0.0])  # 与 n1 完全同向
+
+    def embed_fn(text):
+        return np.array([1.0, 0.0])  # 与 n1 完全同向
 
     graph = MemoryGraph()
     graph.add_memory("n1", "用户喜欢喝咖啡", NodeType.STATUS)

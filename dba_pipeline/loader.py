@@ -8,14 +8,13 @@ YAML 数据加载器
 """
 
 import logging
-import os
 import yaml
 from typing import Dict, List, Tuple
 
-logger = logging.getLogger(__name__)
-
 from dba_pipeline.graph.memory_graph import MemoryGraph
 from dba_pipeline.core.jump_axis import NodeType, RelationType
+
+logger = logging.getLogger(__name__)
 
 
 # 字符串 → 枚举映射

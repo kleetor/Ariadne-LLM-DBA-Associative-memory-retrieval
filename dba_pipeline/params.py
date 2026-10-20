@@ -18,7 +18,7 @@ from __future__ import annotations
 import copy
 import os
 import tempfile
-from typing import Dict, Optional
+from typing import Dict
 
 import yaml
 

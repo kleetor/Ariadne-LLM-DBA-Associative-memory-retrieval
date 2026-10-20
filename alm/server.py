@@ -344,7 +344,7 @@ def _print_status(config: ALMConfig, engine: ALMEngine) -> None:
         # 是读侧唯一新增的外部调用，必须在启动时一眼可核（否则只能从延迟上"感觉"）。
         # ⚠️ 显示的是**实际生效**与否：`ALM_RERANK=1` 但缺端点/密钥时 `Reranker.from_env()`
         # 会返回 None，那种"以为开了其实没开"的静默失效必须在这里暴露。
-        f"  纯向量重排 : " + (
+        "  纯向量重排 : " + (
             f"开启 模型={config.rerank_model} 候选={config.rerank_candidates} "
             f"截断={config.rerank_max_chars}字"
             if config.rerank_enabled and engine.reranker is not None else
@@ -355,7 +355,7 @@ def _print_status(config: ALMConfig, engine: ALMEngine) -> None:
         # 状态页是唯一能一眼确认它没被误开的入口，故单列一行。
         f"  输入输出留痕: {'⚠ 开启（含正文，生产运行前必须置 0）' if config.trace_io else '关闭'}",
         f"  监听       : http://{config.host}:{config.port}",
-        f"  端点       : POST /add  POST /search  GET /health",
+        "  端点       : POST /add  POST /search  GET /health",
         "=" * 60,
     ]
     print("\n".join(lines), file=sys.stderr)

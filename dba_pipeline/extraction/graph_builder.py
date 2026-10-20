@@ -16,7 +16,7 @@ import logging
 import numpy as np
 
 from dba_pipeline.graph.memory_graph import MemoryGraph
-from dba_pipeline.core.jump_axis import NodeType, RelationType, JUMP_AXIS_RULES, get_jump_weight
+from dba_pipeline.core.jump_axis import NodeType, RelationType, get_jump_weight
 from dba_pipeline.embedding.store import VectorStore
 
 logger = logging.getLogger(__name__)

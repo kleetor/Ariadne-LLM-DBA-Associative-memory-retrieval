@@ -9,7 +9,7 @@
 - 跳转轴扩展查询
 """
 
-from typing import Dict, List, Set, Tuple, Optional
+from typing import Dict, List, Tuple, Optional
 import networkx as nx
 
 from dba_pipeline.core.jump_axis import (
@@ -315,11 +315,6 @@ class MemoryGraph:
         Returns:
             Mermaid 流程图字符串，可直接粘贴到 ```mermaid 代码块中
         """
-        # 颜色映射
-        type_colors = {
-            "status": "#5DADE2", "reason": "#E74C3C", "action": "#F39C12",
-            "thing": "#27AE60", "person": "#A569BD", "emotion": "#E91E63",
-        }
         lines = ["graph LR"]
 
         # 采样节点（按度数排序取 top-N）
@@ -335,8 +330,6 @@ class MemoryGraph:
 
         # 节点定义
         for nid, _, ndata in sampled:
-            nt_val = self._node_type_value(ndata)
-            color = type_colors.get(nt_val, "#888")
             label = (ndata.get("content", "") or nid)[:30].replace('"', "")
             tag = ""
             if ndata.get("deprecated"):

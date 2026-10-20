@@ -15,8 +15,7 @@
 import pytest
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.language_models.fake_chat_models import FakeListChatModel
-from langchain_core.messages import AIMessage
-from langchain_core.outputs import ChatGeneration, Generation, LLMResult
+from langchain_core.outputs import Generation, LLMResult
 
 from alm.tokens import TokenMeter, extract_usage, role_of, with_role
 

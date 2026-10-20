@@ -93,3 +93,4 @@ engine*
 
 # 本地运维脚本与部署凭据（不入库）
 /Server/
+/memory/

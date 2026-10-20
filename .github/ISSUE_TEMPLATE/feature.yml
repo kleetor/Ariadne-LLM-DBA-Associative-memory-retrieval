@@ -1,0 +1,50 @@
+name: Feature request
+description: 提出新功能或改进建议
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 要解决的问题
+      description: 请描述使用场景与当前痛点，而不是直接给出实现方案
+      placeholder: 例如：在 ALM 多 user_id 场景下，无法按时间段批量导出记忆
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 建议方案
+      description: 你期望的行为、接口或配置形态
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 备选方案
+      description: 已考虑过的替代做法与取舍
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: 影响范围
+      options:
+        - 检索 / 图谱
+        - DBA 抽取
+        - MCP Server
+        - ALM HTTP 服务
+        - 可视化面板
+        - 部署 / 工程化
+        - 文档
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我已搜索现有 Issue 与文档，未发现重复建议
+          required: true

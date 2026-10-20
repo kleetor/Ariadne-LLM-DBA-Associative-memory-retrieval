@@ -1,0 +1,82 @@
+name: Bug report
+description: 报告可复现的缺陷或异常行为
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈。请先搜索现有 Issue，避免重复报告。
+        安全问题请勿在此提交，请按 SECURITY.md 私密报告。
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: 现象
+      description: 实际发生了什么？期望是什么？
+      placeholder: 例如：启动面板后访问 /static/graph.json 返回 404
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 请给出最小可复现步骤与命令
+      placeholder: |
+        1. cp .env.example .env
+        2. python start_all.py
+        3. 打开 http://127.0.0.1:8765
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志 / 报错
+      description: 粘贴关键日志（请先移除 API Key、Cookie、用户数据等敏感信息）
+      render: text
+
+  - type: input
+    id: version
+    attributes:
+      label: 版本 / 提交
+      description: 输出来自 git rev-parse --short HEAD，或所用 Release 版本
+      placeholder: "v0.1.2 / dfb0617"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: entry
+    attributes:
+      label: 入口
+      options:
+        - MCP Server
+        - ALM HTTP 服务
+        - 3D 可视化面板
+        - 离线 HTML
+        - 其他 / 不确定
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: 运行环境
+      placeholder: |
+        OS: Windows 11 / Ubuntu 24.04
+        Python: 3.11.5
+        Embedding: API / local
+        Docker: 有 / 无
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我已搜索现有 Issue，未发现重复
+          required: true
+        - label: 日志中已移除密钥与个人数据
+          required: true

@@ -12,7 +12,12 @@
 __pycache__/
 *.py[cod]
 *.egg-info/
+
+# 测试与覆盖率产物
 .pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
 .mypy_cache/
 .ruff_cache/
 build/

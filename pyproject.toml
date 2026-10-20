@@ -79,3 +79,13 @@ markers = [
     "network: 需要外部网络或真实 API Key 的用例",
     "e2e: 端到端用例",
 ]
+
+[tool.coverage.run]
+source = ["dba_pipeline", "alm"]
+omit = ["tests/*"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+]

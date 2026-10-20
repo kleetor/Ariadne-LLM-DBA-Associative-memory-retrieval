@@ -1,0 +1,21 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "Ariadne: LLM DBA 管理与目的驱动的联想记忆检索系统"
+abstract: >-
+  Ariadne 将非结构化对话日志自动构建为记忆图谱，并以目的驱动的有向联想检索
+  （跳转轴、目的回归、峰值容忍带）召回相关记忆，同时提供 MCP、HTTP 与 3D 可视化入口。
+authors:
+  - name: "kleetor"
+    website: "https://github.com/kleetor"
+version: 0.1.2
+date-released: 2026-10-20
+url: "https://github.com/kleetor/Ariadne-LLM-DBA-Associative-memory-retrieval"
+repository-code: "https://github.com/kleetor/Ariadne-LLM-DBA-Associative-memory-retrieval"
+license: AGPL-3.0-only
+keywords:
+  - llm
+  - memory
+  - knowledge-graph
+  - retrieval
+  - mcp
+  - agent-memory

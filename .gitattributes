@@ -1,0 +1,18 @@
+# 统一换行符：仓库内文本文件一律 LF，Windows 脚本保持 CRLF
+* text=auto eol=lf
+
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# 二进制资源不做文本转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.faiss binary
+*.pkl binary
+*.tar binary
+*.tar.gz binary
+*.zip binary

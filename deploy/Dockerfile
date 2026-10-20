@@ -1,12 +1,12 @@
 # Ariadne MCP Server — Docker 部署镜像
 # 启动方式：默认以 SSE 网络模式运行，供远程 LLM Agent 通过 http://<host>:8766/sse 调用。
 #
-# 构建：
-#   docker build -t ariadne-mcp .
+# 构建（在仓库根执行；context 必须是仓库根）：
+#   docker build -f deploy/Dockerfile -t ariadne-mcp .
 #   # 默认使用 API embedding（镜像小、构建快，适合服务器部署）；
 #   # 如需本地 embedding（torch + sentence-transformers，镜像更大），
 #   # 用 --build-arg EMBEDDING_LOCAL=true 构建：
-#   docker build --build-arg EMBEDDING_LOCAL=true -t ariadne-mcp .
+#   docker build -f deploy/Dockerfile --build-arg EMBEDDING_LOCAL=true -t ariadne-mcp .
 #
 # 运行：
 #   docker run --rm -p 8766:8766 \
@@ -27,17 +27,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# 基础依赖层（先只拷 requirements，便于利用 docker 层缓存）
-COPY requirements.txt ./
-RUN pip install --no-cache-dir --upgrade pip setuptools wheel \
-    && pip install --no-cache-dir -r requirements.txt
-
-# 项目代码
+# 项目代码与元数据；依赖统一从 pyproject.toml 安装
 COPY pyproject.toml README.md LICENSE ./
 COPY dba_pipeline ./dba_pipeline
 COPY data ./data
 
-RUN pip install --no-cache-dir .
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel \
+    && pip install --no-cache-dir .
 
 # 可选：本地 embedding（CPU 版 torch + sentence-transformers）。默认关闭（API 模式），
 # 避免服务器虚拟硬件上跑本地模型效果差；如需本地 embedding，构建时传 --build-arg EMBEDDING_LOCAL=true

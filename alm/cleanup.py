@@ -40,8 +40,8 @@ ALM 侧每个 user_id 在 `--data-dir` 下独占**一个目录**，目录内是�
 
 因此清理应在**可访问期结束之后**执行：
 
-    docker compose -f docker-compose.alm.yml stop ariadne-alm
-    docker compose -f docker-compose.alm.yml run --rm --no-deps ariadne-alm \
+    docker compose --env-file alm/.env.alm -f deploy/docker-compose.alm.yml stop ariadne-alm
+    docker compose --env-file alm/.env.alm -f deploy/docker-compose.alm.yml run --rm --no-deps ariadne-alm \
         python -m alm.cleanup --older-than-days 30 --apply
 """
 

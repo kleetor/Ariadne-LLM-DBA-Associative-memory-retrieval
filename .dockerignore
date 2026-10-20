@@ -31,7 +31,7 @@ data/*.lock
 # ---- 构建上下文瘦身 ----
 # 以下目录**均未被 git 跟踪**（干净检出里不存在），但体量达 GB 级：models 1.2G /
 # eval 465M / website 270M。不排除时 `docker build .` 会把它们整包上传给 daemon，
-# 构建时间被上下文传输主导（且两个 Dockerfile 都不 COPY 它们：ALM 只 COPY
+# 构建时间被上下文传输主导（且两个 Dockerfile 都放在 deploy/，均不 COPY 它们：ALM 只 COPY
 # `dba_pipeline` + `alm`，MCP 另加 `data`）。排除后与"干净检出构建"等价。
 models/
 eval/

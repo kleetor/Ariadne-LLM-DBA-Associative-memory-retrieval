@@ -44,7 +44,7 @@ Signed-off-by: kleetor <you@example.com>
 - 遵循 [PEP 8](https://peps.python.org/pep-0008/) 风格。
 - 注释与 commit message 使用**中文**（与本仓库保持一致）。
 - 新功能请附带对应测试（`tests/` 目录），并保持原有测试通过。
-- 尽量避免不必要的新依赖；确需添加时同步更新 `pyproject.toml` / `requirements.txt`。
+- 尽量避免不必要的新依赖；确需添加时同步更新 `pyproject.toml`（依赖唯一来源）。
 
 ## 测试
 

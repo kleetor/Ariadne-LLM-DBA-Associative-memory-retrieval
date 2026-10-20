@@ -1,12 +1,12 @@
 # Ariadne MCP Server — Docker Compose 部署
 #
-# 【配置方式】所有配置都写在项目根目录的 .env 文件里（compose 通过 env_file 一次性注入容器），
-#   无需改本文件即可调整。没有 .env 时先复制模板并填入真实值：
+# 【配置方式】所有配置都写在项目根目录的 .env 文件里（compose 通过 --env-file 读取插值，
+#   并通过 env_file 注入容器），无需改本文件即可调整。没有 .env 时先复制模板并填入真实值：
 #     cp .env.example .env
 #
-# 用法：
+# 用法（在仓库根执行）：
 #   1) cp .env.example .env   # 填入真实 API Key（面板账号首次启动自动生成，见下）
-#   2) docker compose up -d --build
+#   2) docker compose --env-file .env -f deploy/docker-compose.yml up -d --build
 #   3) 3D 面板（外部访问，带登录页）：http://<主机IP>:8765   默认账号 ariadne / ariadne
 #      MCP（仅内部容器用）：同一网络内 http://ariadne-mcp:8766/sse
 #
@@ -28,7 +28,8 @@
 services:
   ariadne-mcp:
     build:
-      context: .
+      context: ..
+      dockerfile: Dockerfile
       args:
         EMBEDDING_LOCAL: "${EMBEDDING_LOCAL:-false}"
     image: ariadne-mcp:latest
@@ -44,15 +45,15 @@ services:
       # - "127.0.0.1:${ARIADNE_PORT:-8766}:8766"
     # 注入 .env 中全部变量为容器环境变量
     env_file:
-      - .env
+      - ../.env
     environment:
       # 以下为容器内始终生效的默认值（.env 未定义时回退到默认）
       EMBEDDING_LOCAL: "${EMBEDDING_LOCAL:-false}"
       ARIADNE_YAML: "${ARIADNE_YAML:-/app/data/memory_graph.yaml}"
       ARIADNE_PORT: "${ARIADNE_PORT:-8766}"
     volumes:
-      # 方式一：挂载整个目录（默认），宿主机 ./data/memory_graph.yaml 即为运行时图谱
-      - ./data:/app/data
+      # 方式一：挂载整个目录（默认），宿主机 ../data/memory_graph.yaml 即为运行时图谱
+      - ../data:/app/data
       # 方式二：挂载单个外部文件并指定路径，如 -e ARIADNE_YAML=/data/graph.yaml
       # - /host/path/my_memory.yaml:/data/graph.yaml
       - hf-cache:/root/.cache/huggingface
@@ -71,7 +72,7 @@ services:
     # 注意：要真能跑通，镜像的 embedding 模式必须与 .env 的 EMBEDDING_LOCAL 一致
     #       （API 模式的镜像不含 torch，EMBEDDING_LOCAL=1 会 ImportError）。
     env_file:
-      - .env
+      - ../.env
     environment:
       # 面板登录用凭据在 /app/data/auth.json（首次启动自动生成默认账号 ariadne / ariadne）；
       # 下面两个可选：忘记密码时的重置后门。ARIADNE_AUTH_KEY 可选，作为密码散列的 pepper。
@@ -82,7 +83,7 @@ services:
       # 容器内的 127.0.0.1 指不到它，故显式给出同一 compose 网络内的端点。
       ARIADNE_MCP_URL: "http://ariadne-mcp:${ARIADNE_PORT:-8766}/sse"
     volumes:
-      - ./data:/app/data
+      - ../data:/app/data
 
 volumes:
   hf-cache:

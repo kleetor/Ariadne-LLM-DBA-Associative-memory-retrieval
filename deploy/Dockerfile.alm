@@ -3,9 +3,9 @@
 # ⚠️ 部署方必须自行部署并运维公网 Add / Search API，调用方不代为部署，
 #    也不接受只提交仓库 / 镜像 / 启动说明。本镜像因此是**我们自己的部署工具**，
 #    不是"交给维护团队的交付物"；仓库与镜像仅用于开放性、署名与复现审核。
-#    自托管的配套要求见 docker-compose.alm.yml 顶部（HTTPS、鉴权、持久卷、出网）。
+#    自托管的配套要求见 deploy/docker-compose.alm.yml 顶部（HTTPS、鉴权、持久卷、出网）。
 #
-# 与 Dockerfile（MCP 服务）的区别：
+# 与 deploy/Dockerfile（MCP 服务）的区别：
 #   - 入口是 ariadne-alm（同步 Add / Search 服务），不是 ariadne-mcp
 #   - 需要公网入口：由我们发布端口并前置反向代理，调用方从外部调用 /add、/search、/health
 #
@@ -18,11 +18,11 @@
 #   用 --build-arg EMBEDDING_LOCAL=true 构建；此时模型在**构建期**预下载进镜像，
 #   运行期配合 HF_HUB_OFFLINE=1 只读缓存，避免离线时卡在联网取模型。
 #
-# 构建（**在仓库根执行**；本文件在 alm/ 下，context 必须是仓库根，否则 COPY 会失败）：
-#   docker build -f alm/Dockerfile.alm -t ariadne-alm:v0.2.0-alm .
-#   docker build -f alm/Dockerfile.alm --build-arg EMBEDDING_LOCAL=true -t ariadne-alm:v0.2.0-alm .
+# 构建（**在仓库根执行**；context 必须是仓库根，否则 COPY 会失败）：
+#   docker build -f deploy/Dockerfile.alm -t ariadne-alm:v0.2.0-alm .
+#   docker build -f deploy/Dockerfile.alm --build-arg EMBEDDING_LOCAL=true -t ariadne-alm:v0.2.0-alm .
 # 或走 compose（推荐：tag 与发布版本一致，且 env/context 都已对齐）：
-#   docker compose -f alm/docker-compose.alm.yml build
+#   docker compose --env-file alm/.env.alm -f deploy/docker-compose.alm.yml build
 #
 # 运行（本地验证）：
 #   docker run --rm -p 8770:8770 \
@@ -63,15 +63,12 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends curl \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt ./
-RUN pip install --no-cache-dir --upgrade pip setuptools wheel \
-    && pip install --no-cache-dir -r requirements.txt
-
 COPY pyproject.toml README.md LICENSE ./
 COPY dba_pipeline ./dba_pipeline
 COPY alm ./alm
 
-RUN pip install --no-cache-dir .
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel \
+    && pip install --no-cache-dir .
 
 # ---- 本地 embedding（可选，默认关闭）----
 # false（默认）→ API embedding：镜像小、构建快，运行期需能访问 embedding 端点。

@@ -4,7 +4,7 @@
 #    部署，也不接受只提交 GitHub 仓库 / Docker 镜像 / 启动说明。因此本文件不是"交付物"，
 #    而是**我们自己把服务跑在公网**的部署清单；仓库与镜像只用于开放性、署名与复现审核。
 #
-# 与 docker-compose.yml（MCP 服务）的区别：
+# 与 deploy/docker-compose.yml（MCP 服务）的区别：
 #   1. 入口是 ariadne-alm，暴露同步 Add / Search / Health；
 #   2. 必须有公网入口（调用方从外部调用），不能像 MCP 那样只在内网可达；
 #   3. 记忆必须持久化（见下方「持久化」——自托管下这是硬要求，不再是兜底）；
@@ -22,13 +22,13 @@
 #   4. **出网与凭据由我方提供**：LLM / embedding 的端点与密钥从宿主机环境注入，
 #      调用方不注入任何凭据。
 #
-# 用法（自托管）：
-#   1) 在 .env.alm 里补齐两项，缺任一项服务都会在启动时报错而不是静默跑偏：
+# 用法（自托管，在仓库根执行）：
+#   1) 在 alm/.env.alm 里补齐两项，缺任一项服务都会在启动时报错而不是静默跑偏：
 #      - ALM_API_KEYS：非空（即对外提供服务的 API Key）
 #      - EMBEDDING_MODEL：与 EMBEDDING_API_BASE 对应的模型名
-#      LLM / embedding 的端点与密钥也都在 .env.alm（基准评测不限制 Add / Search
+#      LLM / embedding 的端点与密钥也都在 alm/.env.alm（基准评测不限制 Add / Search
 #      使用的模型）。给 ALM 单配一套端点就改这一个文件。
-#   2) docker compose --env-file .env.alm -f docker-compose.alm.yml up -d --build
+#   2) docker compose --env-file alm/.env.alm -f deploy/docker-compose.alm.yml up -d --build
 #      （带上 --env-file 是为了让端口插值也走同一个文件；只用 -f 时端口取默认 8770）
 #   3) 自测：python -m alm.smoke --base-url http://127.0.0.1:8770 --api-key <key>
 #   4) 前置反向代理终止 TLS，把公网域名（如 https://alm.example.com）转发到本服务
@@ -41,12 +41,11 @@ services:
   ariadne-alm:
     build:
       # ⚠️ context 必须是**仓库根**，不是本文件所在目录：compose 的项目目录默认是
-      # compose 文件所在目录（`alm/`），而 `Dockerfile.alm` 要 `COPY dba_pipeline` /
-      # `COPY alm` / `COPY requirements.txt` —— 它们都在仓库根。若 context 用 `.`，
-      # 构建会在 COPY 处直接失败（`alm/dba_pipeline` 不存在）。
-      # `dockerfile` 相对 **context** 解析，故写成 `alm/Dockerfile.alm`。
+      # compose 文件所在目录（`deploy/`），而 `Dockerfile.alm` 要 `COPY dba_pipeline` /
+      # `COPY alm` —— 它们都在仓库根。若 context 用 `.`，构建会在 COPY 处直接失败。
+      # `dockerfile` 相对 **context** 解析，故写成 `Dockerfile.alm`。
       context: ..
-      dockerfile: alm/Dockerfile.alm
+      dockerfile: Dockerfile.alm
       args:
         # 刻意用 ALM_EMBEDDING_LOCAL 而不是 EMBEDDING_LOCAL：compose 会用项目根的 .env
         # 做变量插值，而 .env 里的 EMBEDDING_LOCAL=1 是给本地开发用的（本地模型），
@@ -95,7 +94,7 @@ services:
     env_file:
       # ALM 专属，与给 MCP / 可视化面板用的根目录 .env 完全分离（后者含
       # ARIADNE_* / NEO4J_* / JUDGE_* 等，ALM 一个都不读）。改端点 / 密钥只改这一个文件。
-      - .env.alm
+      - ../alm/.env.alm
     environment:
       # ---- 此处只保留必须由 compose 钉死的项 ----
       # OPENAI_* / EMBEDDING_API_BASE / EMBEDDING_API_KEY / EMBEDDING_MODEL /
@@ -138,10 +137,10 @@ services:
     #   ② 清理必须先停服务：引擎退出时会把内存中驻留的空间重新落盘（engine.close()），
     #      在服务运行期删除文件会被这一步写回来。
     # 因此正确顺序是【等 ≥30 天可访问期结束后】再清理：
-    #   docker compose -f docker-compose.alm.yml stop ariadne-alm
-    #   docker compose -f docker-compose.alm.yml run --rm --no-deps ariadne-alm \
+    #   docker compose --env-file alm/.env.alm -f deploy/docker-compose.alm.yml stop ariadne-alm
+    #   docker compose --env-file alm/.env.alm -f deploy/docker-compose.alm.yml run --rm --no-deps ariadne-alm \
     #     python -m alm.cleanup --older-than-days 30            # 预演，核对清单
-    #   docker compose -f docker-compose.alm.yml run --rm --no-deps ariadne-alm \
+    #   docker compose --env-file alm/.env.alm -f deploy/docker-compose.alm.yml run --rm --no-deps ariadne-alm \
     #     python -m alm.cleanup --older-than-days 30 --apply    # 执行
     #   清理执行完，本次运行的接口运维义务才算结束。
 

@@ -17,6 +17,13 @@
 
 - 根目录瘦身：理论文档移入 `docs/theory/`，图片移入 `assets/`，Docker 文件移入 `deploy/`。
 - README 中英双版拆分长章节，补充文档索引与示例入口。
+- 安装命令统一使用 `constraints.txt` 约束传递依赖的安全下限。
+
+### Security
+
+- 启用 Dependabot、漏洞告警与自动安全修复，并为 `main` 配置分支保护（CI 必过、1 次 review、线性历史）。
+- `mcp` 最低版本提升至 `2.2.0`；直接依赖增加上界，避免无界升级。
+- 新增 `constraints.txt`，将 `urllib3`、`pillow`、`aiohttp`、`setuptools` 等传递依赖锁定到已修复版本。
 
 ### Removed
 

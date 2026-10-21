@@ -235,12 +235,36 @@ class DBAServer:
                     "nodes": self.graph.node_count, "edges": self.graph.edge_count,
                     "vector": {"rebuilt": False}}
 
+        # 切图前必须把调度器缓冲里的会话落库：缓冲是**纯文本、没有图归属**，
+        # 切图后再 flush 会把旧图的内容建到新图上（静默串图）。
+        if self.scheduler is not None and self.scheduler.buffer_size:
+            self.scheduler.flush_now()
+            deadline = time.monotonic() + self._file_lock_timeout
+            while time.monotonic() < deadline:
+                if not self.scheduler.is_flushing and not self.scheduler.buffer_size:
+                    break
+                time.sleep(0.2)
+            else:
+                raise ValueError(
+                    "切换前仍有待维护的会话缓冲未落库，已中止切换（避免串图），请稍后重试"
+                )
+
         load_graph(target)          # 先校验可解析，失败不触碰现状
         started = time.perf_counter()
 
         # 与在途检索互斥：切换期间会清空并全量重建向量索引，检索不能看到中间态
         with self._runtime_lock:
             with self._lock:
+                # 收尾复查：等待期间可能又有新会话入队并触发新一轮 flush。
+                # 只要此刻仍有缓冲或维护在跑，就中止本次切换——否则这一轮维护会
+                # 落到新图上。剩余竞态窗口是「检查通过后、load_into 前」的微秒级，
+                # 彻底消除需要调度器支持"切图暂停"（已列入后续可选项）。
+                if self.scheduler is not None and (
+                    self.scheduler.is_flushing or self.scheduler.buffer_size
+                ):
+                    raise ValueError(
+                        "切换前又有待维护的会话进入缓冲，已中止切换（避免串图），请稍后重试"
+                    )
                 load_into(self.graph, target)
                 self.yaml_path = target
                 self._file_lock = filelock.FileLock(
@@ -421,9 +445,11 @@ class DBAServer:
                     # 无外部时间戳来源，按「实际落库时刻」注入（Unix 毫秒）
                     ts = int(time.time() * 1000)
                     result = self.dba.maintain(conversation, timestamp=ts)
-                    # triage 判 SKIP 时内容原本被直接丢弃（MCP 没有 ALM 的文档通道）。
-                    # 补一步原文兜底，保证「已存储且可检索」。
-                    if result.get("skipped"):
+                    # triage 判 SKIP、抽取空产出（no_ops/no_create）时内容原本被直接
+                    # 丢弃（MCP 没有 ALM 的文档通道）。补一步原文兜底，保证
+                    # 「已存储且可检索」——与 ALM 的三态兜底判定同口径。
+                    fallback = self.dba.needs_raw_fallback(result)
+                    if fallback:
                         raw_ids = self.dba.store_raw(conversation, timestamp=ts)
                         result.setdefault("result", {}).setdefault("created_ids", []).extend(raw_ids)
                     self._save()
@@ -438,6 +464,9 @@ class DBAServer:
                 # evidence 产出情况（开启时才有）：用于区分"LLM 主动留空"与"被子串校验拦掉"
                 if result.get("evidence_stats") is not None:
                     out["evidence_stats"] = result["evidence_stats"]
+                # 原文兜底的触发原因（triage / no_ops / no_create）：静默兜底必须可观测
+                if fallback:
+                    out["fallback_reason"] = fallback
                 # 批次标识（开启原文存储时才有）：用于事后调 dba_review_sources 核对这一批
                 if result.get("batch_id"):
                     out["batch_id"] = result["batch_id"]
@@ -463,20 +492,26 @@ class DBAServer:
         with self._runtime_lock:
             self._refresh_before_read()
             try:
-                # 每次检索视为一次联想会话，重置同会话饱和计数（跨会话终身增强保留）
-                if self.retriever.path_tracker is not None:
-                    self.retriever.path_tracker.start_session()
-                # StoryRank：检索 → 连通性粗筛 → 故事化（不生成回复，交由 Agent 处理）
-                # render_timestamps=True：把节点「记录于 <日期>」交给叙事整理，让上层 LLM
-                # 自己判断时间关系，而不依赖独立的时序锚点网络。
-                # 运行时参数（面板可调）：种子数量 / 最大跳数 / 每轮扩展数
-                rp = self.params.get("retrieval", {})
-                result = self.retriever.retrieve_with_story(
-                    query, with_response=False, render_timestamps=True,
-                    seed_k=int(rp.get("seed_k", 5)),
-                    max_hops=int(rp.get("max_hops", 5)),
-                    expand_k=(int(rp.get("expand_k", 0)) or None),
-                )
+                # 检索必须与「图结构写入」互斥：后台维护线程（MaintenanceScheduler）
+                # 在 GraphBuilder.apply_ops() 里持同一把 `_lock` 增删节点/边，而
+                # networkx 的邻居遍历不是线程安全的——并发读会抛
+                # `dictionary changed size during iteration` 或读到半张图。
+                # 与 ALM 侧 `space._search_locked` 持同一口径（那边也是整段持锁）。
+                with self._lock:
+                    # 每次检索视为一次联想会话，重置同会话饱和计数（跨会话终身增强保留）
+                    if self.retriever.path_tracker is not None:
+                        self.retriever.path_tracker.start_session()
+                    # StoryRank：检索 → 连通性粗筛 → 故事化（不生成回复，交由 Agent 处理）
+                    # render_timestamps=True：把节点「记录于 <日期>」交给叙事整理，让上层 LLM
+                    # 自己判断时间关系，而不依赖独立的时序锚点网络。
+                    # 运行时参数（面板可调）：种子数量 / 最大跳数 / 每轮扩展数
+                    rp = self.params.get("retrieval", {})
+                    result = self.retriever.retrieve_with_story(
+                        query, with_response=False, render_timestamps=True,
+                        seed_k=int(rp.get("seed_k", 5)),
+                        max_hops=int(rp.get("max_hops", 5)),
+                        expand_k=(int(rp.get("expand_k", 0)) or None),
+                    )
                 stories = result.get("stories", [])
                 # rank-k：最多返回 rerank_k 个故事片段（0 表示不截断）
                 if rerank_k > 0:
@@ -525,20 +560,22 @@ class DBAServer:
         # 检索前对齐 + 与图谱切换互斥（见 __init__ 的 _runtime_lock 说明）
         with self._runtime_lock:
             self._refresh_before_read()
-            # 每次检索视为一次联想会话，重置同会话饱和计数（跨会话终身增强保留）
-            if self.retriever.path_tracker is not None:
-                self.retriever.path_tracker.start_session()
-            # 运行时参数与 query_memory 保持同一来源（面板可调）
-            rp = self.params.get("retrieval", {})
-            seed_k = int(rp.get("seed_k", 5))
-            max_hops = int(rp.get("max_hops", 5))
-            expand_k = int(rp.get("expand_k", 0)) or None
+            # 与 query_memory 同口径：检索期间持图锁，避免与后台维护的图写入并发
+            with self._lock:
+                # 每次检索视为一次联想会话，重置同会话饱和计数（跨会话终身增强保留）
+                if self.retriever.path_tracker is not None:
+                    self.retriever.path_tracker.start_session()
+                # 运行时参数与 query_memory 保持同一来源（面板可调）
+                rp = self.params.get("retrieval", {})
+                seed_k = int(rp.get("seed_k", 5))
+                max_hops = int(rp.get("max_hops", 5))
+                expand_k = int(rp.get("expand_k", 0)) or None
 
-            result = self.retriever.retrieve_with_story(
-                query, with_response=False, render_timestamps=True,
-                seed_k=seed_k, max_hops=max_hops, expand_k=expand_k,
-                on_stage=on_stage,
-            )
+                result = self.retriever.retrieve_with_story(
+                    query, with_response=False, render_timestamps=True,
+                    seed_k=seed_k, max_hops=max_hops, expand_k=expand_k,
+                    on_stage=on_stage,
+                )
             stories = result.get("stories", [])
             if rerank_k > 0:
                 stories = stories[:rerank_k]
@@ -572,27 +609,33 @@ class DBAServer:
         """
         if self.retriever is None:
             return {"error": "检索链路未初始化", "time_anchor": {"id": None, "content": ""}, "facts": []}
-        self._refresh_before_read()  # 同步外部进程对图谱的改动
-        rp = self.params.get("retrieval", {})
-        k_seed = int(rp.get("temporal_k_seed", 8)) if k_seed is None else k_seed
-        max_facts = int(rp.get("temporal_max_facts", 8)) if max_facts is None else max_facts
-        max_anchors = int(rp.get("temporal_max_anchors", 3)) if max_anchors is None else max_anchors
-        try:
-            res = self.retriever.temporal_lookup(query, k_seed=k_seed, max_facts=max_facts,
-                                                 max_anchors=max_anchors)
-            if isinstance(res, dict) and not res.get("matches"):
-                if res.get("rejected"):
-                    # 拒答 ≠ 检索失败：库里确实没有该时段的锚点。此处不能引导改走主检索，
-                    # 否则上层会反复换查询，而真实原因是"该时间没有记忆"。
-                    res["note"] = ("查询指定的时间在库中无对应锚点，已按拒答返回空（不是检索失败）。"
-                                   "若该时段确实有记忆，说明抽取未产出时间锚点，可让用户补充具体日期。")
-                else:
-                    res["note"] = ("未定位到可用时间锚点；这可能是‘事件→时间/因果联想’类问题，"
-                                   "考虑改用 dba_query_memory。")
-            return res
-        except Exception as e:
-            logging.error(f"temporal_lookup 失败: {e}", exc_info=True)
-            return {"error": str(e), "time_anchor": {"id": None, "content": ""}, "facts": []}
+        # 与 query_memory / run_chain_trace 同口径：
+        #   `_runtime_lock` 与「切图（清空+重建向量）」互斥；
+        #   `_lock` 与「后台维护的图写入」互斥（networkx 遍历不可与写入并发）。
+        with self._runtime_lock:
+            try:
+                self._refresh_before_read()  # 同步外部进程对图谱的改动
+                rp = self.params.get("retrieval", {})
+                k_seed = int(rp.get("temporal_k_seed", 8)) if k_seed is None else k_seed
+                max_facts = int(rp.get("temporal_max_facts", 8)) if max_facts is None else max_facts
+                max_anchors = int(rp.get("temporal_max_anchors", 3)) if max_anchors is None else max_anchors
+                with self._lock:
+                    res = self.retriever.temporal_lookup(
+                        query, k_seed=k_seed, max_facts=max_facts, max_anchors=max_anchors
+                    )
+            except Exception as e:
+                logging.error(f"temporal_lookup 失败: {e}", exc_info=True)
+                return {"error": str(e), "time_anchor": {"id": None, "content": ""}, "facts": []}
+        if isinstance(res, dict) and not res.get("matches"):
+            if res.get("rejected"):
+                # 拒答 ≠ 检索失败：库里确实没有该时段的锚点。此处不能引导改走主检索，
+                # 否则上层会反复换查询，而真实原因是"该时间没有记忆"。
+                res["note"] = ("查询指定的时间在库中无对应锚点，已按拒答返回空（不是检索失败）。"
+                               "若该时段确实有记忆，说明抽取未产出时间锚点，可让用户补充具体日期。")
+            else:
+                res["note"] = ("未定位到可用时间锚点；这可能是‘事件→时间/因果联想’类问题，"
+                               "考虑改用 dba_query_memory。")
+        return res
 
     # ---- 活动追踪（供空闲巡检）----
 
@@ -1035,13 +1078,33 @@ class DBAServer:
         return target == base or target.startswith(base + os.sep)
 
     def checkpoint(self, save_dir: str = None) -> dict:
-        """保存检查点（若 DBA 管线已接入则保存完整状态）"""
-        if save_dir and not self._is_safe_save_dir(save_dir):
-            return {"error": f"非法的 save_dir（仅允许图谱目录及其子目录）: {save_dir}"}
+        """保存检查点（若 DBA 管线已接入则保存完整状态）
+
+        `save_dir` 的相对路径按**图谱目录**解析。这里必须先把路径归一化再下传：
+        `save_checkpoint()` 内部用 `os.makedirs(save_dir)`，相对路径会按进程 CWD
+        解析——与 `_is_safe_save_dir` 的校验口径不一致（校验的是一个位置、写的是另一个）。
+        """
+        base = os.path.abspath(os.path.dirname(self.yaml_path)) if self.yaml_path else None
+        if save_dir:
+            if not self._is_safe_save_dir(save_dir):
+                return {"error": f"非法的 save_dir（仅允许图谱目录及其子目录）: {save_dir}"}
+            target = os.path.abspath(
+                save_dir if os.path.isabs(save_dir) else os.path.join(base, save_dir)
+            )
+        elif base:
+            target = os.path.join(base, "snapshots", "latest")
+        else:
+            target = "snapshots/latest"
+
         if self.dba:
-            target = save_dir or "snapshots/latest"
             try:
-                self.dba.save_checkpoint(target)
+                # 与后台维护 / 人工干预共用图锁：`save_checkpoint` 内部要整图序列化，
+                # 并发增删节点会让 `to_dict()` 读到半张图（工具调用在线程池中并行后
+                # 这条路径更容易被撞上）。调度器状态在锁外取，避免嵌套两把状态锁。
+                with self._lock:
+                    self.dba.save_checkpoint(target)
+                    nodes = self.graph.node_count
+                    edges = self.graph.edge_count
                 # 额外保存调度器状态
                 scheduler_state = None
                 if self.scheduler:
@@ -1051,8 +1114,8 @@ class DBAServer:
                     scheduler_state = "saved"
                 return {
                     "save_dir": target,
-                    "nodes": self.graph.node_count,
-                    "edges": self.graph.edge_count,
+                    "nodes": nodes,
+                    "edges": edges,
                     "vectors": "saved",
                     "builder_state": "saved",
                     "scheduler_state": scheduler_state,
@@ -1061,16 +1124,18 @@ class DBAServer:
                 return {"error": str(e), "save_dir": target}
 
         # 回退：仅保存 YAML
-        target = save_dir or (str(Path(self.yaml_path).parent) if self.yaml_path else "snapshots/latest")
         Path(target).mkdir(parents=True, exist_ok=True)
         out_path = Path(target) / "memory_graph.yaml"
-        data = self.graph.to_dict()
+        with self._lock:
+            data = self.graph.to_dict()
+            nodes = self.graph.node_count
+            edges = self.graph.edge_count
         with open(out_path, "w", encoding="utf-8") as f:
             yaml.dump(data, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
         return {
             "save_dir": str(out_path),
-            "nodes": self.graph.node_count,
-            "edges": self.graph.edge_count,
+            "nodes": nodes,
+            "edges": edges,
         }
 
     def get_stats(self) -> dict:
@@ -1365,6 +1430,11 @@ def _oplog_request(name: str, arguments: dict) -> dict:
 
 def create_mcp_server(dba: DBAServer) -> "Server":
     """构建 MCP Server 实例 (MCP v2.0 API)"""
+    # 工具 handler 是协程，而下面的记忆链路全是**阻塞式**的（embedding + 多次 LLM，
+    # 单次可达分钟级）。直接调用会堵住整个事件循环：SSE 下所有连接的心跳、tools/call
+    # 都会被这一条请求卡住。故统一丢到线程池执行（与 ALM 侧 run_in_threadpool 同口径）。
+    from starlette.concurrency import run_in_threadpool
+
     server = Server("ariadne")
     # 操作日志路径（与 MCP 图谱 YAML 同目录，便于追溯）
     log_path = oplog.default_oplog_path(dba.yaml_path)
@@ -1389,23 +1459,23 @@ def create_mcp_server(dba: DBAServer) -> "Server":
 
         try:
             if name == "dba_add_conversation":
-                result = dba.add_conversation(**arguments)
+                result = await run_in_threadpool(dba.add_conversation, **arguments)
             elif name == "dba_query_memory":
-                result = dba.query_memory(**arguments)
+                result = await run_in_threadpool(dba.query_memory, **arguments)
             elif name == "dba_temporal_lookup":
-                result = dba.temporal_lookup(**arguments)
+                result = await run_in_threadpool(dba.temporal_lookup, **arguments)
             elif name == "dba_inspect_graph":
-                result = dba.inspect_graph(**arguments)
+                result = await run_in_threadpool(dba.inspect_graph, **arguments)
             elif name == "dba_intervene":
-                result = dba.intervene(**arguments)
+                result = await run_in_threadpool(dba.intervene, **arguments)
             elif name == "dba_checkpoint":
-                result = dba.checkpoint(**arguments)
+                result = await run_in_threadpool(dba.checkpoint, **arguments)
             elif name == "dba_get_stats":
-                result = dba.get_stats()
+                result = await run_in_threadpool(dba.get_stats)
             elif name == "dba_review_graph":
-                result = dba.review_graph(**arguments)
+                result = await run_in_threadpool(dba.review_graph, **arguments)
             elif name == "dba_review_sources":
-                result = dba.review_sources(**arguments)
+                result = await run_in_threadpool(dba.review_sources, **arguments)
             else:
                 result = {"error": f"Unknown tool: {name}"}
         except Exception as e:

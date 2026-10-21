@@ -304,11 +304,14 @@ class MaintenanceScheduler:
             source_rounds = [{"ts": ts, "text": text} for ts, text in conversations]
             result = self.dba.maintain(merged, timestamp=batch_ts, source_rounds=source_rounds)
 
-            # triage 判 SKIP 时内容原本被静默丢弃（MCP 没有 ALM 的文档通道）。
-            # 补一步原文兜底落库。这**不**改变下面的空转判定——
+            # triage 判 SKIP、抽取空产出（no_ops/no_create）时内容原本被静默丢弃
+            # （MCP 没有 ALM 的文档通道）。补一步原文兜底落库——三态判定与 ALM 的
+            # `space._fallback_reason` 同口径。这**不**改变下面的空转判定：
             # 兜底不消耗 LLM，把"跳过"算成"有效"会让连续空转保护失效。
-            if result.get("skipped"):
+            fallback = self.dba.needs_raw_fallback(result)
+            if fallback:
                 self.dba.store_raw(merged, timestamp=batch_ts)
+                logger.warning(f"[DBA 维护] 抽取未产出（{fallback}），已原文兜底落库")
 
             ops = result.get("ops", {})
             node_ops = ops.get("node_ops", [])

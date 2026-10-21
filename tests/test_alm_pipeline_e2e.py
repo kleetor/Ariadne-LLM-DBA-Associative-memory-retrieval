@@ -1221,6 +1221,28 @@ def test_evidence_items_reserve_slots_for_edges(tmp_path):
     assert any(str(it["id"]).startswith("e:") for it in items), "top_k 已满时边仍应占位"
 
 
+def test_evidence_items_backfills_nodes_when_edges_are_dropped(tmp_path):
+    """边因端点被截断而丢弃时，空出的预算应由节点补满（不得明显少于 top_k）。
+
+    只修"悬空边"会让返回条数变少：为边预留的槽位在边被过滤后空着。这里钉住
+    「丢弃边 → 用尾部节点补位」，且补进来的节点不会让任何边变成悬空引用。
+    """
+    model = ScriptedChatModel(routes=_routes(node_count=6))
+    space = _make_space(tmp_path, model, search_shape="evidence", evidence_legend=False)
+    space.add(_messages(n=6))
+    ids = list(space.graph.graph.nodes())
+    assert len(ids) >= 6
+    peaks = [(i, space.graph.get_content(i)) for i in ids[:6]]
+    # 边只连第 5/6 个节点：top_k=5 时它们会被截断 → 边应被丢弃
+    edges = [{"from": ids[5], "to": ids[4], "rel_type": "CAUSAL", "is_reverse": False}]
+
+    items = space._evidence_items(
+        {"peak_memories": peaks, "path": {"nodes": [], "edges": edges}}, [], top_k=5)
+
+    assert len(items) == 5, f"丢弃边后应补回节点，实际 {len(items)} 条"
+    assert not any(str(it["id"]).startswith("e:") for it in items)
+
+
 def test_evidence_legend_lists_every_type_and_is_switchable(tmp_path):
     """图例必须覆盖 NodeType(6)+RelationType(8) 全部词，且 `evidence_legend=False` 时不发。"""
     from dba_pipeline.core.jump_axis import NodeType, RelationType

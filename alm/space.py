@@ -21,6 +21,7 @@ import re
 import tempfile
 import threading
 import time
+from collections import OrderedDict
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -473,6 +474,10 @@ _DEFAULT_BACKFILL_GATE = _BackfillGate(8)
 class MemorySpace:
     """单个 user_id 的完整记忆栈：图谱 + 向量 + DBA 维护 + PAR 检索"""
 
+    # 已处理 request_id 的**持久化**容量（与 Engine.MAX_REQUEST_LOG 同量级）。
+    # 超出后按插入顺序淘汰最旧的：重试通常紧跟在失败之后，这个窗口足够覆盖。
+    MAX_RID_LOG = 8192
+
     def __init__(
         self,
         user_id: str,
@@ -543,6 +548,9 @@ class MemorySpace:
         self._msgs_logged = 0
         self.doc_store = VectorStore(embeddings=embeddings, backend="faiss", persist_dir=None)
         self._load_documents()
+        # 已成功处理的 request_id（内存 + `requests.log` 落盘），用于**跨重启**幂等。
+        # 必须放在 `_load_documents()` 之后：旧数据的 rid 只存在于原始消息里。
+        self._rids: "OrderedDict[str, None]" = self._load_rids()
 
         self.builder = GraphBuilder(
             graph=self.graph,
@@ -1057,8 +1065,12 @@ class MemorySpace:
             #    这样夹在中间的 doc 记录也会被一并标记为已消费。
             cursor += n_msgs
             extracted += n_msgs
-            done = progress["done"] + conv_items[cursor - 1][0] + 1
-            self._save_backfill_progress(done, "running")   # 每批落进度：重启可续
+            # n_msgs == 0：本组只消费了某条长消息的**中间片段**，该消息尚未整条建完。
+            # 此时绝不能推进断点——cursor 仍是 0 时 `conv_items[cursor - 1]` 会取到
+            # 列表末尾（-1），把 done 直接推到队尾，剩余内容会在重启/中止后永久跳过。
+            if n_msgs:
+                done = progress["done"] + conv_items[cursor - 1][0] + 1
+                self._save_backfill_progress(done, "running")   # 每批落进度：重启可续
             self.save()
         if self._bg_cancel:
             # 竞态：取消信号可能与"最后一批刚写完"同时到达。此时语料其实已经补全，
@@ -1364,14 +1376,135 @@ class MemorySpace:
                     self._masked_id(), len(raw), good,
                 )
 
+    # ---- request_id 幂等（跨重启）----
+    # 进程内的 `Engine._request_log` 重启即失；而调用方对 5xx 的有限重试经常跨重启，
+    # 若不持久化，重试会被当成新请求 → graph 模式重复抽取/重复付费，vector 模式
+    # 重复落 L1。这里把「已成功处理」的 request_id 落到空间目录内的小日志。
+
+    def _rid_log_path(self) -> Path:
+        """已处理 request_id 的落盘日志（空间目录内，随目录一起被留存清理）"""
+        return self.yaml_path.parent / "requests.log"
+
+    def _load_rids(self) -> "OrderedDict[str, None]":
+        """载入已处理的 request_id：旧数据里挂在消息上的 + 落盘日志。
+
+        日志按追加顺序保存，后写的更新；超出容量时淘汰最旧的，与
+        `Engine.MAX_REQUEST_LOG` 同一口径（重试通常紧跟失败之后，窗口足够）。
+        """
+        rids: "OrderedDict[str, None]" = OrderedDict()
+        for rec in self.doc_msgs:
+            rid = rec.get("rid")
+            if rid:
+                rids[str(rid)] = None
+        lines = 0
+        try:
+            for line in self._rid_log_path().read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rid = json.loads(line)
+                except Exception:
+                    continue
+                if not isinstance(rid, str) or not rid:
+                    continue
+                lines += 1
+                if rid in rids:
+                    rids.move_to_end(rid)
+                else:
+                    rids[rid] = None
+        except OSError:
+            pass
+        while len(rids) > self.MAX_RID_LOG:
+            rids.popitem(last=False)
+        self._rid_lines = lines
+        return rids
+
+    def seen_request(self, request_id: Optional[str]) -> bool:
+        """该 request_id 是否已成功处理过（跨进程重启仍有效）"""
+        if not request_id:
+            return False
+        with self._lock:
+            return request_id in self._rids
+
+    def remember_request(self, request_id: Optional[str]) -> None:
+        """在**成功落盘之后**登记 request_id，供重启后的重试幂等回放。
+
+        必须后置：先登记再处理会在中途崩溃时把「没写成功」的请求也标成已完成，
+        重试被跳过 → 静默丢内容。反过来的代价只是极端情况下重复一次（方向安全）。
+        """
+        if not request_id:
+            return
+        with self._lock:
+            if request_id in self._rids:
+                self._rids.move_to_end(request_id)
+                return
+            self._rids[request_id] = None
+            while len(self._rids) > self.MAX_RID_LOG:
+                self._rids.popitem(last=False)
+            self._rid_lines = getattr(self, "_rid_lines", 0) + 1
+            try:
+                path = self._rid_log_path()
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with open(path, "a", encoding="utf-8") as f:
+                    # 上次写到一半崩溃会留下没有换行的残行；直接追加会把两条 rid
+                    # 拼成一条无法解析的脏行（两条都失效）。先补换行再写。
+                    if self._rid_log_needs_separator(path):
+                        f.write("\n")
+                    f.write(json.dumps(request_id, ensure_ascii=False) + "\n")
+                if self._rid_lines > self.MAX_RID_LOG * 2:
+                    self._compact_rids()
+            except OSError as exc:
+                logger.warning("空间 %s request_id 落盘失败: %s", self._masked_id(), exc)
+
+    @staticmethod
+    def _rid_log_needs_separator(path: Path) -> bool:
+        """日志非空且末尾不是换行 → 追加前必须先补一个换行"""
+        try:
+            if not path.exists() or path.stat().st_size <= 0:
+                return False
+            with open(path, "rb") as f:
+                f.seek(-1, os.SEEK_END)
+                return f.read(1) != b"\n"
+        except OSError:
+            return False
+
+    def _compact_rids(self) -> None:
+        """把 request_id 日志重写为当前保留集（原子替换，容量有界）"""
+        path = self._rid_log_path()
+        tmp = path.with_name(path.name + ".tmp")
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                for rid in self._rids:
+                    f.write(json.dumps(rid, ensure_ascii=False) + "\n")
+            os.replace(tmp, path)
+            self._rid_lines = len(self._rids)
+        except OSError as exc:
+            logger.warning("空间 %s request_id 日志压缩失败: %s", self._masked_id(), exc)
+
+    def _doc_index_stamp(self) -> Dict[str, Any]:
+        """文档索引的**向量语义**指纹：embedding 模型 + 单条字符预算。
+
+        为什么不纳入块集合：块是只增不改的确定性追加序，条数差异由
+        `_load_documents` 的 `ntotal` 校验（补齐尾部）处理；若把块集合也算进指纹，
+        任何一次新增都会让"只补尾部"退化成全量重嵌。
+        这里只负责识别「向量空间已变」——换模型或改 `_MAX_CHARS` 后，旧索引里的
+        向量与新查询向量不可比，必须整体重建（与图谱索引的同一类失效）。
+        """
+        return {
+            "version": 1,
+            "embedding": self.config.embedding_model or "",
+            "max_chars": getattr(self.doc_store.embeddings, "_MAX_CHARS", None),
+        }
+
     def _load_documents(self) -> None:
         """载入文档区：条文快照 + 增量日志提供内容与块序，落盘索引提供向量。
 
-        有索引就直接复用（**不重新 embedding**）；索引缺失或损坏才回退全量重嵌。
-        与图谱索引不同，文档区不需要指纹校验——条文与向量总是同步落盘的，
-        不存在「图谱变了而索引没跟上」这种中间态。
+        索引**与当前 embedding 配置一致**时直接复用（不重新 embedding）；
+        索引缺失、损坏、指纹不符或无法校验时才回退全量重嵌。
+        指纹只管"向量是否同一语义空间"，块数差异仍走下面的补齐/重建分支。
         """
-        docs_yaml, docs_index, _ = self._doc_paths()
+        docs_yaml, docs_index, docs_stamp = self._doc_paths()
         try:
             if docs_yaml.exists():
                 data = yaml.safe_load(docs_yaml.read_text(encoding="utf-8")) or {}
@@ -1398,37 +1531,59 @@ class MemorySpace:
             return
 
         if docs_index.exists():
+            # 先用指纹确认落盘向量与当前 embedding 处于**同一语义空间**。
+            # 缺失指纹（旧数据）也按不一致处理：宁可重建一次，也不要把旧模型的向量
+            # 与新模型的查询向量混用（同维度时全程静默，检索质量崩掉且无告警）。
+            stamp_ok = False
             try:
-                self.doc_store.load(str(docs_index), embeddings=self.doc_store.embeddings)
-                ntotal = getattr(getattr(self.doc_store.store, "index", None), "ntotal", None)
-                if ntotal == len(self.docs):
-                    logger.info("空间 %s 文档区载入: %d 块（复用落盘索引）",
-                                self._masked_id(), len(self.docs))
-                    return
-                # 索引**落后**于条文（条 > 索引）：典型成因是某次写入的 embedding 失败——
-                # 消息进了条文、向量没进索引（见 `_store_documents` 的顺序约束）。
-                # 切片是**确定性的追加序**（id = `{doc_id}c{块序}`，见 `_chunks_from_msgs`），
-                # 所以索引里装的就是 `self.docs` 的前 ntotal 块 → **只补缺的尾部**即可。
-                # 旧实现这里直接重建整个文档区：4 千块的空间等于数千次 embedding，
-                # 既烧 token，又会把瞬时并发顶上去、反过来诱发超时/限流。
-                if isinstance(ntotal, int) and 0 <= ntotal < len(self.docs):
-                    missing = self.docs[ntotal:]
-                    self.doc_store.add_memories(
-                        [d["id"] for d in missing], [d["content"] for d in missing]
-                    )
-                    logger.warning(
-                        "空间 %s 文档区索引落后，已补齐尾部: 索引 %d → %d（补 %d 块）",
-                        self._masked_id(), ntotal, len(self.docs), len(missing),
-                    )
-                    return
-                # 索引**超前**于条文（条 < 索引）或读不到 ntotal：追加无法修正（FAISS 删条代价高），
-                # 仍回退全量重建。
-                logger.warning(
-                    "空间 %s 文档区索引条数 %s 与条文 %d 不匹配，改为重建",
-                    self._masked_id(), ntotal, len(self.docs),
+                stamp = (
+                    yaml.safe_load(docs_stamp.read_text(encoding="utf-8")) or {}
+                    if docs_stamp.exists() else None
                 )
+                current = self._doc_index_stamp()
+                stamp_ok = stamp == current
+                if not stamp_ok:
+                    logger.warning(
+                        "空间 %s 文档索引指纹不符或缺失（落盘=%s 当前=%s），改为重建",
+                        self._masked_id(), stamp, current,
+                    )
             except Exception as exc:
-                logger.warning("空间 %s 文档索引加载失败，改为重建: %s", self._masked_id(), exc)
+                logger.warning("空间 %s 文档索引指纹读取失败，改为重建: %s",
+                               self._masked_id(), exc)
+
+            if stamp_ok:
+                try:
+                    self.doc_store.load(str(docs_index), embeddings=self.doc_store.embeddings)
+                    ntotal = getattr(getattr(self.doc_store.store, "index", None), "ntotal", None)
+                    if ntotal == len(self.docs):
+                        logger.info("空间 %s 文档区载入: %d 块（复用落盘索引）",
+                                    self._masked_id(), len(self.docs))
+                        return
+                    # 索引**落后**于条文（条 > 索引）：典型成因是某次写入的 embedding 失败——
+                    # 消息进了条文、向量没进索引（见 `_store_documents` 的顺序约束）。
+                    # 切片是**确定性的追加序**（id = `{doc_id}c{块序}`，见 `_chunks_from_msgs`），
+                    # 所以索引里装的就是 `self.docs` 的前 ntotal 块 → **只补缺的尾部**即可。
+                    # 旧实现这里直接重建整个文档区：4 千块的空间等于数千次 embedding，
+                    # 既烧 token，又会把瞬时并发顶上去、反过来诱发超时/限流。
+                    if isinstance(ntotal, int) and 0 <= ntotal < len(self.docs):
+                        missing = self.docs[ntotal:]
+                        self.doc_store.add_memories(
+                            [d["id"] for d in missing], [d["content"] for d in missing]
+                        )
+                        logger.warning(
+                            "空间 %s 文档区索引落后，已补齐尾部: 索引 %d → %d（补 %d 块）",
+                            self._masked_id(), ntotal, len(self.docs), len(missing),
+                        )
+                        return
+                    # 索引**超前**于条文（条 < 索引）或读不到 ntotal：追加无法修正（FAISS 删条代价高），
+                    # 仍回退全量重建。
+                    logger.warning(
+                        "空间 %s 文档区索引条数 %s 与条文 %d 不匹配，改为重建",
+                        self._masked_id(), ntotal, len(self.docs),
+                    )
+                except Exception as exc:
+                    logger.warning("空间 %s 文档索引加载失败，改为重建: %s",
+                                   self._masked_id(), exc)
         # 索引缺失 / 损坏 / 条数不符 → 全量重嵌（正常启动不会走到这里）。
         # 必须换一个**全新的** VectorStore：加载失败可能留下半加载的 FAISS，
         # 直接对旧实例 add_memories 会往已有索引上追加，产出重复条目。
@@ -1449,13 +1604,18 @@ class MemorySpace:
         """
         if not self.doc_msgs:
             return
-        docs_yaml, docs_index, _ = self._doc_paths()
+        docs_yaml, docs_index, docs_stamp = self._doc_paths()
         try:
             docs_yaml.parent.mkdir(parents=True, exist_ok=True)
             new_msgs = self.doc_msgs[self._msgs_logged:]
             if new_msgs:
                 self._append_docs_log(new_msgs)
             self.doc_store.save(str(docs_index))
+            # 指纹必须在索引**写成功之后**落：中途失败时保持旧指纹，下次载入会发现
+            # 不一致并重建（宁可重嵌，也不复用半截索引）。
+            docs_stamp.parent.mkdir(parents=True, exist_ok=True)
+            with open(docs_stamp, "w", encoding="utf-8") as f:
+                yaml.dump(self._doc_index_stamp(), f, allow_unicode=True)
         except Exception as exc:
             logger.warning("空间 %s 文档区保存失败: %s", self._masked_id(), exc)
 
@@ -1640,11 +1800,16 @@ class MemorySpace:
             pos = self._doc_index.get(str(mid))
             if pos is None:
                 continue
+            # 邻块扩展必须限制在**同一份文档**内：`self.docs` 是所有文档块扁平拼接的，
+            # 只做 pos±radius 会让某文档末块把**下一份文档首块**当成上下文取回。
+            hit_doc_id = self.docs[pos].get("doc_id")
             for off in range(-radius, radius + 1):
                 j = pos + off
                 if not (0 <= j < len(self.docs)):
                     continue
                 doc = self.docs[j]
+                if doc.get("doc_id") != hit_doc_id:
+                    continue
                 if doc["id"] in seen:
                     continue
                 seen.add(doc["id"])
@@ -1773,6 +1938,15 @@ class MemorySpace:
           · 空内容 → 丢弃
         """
         limit = self.config.max_messages_per_add
+
+        # 跨重启幂等：同一 request_id 已成功处理过 → 直接回放"已存储"的结果。
+        # 进程内的 `Engine._request_log` 只覆盖同一次运行，重启后的重试靠这里拦下，
+        # 避免 graph 模式重复抽取/重复付费、vector 模式重复落 L1。
+        if self.seen_request(request_id):
+            logger.info(
+                "空间 %s 重复 request_id，跳过维护（跨重启幂等）", self._masked_id()
+            )
+            return {"messages": len(messages), "nodes": 0}
 
         # 调用方 request_id（幂等持久化）：落进 `_store_documents` 的**每条消息**，
         # 从而随 `docs.log` / 快照一起持久化——重启后回放仍能按 rid 去重。
@@ -2312,8 +2486,10 @@ class MemorySpace:
             emitted.add(did)
             nodes.append({"id": did, "content": d["content"]})
 
-        edges: List[Dict[str, Any]] = []
-        seen_edge: set = set()
+        # 先把边按「两端都在候选集合内」收集起来（不落地），**等节点按预算截断后**
+        # 再用最终保留的节点集过滤。顺序不能反：此前先用截断前的 emitted 过滤，
+        # 节点随后被 top_k 截掉，于是返回的边引用了未返回的节点 id（悬空引用）。
+        edge_tuples: List[tuple] = []
         for e in (result.get("path") or {}).get("edges") or []:
             e = e or {}
             frm, to = e.get("from"), e.get("to")
@@ -2322,6 +2498,24 @@ class MemorySpace:
             rel = e.get("rel_type") or "?"
             if e.get("is_reverse"):
                 frm, to = to, frm
+            edge_tuples.append((frm, to, rel))
+
+        # 图例作 `data[0]`：显式给出 `[id]（类型）` / `--关系-->` 的词表含义。
+        # 只在 top_k 有余量时发——top_k≤2 时图例会挤掉证据，宁可不发。
+        head: List[Dict[str, Any]] = []
+        if self.config.evidence_legend and top_k >= 3:
+            head.append({"id": "rules", "content": _EVIDENCE_LEGEND})
+
+        all_nodes = list(nodes)
+        reserve = min(len(edge_tuples), max(0, top_k // 2))
+        nodes = all_nodes[: max(0, top_k - len(head) - reserve)]
+
+        kept_ids = {n["id"] for n in nodes}
+        edges: List[Dict[str, Any]] = []
+        seen_edge: set = set()
+        for frm, to, rel in edge_tuples:
+            if frm not in kept_ids or to not in kept_ids:
+                continue
             key = (frm, to, rel)
             if key in seen_edge:
                 continue
@@ -2330,15 +2524,12 @@ class MemorySpace:
                 "id": f"e:{frm}->{to}:{rel}",
                 "content": f"[{frm}] --{rel}--> [{to}]",
             })
-
-        # 图例作 `data[0]`：显式给出 `[id]（类型）` / `--关系-->` 的词表含义。
-        # 只在 top_k 有余量时发——top_k≤2 时图例会挤掉证据，宁可不发。
-        head: List[Dict[str, Any]] = []
-        if self.config.evidence_legend and top_k >= 3:
-            head.append({"id": "rules", "content": _EVIDENCE_LEGEND})
-
-        reserve = min(len(edges), max(0, top_k // 2))
-        nodes = nodes[: max(0, top_k - len(head) - reserve)]
+        # 边因端点被 top_k 截掉而丢弃时，会留下空位：把原本为边预留、但最终没用上
+        # 的节点预算补回来。只**追加节点**不会让已有边悬空（边已按 kept_ids 校验），
+        # 也保证返回条数尽量贴近 top_k（此前可能明显少于 top_k）。
+        spare = top_k - len(head) - len(nodes) - len(edges)
+        if spare > 0:
+            nodes.extend(all_nodes[len(nodes): len(nodes) + spare])
         return (head + nodes + edges)[:top_k]
 
     def _node_created_at(self, node_id: str) -> Optional[str]:
@@ -2488,9 +2679,39 @@ class MemorySpace:
                 self._masked_id(), requested_top_k, top_k, self.config.search_max_items,
             )
         with self._lock:
-            items = self._search_locked(
+            items, finalize = self._search_locked(
                 query, top_k, options, purpose_info=purpose_info, force_vector=force_vector
             )
+
+        # 弃权模糊带的二次判定（一次 LLM 调用）必须在空间锁**外**：与归属判定 /
+        # 目的推断同一口径——持锁跑网络调用会把同 user_id 的并发 /add 整段堵住
+        # （最坏 `llm_timeout` × 重试）。检索阶段只负责把判定所需的上下文带出来。
+        if finalize is not None:
+            if finalize.get("needs_judge"):
+                verdict = self.judge.is_relevant(finalize["query"], items)
+                if verdict is False:
+                    items = self._abstain(finalize["best_cos"], "模糊带判定为无相关信息")
+                else:
+                    logger.info(
+                        "空间 %s 模糊带放行: best_cos=%.4f verdict=%s",
+                        self._masked_id(), finalize["best_cos"], verdict,
+                    )
+            # 冒烟期留痕：这一条就是回答模型真正读到的"记忆"（ALM 只返回叙事一条），
+            # 也是这些能力项连续 0 分的最终证人——叙事是否已退化成"全图低分辨率概览"，
+            # 只能从正文判断。放在弃权判定**之后**，保证日志与实际返回一致。
+            if self.config.trace_io:
+                body = "\n".join(
+                    f"  [{it.get('id')}] score={it.get('score')} "
+                    f"created_at={it.get('created_at')} {it.get('content')}"
+                    for it in items
+                )
+                logger.info(
+                    # 不再打 `采纳=`（覆盖率度量在句式重复的数据集上饱和，不可信，见上一处注释）
+                    "[IO] search 返回 空间=%s 条数=%d 喂入点=%d 喂入边=%d 边型=%s:\n%s",
+                    self._masked_id(), len(items),
+                    finalize.get("path_nodes", 0), finalize.get("path_edges", 0),
+                    finalize.get("edge_types") or {}, body or "  （空）",
+                )
 
         # Cross-encoder 重排（#5）必须在空间锁**外**：它是网络调用（被节流时最坏等
         # `throttle_max_wait`），持锁会阻塞同 user_id 的并发 /add——与「把目的推断
@@ -2748,7 +2969,7 @@ class MemorySpace:
                 self._masked_id(), top_k, len(items),
                 "（建图未就绪兜底）" if force_vector else "",
             )
-            return items
+            return items, None
 
         # 文档通道：与主通道**并行**的另一条路，只捞文档块。
         # 它不参与种子选择 / 图扩展 / 峰值检测——这正是隔离的意义：线上实测
@@ -2923,43 +3144,30 @@ class MemorySpace:
 
         # 弃权第一段（硬下限）：低于它一律弃权，连判定调用都不必发。
         if self.config.abstain_cosine > 0.0 and best_cos < self.config.abstain_cosine:
-            return self._abstain(best_cos, "低于硬下限")
+            return self._abstain(best_cos, "低于硬下限"), None
 
-        # 弃权第二段（模糊带判定）：余弦落在 [abstain_cosine, abstain_verify_hi) 时，
-        # 单看数值分不清「库里确实没有」与「有、但提问措辞与节点原文距离远」——实测
-        # 两类样本的余弦区间重叠（见 alm/judge.py 顶部注释）。故把已排好序的 top-N
-        # 交给 LLM 判一次；判否才弃权，判定失败按放行处理。
-        if self.config.abstain_verify_hi > 0.0 and best_cos < self.config.abstain_verify_hi:
-            verdict = self.judge.is_relevant(retrieval_query, items)
-            if verdict is False:
-                return self._abstain(best_cos, "模糊带判定为无相关信息")
-            logger.info(
-                "空间 %s 模糊带放行: best_cos=%.4f verdict=%s",
-                self._masked_id(), best_cos, verdict,
-            )
-
-        # 冒烟期留痕：这一条就是回答模型真正读到的"记忆"（ALM 只返回叙事一条），
-        # 也是这些能力项连续 0 分的最终证人——叙事是否已退化成"全图低分辨率概览"，
-        # 只能从正文判断。同时记采纳数与喂入边型，区分「没喂因果边」与「喂了没写」。
-        if self.config.trace_io:
-            body = "\n".join(
-                f"  [{it.get('id')}] score={it.get('score')} "
-                f"created_at={it.get('created_at')} {it.get('content')}"
-                for it in items
-            )
-            logger.info(
-                # 不再打 `采纳=`（覆盖率度量在句式重复的数据集上饱和，不可信，见上一处注释）
-                "[IO] search 返回 空间=%s 条数=%d 喂入点=%d 喂入边=%d 边型=%s:\n%s",
-                self._masked_id(), len(items),
-                result.get("path_nodes", 0), result.get("path_edges", 0),
-                result.get("path_edge_types") or {}, body or "  （空）",
-            )
+        # 弃权第二段（模糊带判定）**不在锁内执行**：它是一次 LLM 调用（最坏
+        # `llm_timeout` × 重试），持锁会把同 user_id 的并发 /add 堵住。这里只把
+        # 判定所需的上下文带出锁，由 `search()` 在锁外调用 `judge.is_relevant()`；
+        # 判否才弃权，判定失败按放行处理。
+        finalize: Optional[Dict[str, Any]] = {
+            "best_cos": best_cos,
+            "query": retrieval_query,
+            "needs_judge": bool(
+                self.config.abstain_verify_hi > 0.0
+                and best_cos < self.config.abstain_verify_hi
+            ),
+            # 供 `search()` 在**弃权判定之后**打 [IO] 留痕（保证日志与实际返回一致）
+            "path_nodes": result.get("path_nodes", 0),
+            "path_edges": result.get("path_edges", 0),
+            "edge_types": result.get("path_edge_types") or {},
+        }
 
         # 图链路**不返回 `score`**：这一档每条都是占位分（叙事 / 证据块 / 文档块一律 1.0），
         # 再归一化仍是 1.0，零信息量——而契约里 `score` 是**可选**，不如省掉。
         # 排序信息由**返回顺序**承载（PAR 已按 combined_score 降序给出）。
         # 纯向量链路不受影响：那条路返回**真实余弦**，在它自己的分支里直接 return。
-        return items
+        return items, finalize
 
     def _collect_par_candidates(self, result: Dict[str, Any]) -> List[Dict[str, Any]]:
         """种子 + 图扩展的候选并集，仅供弃权判定取 best_cos 用。

@@ -1,8 +1,9 @@
 # ALM 回补建图治理：问题记录与修改说明
 
-- 日期：2026-10-18
+- 日期：2026-10-18（2026-10-20 复审更新）
 - 范围：`alm/`（配置、空间生命周期、引擎装配）、`tests/`
-- 状态：代码完成，268 项测试通过；**尚未部署到生产**
+- 状态：代码完成；2026-10-20 复审修复后全量 **271 项测试通过**；**本轮修复尚未部署**
+- 生产现状（2026-10-20 确认）：`ariadne-alm:v0.2.0-alm`（镜像构建于 2026-10-19 06:55 UTC），容器 `Up (healthy)`；`/data` 仍为 **3,026 个空间 / 8.0 GB**，数据卷清理尚未执行
 
 ---
 
@@ -373,5 +374,44 @@ docker tag ariadne-alm:v0.2.0-alm.prev_20261018 ariadne-alm:v0.2.0-alm
 cd /AlmServer && docker compose -p almserver -f docker-compose.alm.yml up -d --force-recreate
 ```
 
-**数据卷清理**：见 [ALM_DATA_VOLUME_RESET.md](ALM_DATA_VOLUME_RESET.md)（尚未执行）。
+**数据卷清理**：方案已移至私有目录 `alm/almplan/ALM_DATA_VOLUME_RESET.md`（不入库，含生产主机与卷名）；本次只确认远端现状，未执行清理。
+
+---
+
+## 九、2026-10-20 复审修复：回补断点跳尾
+
+**现象**：回补在长消息场景下可能把断点直接推进到队尾；重启 / 中止后，剩余内容永久不建图。
+
+**根因**：`_split_add_batches_span` 对「跨组的长消息」会把中间组记为 `n_msgs=0`，而旧代码无条件执行：
+
+```python
+done = progress["done"] + conv_items[cursor - 1][0] + 1
+```
+
+当 `cursor` 仍为 0 时，`conv_items[-1]` 取到**最后一条消息**，`done` 直接等于队尾。
+
+**实测**：20,000 字消息 + 两条短消息，`backfill_batch_size=24 / backfill_max_chars=8000`：
+
+```text
+组序列 = [(1, 0), (1, 0), (3, 3)]
+旧实现第一批即写 done=3/3（实际只建了长消息的 1/3）
+```
+
+**后果**：
+
+- 进程重启 / 回补中止后，`backfill_pending()` 从队尾开始，剩余内容永不建图；
+- `abandon_backfill` 的「done ≥ len 就不降级」判定被骗过，半成品图继续当完整图用。
+
+**修法**：只有 `n_msgs > 0` 才推进并落盘断点（[`alm/space.py`](../alm/space.py) `run_backfill`）。
+新增回归用例 `tests/test_alm_backfill_progress.py`，钉住「长消息中间组不得写 running 进度」。
+
+**验证**：新增用例 1 passed；全量 **271 passed**（原 270 + 1）。
+
+**部署状态**：本修复与 2026-10-20 的其他修复**均未部署**。远端仍是 2026-10-19 镜像
+（`has_acquire_space=False`，空间锁重构未上线），`/data` 仍为 3,026 空间 / 8.0 GB。
+部署需重建镜像（见第六节）。
+
+> ⚠️ 部署顺序：若在清理数据卷前部署，文档索引指纹（`docs.index/stamp.yaml`）会让存量
+> 文档型空间在首次访问时**全量重嵌一次**。建议按私有清理方案先重置数据卷，或先为存量
+> 空间批量补写指纹（不重嵌）后再上线。
 

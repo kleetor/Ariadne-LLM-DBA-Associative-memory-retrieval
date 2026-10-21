@@ -24,6 +24,46 @@ from dba_pipeline.source_store import new_batch_id, save_batch
 
 logger = logging.getLogger(__name__)
 
+# 原文兜底落库的单块字符预算。必须 ≤ embedding 的单条可容纳量（VectorStore 的
+# `_MAX_CHARS`：本地 2000 / API 8192），否则超出部分虽然写进了节点正文，向量却
+# 只覆盖前缀——「存了但检索不到」。取 1800 同时覆盖两种 embedding 配置。
+_RAW_CHUNK_CHARS = 1800
+_SENTENCE_ENDINGS = "。！？!?；;\n"
+
+
+def _split_raw_text(text: str, budget: int = _RAW_CHUNK_CHARS) -> List[str]:
+    """把兜底原文按字符预算切块，优先在句末标点 / 空白处断开。
+
+    `store_raw` 原先整段建**一个**节点：自动跳过与截断分支会把最多 10 轮对话
+    合并后送进来（可达数万字符），而 embedding 只覆盖前 `_MAX_CHARS`。按块建节点
+    才能保证每一段都被完整嵌入、可被向量检索。
+    """
+    text = (text or "").strip()
+    if not text:
+        return []
+    if budget <= 0 or len(text) <= budget:
+        return [text]
+    chunks: List[str] = []
+    start = 0
+    while start < len(text):
+        end = min(start + budget, len(text))
+        if end < len(text):
+            floor = start + budget // 2
+            for i in range(end - 1, floor - 1, -1):
+                if text[i] in _SENTENCE_ENDINGS:
+                    end = i + 1
+                    break
+            else:
+                for i in range(end - 1, start, -1):
+                    if text[i].isspace():
+                        end = i + 1
+                        break
+        chunk = text[start:end].strip()
+        if chunk:
+            chunks.append(chunk)
+        start = end
+    return chunks
+
 
 # ---- Step 1：节点抽取 Prompt（节点抽取与边连接拆成两步）----
 
@@ -711,15 +751,19 @@ class MemoryDBA:
         记忆缺失，又完全静默——调用方只看到"空转跳过"，无从得知内容没被存储。
 
         本方法只为 MCP 链路补上这一步：原文**兜底落库**，并绕过去重（阈值提到 2.0），
-        保证内容一定可检索。`_should_maintain` 只在对话长度 ≤ `_TRIAGE_TRUST_MAX_CHARS`
-        时才采信 triage、才会返回 SKIP，故这里通常只是一段短文，单节点即可。
+        保证内容一定可检索。内容按 `_RAW_CHUNK_CHARS` **切块、逐块建节点**：
+        批量缓冲的自动跳过 / 截断分支会把多轮对话合并后送进来，整段单节点会让
+        embedding 只覆盖前 `_MAX_CHARS` 个字符，后半段「存了但检索不到」。
 
         Returns: 新建节点 id 列表。
         """
-        text = (conversation or "").strip()
-        if not text:
+        chunks = _split_raw_text(conversation)
+        if not chunks:
             return []
-        ops = [{"action": "create", "content": text, "node_type": NodeType.THING.value}]
+        ops = [
+            {"action": "create", "content": c, "node_type": NodeType.THING.value}
+            for c in chunks
+        ]
         saved_threshold = self.builder.dedup_threshold
         self.builder.dedup_threshold = 2.0  # 关闭语义去重，保证原文一定落地
         try:
@@ -729,8 +773,38 @@ class MemoryDBA:
         created = result.get("created_ids") or []
         # 用 WARNING：ALM 容器把 dba_pipeline 钉在 WARNING 以上，INFO 不可见。
         # 本行只有计数，不含正文，可安全放行。
-        logger.warning("原文兜底落库: %d 字符 → %d 个节点", len(text), len(created))
+        logger.warning("原文兜底落库: %d 字符 → %d 块 → %d 个节点",
+                       len((conversation or "").strip()), len(chunks), len(created))
         return created
+
+    def needs_raw_fallback(self, result: Dict) -> Optional[str]:
+        """内容没能进入图谱时返回原因标识，否则返回 None（MCP 兜底判定）。
+
+        与 ALM `space._fallback_reason` 同口径，覆盖三态互补的失效：
+            "triage"    —— 维护判断前置直接跳过，压根没跑抽取
+            "no_ops"    —— 跑了抽取但一个 node_op 都没有（解析失败 / 截断）
+            "no_create" —— 有 ops 却没有 create，且没有任何 update/deprecate/fix_type
+
+        「LLM 发起了 create 却一个都没落地」**不**算：那说明命中了语义去重，
+        图中已有等价记忆；此时再兜底反而会把同一内容以原文重复写入。
+        """
+        if result.get("skipped"):
+            return "triage"
+        if (result.get("result") or {}).get("created_ids"):
+            return None
+        node_ops = (result.get("ops") or {}).get("node_ops") or []
+
+        def _act(op: Dict) -> str:
+            # `action` 省略即 create（输出瘦身，与 graph_builder 同口径）
+            return (op or {}).get("action") or "create"
+
+        if not node_ops:
+            return "no_ops"
+        if any(_act(op) == "create" for op in node_ops):
+            return None
+        if not any(_act(op) in ("update", "deprecate", "fix_type") for op in node_ops):
+            return "no_create"
+        return None
 
     # ---- 上下文组装 ----
 

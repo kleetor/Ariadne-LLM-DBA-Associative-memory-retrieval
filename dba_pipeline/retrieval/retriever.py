@@ -508,7 +508,9 @@ class PurposeDrivenRetriever:
                 "peak_scores": {memory_id: combined_score, ...},
                 "purpose": {"status": str, "purposes": [str]},
                 "hop_history": [{"hop": int, "candidates": [...], "mean_score": float}, ...],
+                # 真实候选总数（每跳候选并集）与寻峰后实际保留的条数
                 "total_candidates": int,
+                "peak_count": int,
             }
         """
         # 观测复位（本次 retrieve 的读数；上层从 result 的 peak_band / purpose_pass 取）
@@ -818,12 +820,21 @@ class PurposeDrivenRetriever:
 
         # 按 combined_score 降序排列（作为 LLM rerank 前的默认排序）
         memories.sort(key=lambda x: id_score.get(x[0], 0), reverse=True)
+        # 真实候选总数 = 每跳候选的并集；此前这里写的是 `len(memories)`（**峰值条数**），
+        # 被 MCP 当作 `total_matched` 返回，会让调用方误判是否被 rerank_k 截断。
+        candidate_ids = {
+            c.get("id")
+            for h in hop_history
+            for c in (h.get("candidates") or [])
+            if c.get("id")
+        }
         return {
             "peak_memories": memories,  # [(id, content), ...] 保持向后兼容
             "peak_scores": id_score,    # {id: combined_score} 供 rerank 使用
             "purpose": purpose_info,
             "hop_history": hop_history,
-            "total_candidates": len(memories),
+            "total_candidates": len(candidate_ids),
+            "peak_count": len(memories),
             # 观测：寻峰带读数 + 目的过滤逐跳通过率，供上层日志/复算使用。
             # 用 getattr 兜底：部分测试/工具用 `__new__` 绕过 `__init__` 构造实例。
             "peak_band": getattr(self, "_band_stats", {}),

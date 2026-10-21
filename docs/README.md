@@ -18,7 +18,8 @@
 ## 部署与运维
 
 - [ALM 回补修复记录](ALM_BACKFILL_FIX_20261018.md)
-- [ALM 数据卷重置](ALM_DATA_VOLUME_RESET.md)
+- [ALM 空间注册表锁重构计划](ALM_REGISTRY_LOCK_PLAN_20261020.md)
+- 数据卷清理方案：已移至私有目录 `alm/almplan/`（不入库；含生产主机与卷名等运行信息）
 
 ## 项目时间线
 

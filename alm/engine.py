@@ -46,6 +46,11 @@ _SAFE_FILENAME_CHARS = frozenset(
 # 一个空间一个小目录后 `ls data_dir` 才可读，留存清理也退化成"删一个目录"）。
 GRAPH_FILENAME = "graph.yaml"
 
+# 冷启动时允许**并行构造**的空间数。构造包含整图 / 文档区的 embedding，属于
+# CPU/内存重活；限流既避免启动风暴把资源打满，又不让已有空间陪着排队
+# （构造本身已在全局注册表锁之外，见 `_acquire_space`）。
+_MAX_PARALLEL_CONSTRUCTIONS = 4
+
 
 def space_dirname(user_id: str) -> str:
     """把 user_id 映射为与其一一对应的**空间目录名**（不含扩展名）。
@@ -104,7 +109,17 @@ class ALMEngine:
         # request_id → Add 结果。调用方对 5xx 有重试，而 add 不是幂等的：
         # 重跑维护会重复写入（并重复消耗抽取/连边的 LLM 成本）。
         self._request_log: "OrderedDict[str, Dict[str, int]]" = OrderedDict()
+        # 正在处理中的 (user_id, request_id)。并发重试必须串行：否则两个线程都能
+        # 通过缓存检查、各跑一遍维护（重复建图 + 重复付费）。
+        self._inflight: Dict[tuple, threading.Event] = {}
         self._registry_lock = threading.RLock()
+        # 正在构造的 user_id（仅在持有 _registry_lock 时读写）。同一 user 的并发首次
+        # 访问必须等首个构造完成，否则会同时建出两个实例、各自覆盖写同一个 YAML。
+        self._constructing: set = set()
+        # 构造完成 / 失败后唤醒同一 user 的等待者（锁与 _registry_lock 绑定）
+        self._space_cv = threading.Condition(self._registry_lock)
+        # 构造并发上限：不同 user 可以并行冷启动，同一时刻最多 N 个
+        self._construct_slots = threading.BoundedSemaphore(_MAX_PARALLEL_CONSTRUCTIONS)
 
     # ---- 初始化 ----
 
@@ -175,29 +190,76 @@ class ALMEngine:
         """
         return self.config.data_dir / space_dirname(user_id) / GRAPH_FILENAME
 
-    def _get_or_create_locked(self, user_id: str, create: bool) -> Optional[MemorySpace]:
-        """注册表内查找或构造空间（调用方须已持有 _registry_lock）。不做换出。"""
-        space = self._spaces.get(user_id)
-        if space is not None:
-            self._spaces.move_to_end(user_id)
-            return space
+    def _acquire_space(
+        self, user_id: str, create: bool, *, lease: bool
+    ) -> Optional[MemorySpace]:
+        """取得（必要时**锁外构造**）注册表实例。
 
+        为什么构造必须在全局锁外：`MemorySpace.__init__` 可能重建整图 / 文档区索引，
+        是分钟级的 embedding 工作。此前它在 `_registry_lock` 内执行，导致「一个 user
+        冷启动，所有 user 的 /add、/search 一起排队」。
+
+        并发约定：
+          · 同一 user 的构造用 `_constructing` 占位串行化——保证不会同时建出两个实例
+            各自覆盖写同一个 YAML（丢掉后写入方的数据）；
+          · 不同 user 可以并行构造，并发度由 `_construct_slots` 限制；
+          · `lease=True` 时，`_in_use += 1` 与「取到/插入实例」在**同一个临界区**完成，
+            中间不存在可被 LRU 换出的窗口。
+        """
         graph_path = self._graph_path(user_id)
-        if not create and not graph_path.exists():
-            return None
+        with self._space_cv:
+            while True:
+                space = self._spaces.get(user_id)
+                if space is not None:
+                    self._spaces.move_to_end(user_id)
+                    if lease:
+                        self._in_use[user_id] = self._in_use.get(user_id, 0) + 1
+                    return space
 
-        space = MemorySpace(
-            user_id=user_id,
-            config=self.config,
-            embeddings=self.embeddings,
-            llm=self.llm,
-            yaml_path=graph_path,
-            stats=self.retrieval_stats,
-            reranker=self.reranker,
-            backfill_gate=self._backfill_gate,
-        )
-        self._spaces[user_id] = space
-        return space
+                if user_id in self._constructing:
+                    # 同一 user 已有人在构造：等它结束（成功或失败）后按注册表重判。
+                    # 不能直接返回 None——构造成功后实例会立刻进注册表，本请求应命中它。
+                    self._space_cv.wait()
+                    continue
+
+                if not create and not graph_path.exists():
+                    return None
+
+                self._constructing.add(user_id)
+                break
+
+        # ---- 锁外构造（本项唯一的实质改动）----
+        try:
+            with self._construct_slots:
+                space = MemorySpace(
+                    user_id=user_id,
+                    config=self.config,
+                    embeddings=self.embeddings,
+                    llm=self.llm,
+                    yaml_path=graph_path,
+                    stats=self.retrieval_stats,
+                    reranker=self.reranker,
+                    backfill_gate=self._backfill_gate,
+                )
+        except BaseException:
+            # 构造失败不能留下占位，否则该 user 会被永久判成"正在构造"。
+            with self._space_cv:
+                self._constructing.discard(user_id)
+                self._space_cv.notify_all()
+            raise
+
+        with self._space_cv:
+            self._constructing.discard(user_id)
+            existing = self._spaces.get(user_id)
+            # 防御分支：正常路径下同一 user 的构造已被 `_constructing` 串行化；
+            # 这里保证任何将来新增的路径都不会产生第二个对外实例。
+            space = existing if existing is not None else space
+            self._spaces[user_id] = space
+            self._spaces.move_to_end(user_id)
+            if lease:
+                self._in_use[user_id] = self._in_use.get(user_id, 0) + 1
+            self._space_cv.notify_all()
+            return space
 
     @contextmanager
     def _lease(self, user_id: str, create: bool):
@@ -210,13 +272,14 @@ class ALMEngine:
             线程 B 再请求 U，注册表已无 U → 从磁盘重建出**第二个实例 S2**；
             S1 完成后仍会整图覆盖写 YAML，把 S2 期间写入的内容抹掉。
         租约让换出跳过在用空间（全部在用时不换出，宁可控不住内存也不丢数据）。
+
+        ⚠️ 取实例（可能触发锁外构造）必须在**不持有** `_registry_lock` 的路径上完成，
+        否则又会退化成"全局排队"。`_acquire_space` 内部只在状态变更时短暂持锁。
         """
-        with self._registry_lock:
-            space = self._get_or_create_locked(user_id, create)
-            if space is None:
-                yield None
-                return
-            self._in_use[user_id] = self._in_use.get(user_id, 0) + 1
+        space = self._acquire_space(user_id, create, lease=True)
+        if space is None:
+            yield None
+            return
 
         try:
             yield space
@@ -233,11 +296,12 @@ class ALMEngine:
         """获取（或懒加载）某个 user_id 的记忆空间。
 
         返回的对象**不享受换出保护**，仅供只读排查使用；写操作请走 add()。
+        构造同样在全局锁外完成（见 `_acquire_space`）。
         """
+        space = self._acquire_space(user_id, create, lease=False)
         with self._registry_lock:
-            space = self._get_or_create_locked(user_id, create)
             self._evict_locked()
-            return space
+        return space
 
     def _evict_locked(self):
         """LRU 换出：跳过正在被使用的空间（Add 成功后已落盘，换出不会丢数据）
@@ -263,14 +327,6 @@ class ALMEngine:
 
     # ---- 幂等 ----
 
-    def _cached_add(self, user_id: str, request_id: str) -> Optional[Dict[str, int]]:
-        with self._registry_lock:
-            cached = self._request_log.get((user_id, request_id))
-            if cached is not None:
-                self._request_log.move_to_end((user_id, request_id))
-                return dict(cached)
-        return None
-
     def _remember_add(self, user_id: str, request_id: str, stats: Dict[str, int]) -> None:
         with self._registry_lock:
             key = (user_id, request_id)
@@ -287,19 +343,44 @@ class ALMEngine:
         幂等：平台对 5xx 有有限次重试，而重跑维护会重复写入记忆，故按 (user_id,
         request_id) 记录已处理的返回结果，重复请求直接回放。键里带 user_id 是为了
         避免「同一 request_id 被两个 user_id 复用」时第二个请求被误判为重复、
-        从而静默跳过写入。记录驻留内存并限定容量（见 MAX_REQUEST_LOG），进程重启后
-        不保留——重试通常紧跟在失败之后，够用。
+        从而静默跳过写入。记录驻留内存并限定容量（见 MAX_REQUEST_LOG）；跨重启的
+        重试由 `space.requests.log` 拦截（见 `MemorySpace.seen_request`）。
         """
-        cached = self._cached_add(request.user_id, request.request_id)
-        if cached is not None:
-            logger.info("Add 重复请求，跳过维护: request_id 已处理")
-            return cached
+        key = (request.user_id, request.request_id)
+        # 同一个 (user_id, request_id) 的并发重试（调用方超时后立刻重试）必须串行：
+        # 否则两个线程都能通过缓存检查、各跑一遍维护 → 重复建图、重复付费。
+        # 后来者等首个请求结束；首个成功则回放结果，失败则自己接手重跑。
+        while True:
+            with self._registry_lock:
+                cached = self._request_log.get(key)
+                if cached is not None:
+                    self._request_log.move_to_end(key)
+                    logger.info("Add 重复请求，跳过维护: request_id 已处理")
+                    return dict(cached)
+                gate = self._inflight.get(key)
+                if gate is None:
+                    gate = threading.Event()
+                    self._inflight[key] = gate
+                    owner = True
+                else:
+                    owner = False
+            if owner:
+                break
+            gate.wait()
 
-        with self._lease(request.user_id, create=True) as space:
-            stats = space.add(request.messages, request.request_id)
-            space.save()
-        self._remember_add(request.user_id, request.request_id, stats)
-        return stats
+        try:
+            with self._lease(request.user_id, create=True) as space:
+                stats = space.add(request.messages, request.request_id)
+                space.save()
+                # 落盘成功后才登记 request_id：中途失败保持"未处理"，重试会重新执行
+                # （at-least-once）；反过来会在崩溃时把没写成功的请求标成已完成。
+                space.remember_request(request.request_id)
+            self._remember_add(request.user_id, request.request_id, stats)
+            return stats
+        finally:
+            with self._registry_lock:
+                self._inflight.pop(key, None)
+            gate.set()
 
     def search(self, request: SearchRequest) -> List[Dict[str, Any]]:
         """同步检索：只在该 user_id 的空间内检索。

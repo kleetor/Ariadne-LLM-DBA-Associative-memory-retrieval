@@ -2023,5 +2023,33 @@ def test_embedding_splits_requests_without_shortening_texts(monkeypatch):
     assert batches[0][0] == "a" * 100, "文本被改动了（不应切正文/截断）"
 
 
+def test_embedding_splits_requests_by_input_count(monkeypatch):
+    """④b：短文本必须按**输入条数**拆请求（text-embedding-v4 单请求最多 10 条）。
+
+    字符预算只能挡住长文本；几百条短节点永远凑不满预算，若不按条数拆，
+    请求会带超限的 input 条数，被供应商以 400 拒绝。
+    """
+    from dba_pipeline.embedding.store import OpenAIEmbeddings
+
+    emb = OpenAIEmbeddings(api_key="k", api_base="https://x/v1", model="m")
+    emb._MAX_CHARS = 100
+    emb._MAX_CHARS_PER_CALL = 20000      # 字符预算刻意放宽，只让条数上限生效
+    emb._MAX_INPUTS_PER_CALL = 3
+
+    batches = []
+
+    def fake_call(texts):
+        batches.append(list(texts))
+        return [[0.0] for _ in texts]
+
+    monkeypatch.setattr(emb, "_call", fake_call)
+    texts = [f"t{i}" for i in range(7)]
+
+    out = emb.embed_documents(texts)
+
+    assert out == [[0.0]] * 7, "向量条数必须与入参一致（顺序对齐）"
+    assert batches == [texts[0:3], texts[3:6], texts[6:7]], f"批次划分不符：{batches}"
+
+
 
 

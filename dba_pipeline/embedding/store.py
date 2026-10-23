@@ -112,6 +112,19 @@ class OpenAIEmbeddings(Embeddings):
     # 20000 字符 ≈ 10 条满预算文本，远低于 300000 字/分的突发额度（5 万），留足余量。
     _MAX_CHARS_PER_CALL = 20000
 
+    # 单次 HTTP 请求的**输入条数**上限。
+    #
+    # 字符预算只能挡住长文本；短文本（抽取出的节点、查询句）即使几百条也凑不满
+    # 20000 字，请求会带上远超供应商上限的 input 条数。
+    # 实测：`text-embedding-v4`（compatible-mode）单请求最多 10 条，第 11 条即返回
+    # `400 batch size is invalid, it should not be larger than 10`；`BAAI/bge-m3`
+    # （SiliconFlow）可容纳更多。故默认取两者兼容的 **10**，bge 端点可用
+    # `EMBEDDING_MAX_BATCH` 放宽以减少请求次数。
+    #
+    # 只影响"这批分几次发"：每条文本仍整条送（与 `_MAX_CHARS_PER_CALL` 同理），
+    # 拆请求不改变任何一条文本的向量。
+    _MAX_INPUTS_PER_CALL = max(1, int(os.environ.get("EMBEDDING_MAX_BATCH", "10")))
+
 
     def _call(self, input_texts: List[str]) -> List[List[float]]:
         url = f"{self.api_base}/embeddings"
@@ -187,7 +200,8 @@ class OpenAIEmbeddings(Embeddings):
             # 与 `_call` 的截断口径一致：按截断后的长度计预算，避免"看着超了其实没超"
             n = len((text or "")[: self._MAX_CHARS])
             # 单条超预算也允许独占一批（n ≤ _MAX_CHARS < 预算，故必能装下）
-            if batch and size + n > self._MAX_CHARS_PER_CALL:
+            if batch and (size + n > self._MAX_CHARS_PER_CALL
+                          or len(batch) >= self._MAX_INPUTS_PER_CALL):
                 vectors.extend(self._call(batch))
                 batch, size = [], 0
             batch.append(text)

@@ -8,7 +8,7 @@ fixed contract".
 
 | Aspect | MCP version | ALM version |
 | --- | --- | --- |
-| Interface | MCP protocol (stdio / SSE), exposes 9 tools to the Agent | Synchronous HTTP: `POST /add`, `POST /search`, `GET /health` |
+| Interface | MCP protocol (stdio / SSE), exposes 11 tools to the Agent | Synchronous HTTP: `POST /add`, `POST /search`, `GET /health` |
 | Caller | Agent runtime (calls tools on demand during a conversation) | External program / service (calls directly under the contract) |
 | Memory organization | A single graph, switched via a shared pointer | **One isolated space per `user_id`** (directory isolation + LRU eviction) |
 | Write strategy | Everything is built into the graph | **Route by content shape + decide per space whether to build a graph** (see below) |

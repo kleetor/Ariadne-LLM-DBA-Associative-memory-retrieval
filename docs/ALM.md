@@ -7,7 +7,7 @@
 
 | 维度 | MCP 版 | ALM 版 |
 | --- | --- | --- |
-| 接入形态 | MCP 协议（stdio / SSE），暴露 9 个工具供 Agent 调用 | 同步 HTTP：`POST /add`、`POST /search`、`GET /health` |
+| 接入形态 | MCP 协议（stdio / SSE），暴露 11 个工具供 Agent 调用 | 同步 HTTP：`POST /add`、`POST /search`、`GET /health` |
 | 调用方 | Agent 运行时（对话中按需调用工具） | 外部程序 / 服务（按契约直接调用） |
 | 记忆组织 | 单一图谱，由共享指针切换 | **每个 `user_id` 一个独立空间**（目录隔离 + LRU 换出） |
 | 写侧策略 | 全部内容都建成图 | **按形态分流 + 按空间决定建不建图**（见下节） |

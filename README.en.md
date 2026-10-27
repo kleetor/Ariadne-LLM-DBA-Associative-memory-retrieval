@@ -93,7 +93,7 @@ The core thesis is that the value of memory lies not in storing more, but in bei
 | 🔧 Automated DBA maintenance | node extraction and edge linking as two separate steps, correction/deprecation + batched async scheduling to cut tokens |
 | 🎯 Purpose-driven retrieval | Jump Axis + Purpose Regression + Peak Finding, replacing fixed top-K |
 | 📖 StoryRank narrativization | causal chains → story fragments, avoiding context pollution for the chat LLM |
-| 🔌 MCP integration | 9 tools over stdio / SSE transports |
+| 🔌 MCP integration | 11 tools (including note-taking and knowledge lookup) over stdio / SSE |
 | 🖥️ 3D visualization | force-directed graph, layer filtering, focus mode, online CRUD |
 | 📄 Offline export | one-command, self-contained HTML, no server required |
 
@@ -107,7 +107,7 @@ The core thesis is that the value of memory lies not in storing more, but in bei
 Conversation ──► DBA Maintenance ──► MemoryGraph + VectorStore ──► PAR Retrieval ──► StoryRank ──► Reply
     │                │                        │
     │      MaintenanceScheduler               ├──► API Server (HTTP REST + 3D panel)
-    │      (batched async)                    ├──► MCP Server (9 tools, stdio / SSE)
+    │      (batched async)                    ├──► MCP Server (11 tools, stdio / SSE)
     │                                         └──► Offline HTML
     └──► Human intervention (CRUD panel + MCP dba_intervene)
 ```
@@ -118,6 +118,7 @@ Conversation ──► DBA Maintenance ──► MemoryGraph + VectorStore ─�
 | **Storage** | graph + vector index | `graph/memory_graph.py`, `embedding/store.py` |
 | **Retrieval** | directed expansion, purpose filtering, peak termination | `core/jump_axis.py`, `core/purpose.py`, `core/peak_find.py` |
 | **Story** | causal chains → story fragments | `retrieval/retriever.py` (StoryRank) |
+| **Knowledge** | keyword-first note lookup | `kwindex.py` (inverted index, no embedding dependency) |
 | **Access** | API / MCP / visualization | `viz/api_server.py`, `mcp_server.py` |
 
 ## Installation
@@ -297,7 +298,9 @@ The entry point is `retrieve_with_story` (a library method); its output includes
 
 ## MCP Server
 
-The MCP server exposes the memory graph as 9 tools over stdio or SSE.
+The MCP server exposes the memory graph as 11 tools over stdio or SSE.
+
+Two of them form the knowledge layer: `dba_add_note` writes project notes and `dba_query_knowledge` retrieves them by keyword. Notes are ordinary graph nodes (`metadata.channel="note"`), not a separate store, so they can be recalled semantically by the memory layer and screened literally by the knowledge layer.
 
 - Tool reference, environment variables, graph switching and agent setup: [docs/MCP.en.md](docs/MCP.en.md)
 - One-command start: `python start_all.py`

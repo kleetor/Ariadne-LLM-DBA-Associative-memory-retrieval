@@ -95,7 +95,7 @@ Ariadne 将 LLM 对话中的事实抽取、纠错、去重、废弃等数据库�
 | 🔧 DBA 自动维护      | 节点抽取与边连接两步分离，纠错/废弃 + 批量异步调度降 token |
 | 🎯 目的驱动检索        | 跳转轴 + 目的回归 + 寻峰终止，替代固定 top-K    |
 | 📖 StoryRank 故事化 | 因果链路 → 故事片段，避免污染聊天上下文           |
-| 🔌 MCP 集成        | 9 个工具，支持 stdio / SSE 两种传输       |
+| 🔌 MCP 集成        | 11 个工具（含笔记与知识检索），支持 stdio / SSE 两种传输 |
 | 🖥️ 3D 可视化       | 力导向图、图层过滤、聚焦模式、在线 CRUD          |
 | 🗂️ 图谱库          | 多图谱管理与切换，可一键载入 MCP（各自跨重启记住）  |
 | 📄 离线导出          | 一键生成自包含 HTML，无需服务器              |
@@ -110,7 +110,7 @@ Ariadne 将 LLM 对话中的事实抽取、纠错、去重、废弃等数据库�
 对话日志 ──► DBA 维护 ──► MemoryGraph + VectorStore ──► PAR 检索 ──► StoryRank ──► 回复
    │            │                    │
    │    MaintenanceScheduler        ├──► API Server（HTTP REST + 3D 面板）
-   │    （批量异步调度）              ├──► MCP Server（9 tools，stdio / SSE）
+   │    （批量异步调度）              ├──► MCP Server（11 tools，stdio / SSE）
    │                                 └──► 离线 HTML
    └──► 人工干预（CRUD 面板 + MCP dba_intervene）
 ```
@@ -121,6 +121,7 @@ Ariadne 将 LLM 对话中的事实抽取、纠错、去重、废弃等数据库�
 | **存储层** | 图谱 + 向量索引       | `graph/memory_graph.py`、`embedding/store.py`              |
 | **检索层** | 有向扩展、目的过滤、寻峰终止  | `core/jump_axis.py`、`core/purpose.py`、`core/peak_find.py` |
 | **故事层** | 因果链路 → 故事片段     | `retrieval/retriever.py`（StoryRank）                       |
+| **知识层** | 笔记关键词精筛          | `kwindex.py`（倒排表，无向量依赖）                              |
 | **接入层** | API / MCP / 可视化 | `viz/api_server.py`、`mcp_server.py`                       |
 
 ## 安装
@@ -320,7 +321,9 @@ PAR 检索产出的是由「节点 + 关系」构成的**因果链路**，而非
 
 ## MCP 服务
 
-MCP Server 将记忆图谱暴露为 9 个工具，支持 stdio 与 SSE 两种传输模式。
+MCP Server 将记忆图谱暴露为 11 个工具，支持 stdio 与 SSE 两种传输模式。
+
+其中 `dba_add_note` 写入项目笔记、`dba_query_knowledge` 用关键词做精确检索。笔记是普通节点（`metadata.channel="note"`），不是独立存储，因此既能被知识层按字面精筛，也能被记忆层按语义召回。
 
 - 工具清单、环境变量、图谱切换与 Agent 接入：[docs/MCP.md](docs/MCP.md)
 - 一键启动：`python start_all.py`

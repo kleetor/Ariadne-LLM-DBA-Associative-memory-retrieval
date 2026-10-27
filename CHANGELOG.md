@@ -7,6 +7,9 @@
 
 ### Added
 
+- MCP 知识层：`dba_add_note` 写入项目笔记、`dba_query_knowledge` 按关键词精筛；笔记作为普通节点（`metadata.channel="note"`）参与向量召回与倒排索引，不引入第二套存储。
+- `kwindex.py`：无第三方依赖的关键词倒排索引（ASCII 词元 + 中文二元组，`title/tags/text` 权重 3/2/1）。
+- `ARIADNE_MCP_RERANK=1`：知识层可独立开启 rerank，不读取也不回落 `ALM_RERANK`。
 - 文档分层：`docs/ALM.md`、`docs/MCP.md`、`docs/architecture.md`、`docs/README.md` 与 `docs/theory/`。
 - 快速开始示例：`examples/quickstart_alm.py`、`examples/quickstart_mcp.py`。
 - 工程化配置：`.gitattributes`、`.editorconfig`、`.pre-commit-config.yaml`、coverage 配置。

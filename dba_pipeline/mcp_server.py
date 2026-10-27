@@ -39,6 +39,7 @@ from typing import Optional
 
 from dba_pipeline.graph.memory_graph import MemoryGraph
 from dba_pipeline.graph.review import find_duplicate_candidates
+from dba_pipeline.kwindex import KeywordIndex
 from dba_pipeline.loader import load_graph, load_into
 from dba_pipeline.core.jump_axis import NodeType, RelationType, get_jump_weight
 from dba_pipeline.core.path_tracker import PathTracker
@@ -81,19 +82,30 @@ REL_TYPES = {t.value: t for t in RelationType}
 # 单次对话输入的最大字符数（防止异常输入打爆 LLM token / 缓冲内存）
 MAX_CONVERSATION_LENGTH = 20000
 
+# 笔记：单条正文上限、返回单条截断长度、默认返回条数
+MAX_NOTE_LENGTH = 4000
+NOTE_TEXT_LIMIT = 1200
+NOTE_TOP_K = 8
+NOTE_MAX_TOP_K = 50
+NOTE_FIDELITIES = {"verbatim", "transcript", "summary"}
+
 
 class DBAServer:
     """DBA 核心逻辑，与 MCP 协议层解耦"""
 
     def __init__(self, graph: MemoryGraph, yaml_path: str = None,
                  dba=None, scheduler=None, retriever=None, vector_store=None,
-                 lock=None, params_path: str = None):
+                 lock=None, params_path: str = None, reranker=None):
         self.graph = graph
         self.yaml_path = yaml_path
         self.dba = dba          # 可选: MemoryDBA 实例
         self.scheduler = scheduler  # 可选: MaintenanceScheduler 实例
         self.retriever = retriever  # 可选: PurposeDrivenRetriever 实例（完整 P 链路）
         self.vector_store = vector_store  # 可选: VectorStore（人工干预时同步向量）
+        self.reranker = reranker  # 可选: 知识层重排器；None 表示不重排
+        # 知识层倒排索引：纯内存投影，图变了就置脏、查询前重建。
+        self._kw_index = KeywordIndex()
+        self._kw_dirty = True
         # 可重入锁，与 GraphBuilder 共享，串行化 graph 修改与 YAML 写回
         self._lock = lock if lock is not None else threading.RLock()
         # 运行期「图谱切换」与「检索」互斥锁：切换会 clear_vectors + 全量重建，
@@ -155,6 +167,7 @@ class DBAServer:
             load_into(self.graph, self.yaml_path)
             self._next_node_id = self._compute_next_id()
             self._last_yaml_mtime = mtime
+            self._kw_dirty = True
         logging.getLogger("mcp").info("检测到外部改动，已重载 YAML: %s", self.yaml_path)
         return True
 
@@ -273,6 +286,7 @@ class DBAServer:
                 self._last_yaml_mtime = self._yaml_mtime()
                 self._next_node_id = self._compute_next_id()
                 self._vector_mtime = 0
+                self._kw_dirty = True
 
             vector_stats = {"rebuilt": False}
             if self.vector_store is not None:
@@ -377,6 +391,7 @@ class DBAServer:
                 with os.fdopen(fd, "w", encoding="utf-8") as f:
                     yaml.dump(data, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
                 os.replace(tmp_path, self.yaml_path)
+                self._kw_dirty = True
             except Exception:
                 try:
                     os.unlink(tmp_path)
@@ -530,6 +545,182 @@ class DBAServer:
             except Exception as e:
                 logging.error(f"StoryRank 检索失败: {e}", exc_info=True)
                 return {"error": str(e), "stories": [], "method": "story_rank_failed"}
+
+    # ---- 笔记 / 知识层 ----
+
+    def _ensure_kw_index_locked(self) -> None:
+        """按需重建倒排表。调用方须持有 `self._lock`。"""
+        if not self._kw_dirty:
+            return
+        nodes = []
+        for nid, nd in self.graph.graph.nodes(data=True):
+            if nd.get("deprecated") or nd.get("forgotten"):
+                continue
+            content = nd.get("content") or ""
+            if not content.strip():
+                continue
+            nodes.append({
+                "id": nid,
+                "content": content,
+                "metadata": nd.get("metadata") or {},
+                "timestamp": nd.get("timestamp"),
+            })
+        self._kw_index.build(nodes)
+        self._kw_dirty = False
+
+    def add_note(
+        self,
+        title: str,
+        text: str,
+        observed_at: Optional[int] = None,
+        source_hint: Optional[str] = None,
+        fidelity: Optional[str] = None,
+        tags: Optional[list] = None,
+    ) -> dict:
+        """把一条项目笔记写成普通节点（channel=note）。
+
+        笔记进向量索引（可被记忆层召回），同时进关键词倒排表；
+        不调用 DBA、不进调度器、不建边。
+        """
+        title = (title or "").strip()
+        text = (text or "").strip()
+        if not title:
+            return {"error": "title 不能为空"}
+        if not text:
+            return {"error": "text 不能为空"}
+        if len(text) > MAX_NOTE_LENGTH:
+            return {"error": f"text 超过 {MAX_NOTE_LENGTH} 字，请拆成多条笔记"}
+        if observed_at is not None and (
+            isinstance(observed_at, bool) or not isinstance(observed_at, int)
+        ):
+            return {"error": "observed_at 必须为 Unix 毫秒整数，或省略"}
+        if fidelity is not None:
+            fidelity = str(fidelity).strip().lower() or None
+            if fidelity is not None and fidelity not in NOTE_FIDELITIES:
+                return {"error": f"fidelity 只能是 {sorted(NOTE_FIDELITIES)} 或省略"}
+        if isinstance(tags, str):
+            tags = [tags]
+        if tags is None:
+            tags = []
+        if not isinstance(tags, list) or any(not isinstance(t, str) for t in tags):
+            return {"error": "tags 必须是字符串数组"}
+        tags = [t.strip() for t in tags if t and t.strip()]
+        source_hint = (source_hint or "").strip() or None
+
+        now = int(time.time() * 1000)
+        try:
+            with self.write_guard():
+                with self._lock:
+                    # 完全相同的笔记直接复用，避免重复落盘与重复召回
+                    norm_tags = sorted(tags)
+                    for nid, nd in self.graph.graph.nodes(data=True):
+                        meta = nd.get("metadata") or {}
+                        if meta.get("channel") != "note":
+                            continue
+                        if (
+                            (meta.get("title") or "") == title
+                            and (nd.get("content") or "") == text
+                            and sorted(meta.get("tags") or []) == norm_tags
+                        ):
+                            return {
+                                "duplicate": True,
+                                "note_id": nid,
+                                "title": title,
+                                "message": "同标题、同正文、同 tags 的笔记已存在，未重复写入",
+                            }
+
+                    self._next_node_id = self._compute_next_id()
+                    nid = f"n{self._next_node_id}"
+                    self._next_node_id += 1
+
+                    meta = {
+                        "channel": "note",
+                        "title": title,
+                        "created_at": now,
+                        "observed_at": observed_at if observed_at is not None else now,
+                        "tags": tags,
+                    }
+                    if observed_at is None:
+                        meta["time_inferred"] = True
+                    if source_hint:
+                        meta["source_hint"] = source_hint
+                    if fidelity:
+                        meta["fidelity"] = fidelity
+
+                    self.graph.add_memory(nid, text, NodeType.THING, metadata=meta)
+                    # 用 THING：不新增节点类型（会牵动跳转轴权重与前端类型表）；
+                    # THING 已在重复巡检的默认排除类型里，笔记不会被当成“疑似重复事实”。
+                    self.graph.graph.nodes[nid]["timestamp"] = now
+                    if self.vector_store is not None:
+                        try:
+                            self.vector_store.add_memories([nid], [text])
+                        except Exception:
+                            self.graph.graph.remove_node(nid)
+                            raise
+                    self._save()
+        except Exception as e:
+            return {"error": str(e), "title": title}
+
+        return {
+            "note_id": nid,
+            "title": title,
+            "project_tags": tags,
+            "observed_at": meta["observed_at"],
+            "time_inferred": bool(meta.get("time_inferred")),
+            "created_at": now,
+        }
+
+    def query_knowledge(self, query: str, top_k: int = NOTE_TOP_K) -> dict:
+        """知识层检索：关键词匹配（可选 rerank），返回不含 edge 的节点列表。"""
+        query = (query or "").strip()
+        if not query:
+            return {"error": "query 不能为空", "notes": []}
+        try:
+            top_k = max(1, min(int(top_k), NOTE_MAX_TOP_K))
+        except (TypeError, ValueError):
+            top_k = NOTE_TOP_K
+
+        # 外部（面板）可能刚改过图；先重载，再建索引。
+        self._refresh_graph_only()
+        with self._lock:
+            self._ensure_kw_index_locked()
+            candidate_k = min(NOTE_MAX_TOP_K, max(top_k * 3, top_k))
+            hits = self._kw_index.search(query, top_k=candidate_k)
+
+        reranked = False
+        if self.reranker is not None and hits:
+            try:
+                order = self.reranker.rerank(query, [h["content"] for h in hits])
+            except Exception as e:
+                logging.getLogger("mcp").warning("知识层 rerank 失败（沿用关键词序）: %s", e)
+                order = None
+            if order:
+                hits = [hits[i] for i, _ in order if 0 <= i < len(hits)]
+                reranked = True
+
+        notes = []
+        for hit in hits[:top_k]:
+            meta = hit.get("metadata") or {}
+            content = hit.get("content") or ""
+            item = {
+                "node_id": hit["node_id"],
+                "text": content[:NOTE_TEXT_LIMIT],
+                "score": hit["score"],
+                "truncated": len(content) > NOTE_TEXT_LIMIT,
+            }
+            for key in ("title", "observed_at", "source_hint", "fidelity", "channel"):
+                if meta.get(key) is not None:
+                    item[key] = meta[key]
+            if meta.get("time_inferred"):
+                item["time_inferred"] = True
+            notes.append(item)
+
+        return {
+            "notes": notes,
+            "returned": len(notes),
+            "query": query,
+            "method": "keyword+rerank" if reranked else "keyword",
+        }
 
     def run_chain_trace(self, query: str, on_stage=None, rerank_k: int = 20) -> dict:
         """面板「调用测试」用：走同一条真实链路，但把每一段轨迹都带回来。
@@ -769,6 +960,9 @@ class DBAServer:
                 for nid, nd in self.graph.graph.nodes(data=True):
                     if nd.get("deprecated") or nd.get("forgotten"):
                         continue
+                    # 笔记是无边节点，参与“重复对”会给巡检制造噪声
+                    if (nd.get("metadata") or {}).get("channel") == "note":
+                        continue
                     active.append({
                         "id": nid,
                         "content": nd.get("content") or "",
@@ -797,6 +991,7 @@ class DBAServer:
                         {"id": nid, "content": (nd.get("content") or "")}
                         for nid, nd in self.graph.graph.nodes(data=True)
                         if not nd.get("deprecated") and not nd.get("forgotten")
+                        and (nd.get("metadata") or {}).get("channel") != "note"
                         and self.graph.graph.in_degree(nid) + self.graph.graph.out_degree(nid) == 0
                     ]
 
@@ -1153,12 +1348,18 @@ class DBAServer:
                 key = nt.value if hasattr(nt, "value") else str(nt)
                 node_types[key] = node_types.get(key, 0) + 1
 
+            notes = sum(
+                1 for _, d in nodes
+                if (d.get("metadata") or {}).get("channel") == "note"
+            )
+
             return {
                 "total_nodes": len(nodes),
                 "total_edges": total_edges,
                 "deprecated": deprecated,
                 "forgotten": forgotten,
                 "active": len(nodes) - deprecated - forgotten,
+                "notes": notes,
                 "node_types": node_types,
             }
 
@@ -1212,6 +1413,60 @@ TOOL_SCHEMAS = [
                 "rerank_k": {
                     "type": "integer",
                     "description": "最多返回的故事片段数（默认 20，0 表示不截断）",
+                },
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "dba_add_note",
+        "description": (
+            "把一条项目事实、结论、约定或决策写成可检索笔记。\n"
+            "只记你读到的结论与关键片段，不要粘贴整篇文档；一条笔记只讲一件事，"
+            f"超过 {MAX_NOTE_LENGTH} 字请拆成多条。\n"
+            "项目归属用 tags 表达（如 project:alpha），不要编造未看到的内容。"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "笔记标题（必填，用于归档与检索）"},
+                "text": {"type": "string", "description": f"笔记正文，≤ {MAX_NOTE_LENGTH} 字"},
+                "observed_at": {
+                    "type": "integer",
+                    "description": "事件发生时间（Unix 毫秒）；省略则用写入时间并标记 time_inferred",
+                },
+                "source_hint": {
+                    "type": "string",
+                    "description": "来源提示（URL/文件名/章节）；系统不会抓取，只用于人工回溯",
+                },
+                "fidelity": {
+                    "type": "string",
+                    "enum": ["verbatim", "transcript", "summary"],
+                    "description": "保真度，由你自陈；系统不校验",
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "标签；项目归属写成 project:<name>",
+                },
+            },
+            "required": ["title", "text"],
+        },
+    },
+    {
+        "name": "dba_query_knowledge",
+        "description": (
+            "用关键词精确检索项目事实、约定、接口、错误码、配置项。\n"
+            "与 dba_query_memory 分开：那个负责用户经历与联想，这个负责字面精筛。"
+            "返回只含节点正文与出处，不含关系边；是否采纳由你判断。"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "查询词，尽量用接口名、错误码、项目名等确切词"},
+                "top_k": {
+                    "type": "integer",
+                    "description": f"返回条数（默认 {NOTE_TOP_K}，上限 {NOTE_MAX_TOP_K}）",
                 },
             },
             "required": ["query"],
@@ -1410,7 +1665,10 @@ def _build_tool_list() -> list:
 
 # 请求携带原始对话/查询正文的工具：这些内容不应落到共享操作日志（隐私），
 # 与 source_store「原文落盘需 opt-in」的姿态保持一致
-_OPLOG_REDACT_TOOLS = {"dba_add_conversation", "dba_query_memory", "dba_temporal_lookup"}
+_OPLOG_REDACT_TOOLS = {
+    "dba_add_conversation", "dba_query_memory", "dba_temporal_lookup",
+    "dba_add_note", "dba_query_knowledge",
+}
 
 
 def _oplog_request(name: str, arguments: dict) -> dict:
@@ -1462,6 +1720,10 @@ def create_mcp_server(dba: DBAServer) -> "Server":
                 result = await run_in_threadpool(dba.add_conversation, **arguments)
             elif name == "dba_query_memory":
                 result = await run_in_threadpool(dba.query_memory, **arguments)
+            elif name == "dba_add_note":
+                result = await run_in_threadpool(dba.add_note, **arguments)
+            elif name == "dba_query_knowledge":
+                result = await run_in_threadpool(dba.query_knowledge, **arguments)
             elif name == "dba_temporal_lookup":
                 result = await run_in_threadpool(dba.temporal_lookup, **arguments)
             elif name == "dba_inspect_graph":
@@ -1641,7 +1903,8 @@ def _print_status(graph, dba, retriever, vector_ready, args) -> None:
     print(f"  向量索引   : {'已就绪' if vector_ready else '未启用'}", file=sys.stderr)
     print(f"  传输模式   : {transport}", file=sys.stderr)
     print(f"  图谱规模   : {graph.node_count} 节点 / {graph.edge_count} 边", file=sys.stderr)
-    print("  工具        : dba_add_conversation / dba_query_memory / dba_temporal_lookup / "
+    print("  工具        : dba_add_conversation / dba_query_memory / dba_add_note / "
+          "dba_query_knowledge / dba_temporal_lookup / "
           "dba_inspect_graph / dba_intervene / dba_review_graph / dba_review_sources / "
           "dba_checkpoint / dba_get_stats", file=sys.stderr)
     print("=" * 60, file=sys.stderr)
@@ -1846,11 +2109,26 @@ def main():
             print("错误: DBA 管线是核心功能，初始化失败将退出（避免带病启动）", file=sys.stderr)
             sys.exit(1)
 
+    # 知识层 rerank：独立开关，不读取也不回落 ALM_RERANK
+    reranker = None
+    if os.environ.get("ARIADNE_MCP_RERANK", "0").strip().lower() not in (
+        "", "0", "false", "no", "off",
+    ):
+        try:
+            from dba_pipeline.rerank import Reranker
+            reranker = Reranker.from_env()
+            if reranker is None:
+                print("[DBA MCP] ARIADNE_MCP_RERANK=1 但 rerank 端点/密钥不完整，"
+                      "知识层不重排", file=sys.stderr)
+        except Exception as e:
+            print(f"[DBA MCP] rerank 初始化失败（知识层不重排）: {e}", file=sys.stderr)
+
     params_path = args.params or params_mod.params_path_for(args.yaml)
     dba_server = DBAServer(graph, yaml_path=args.yaml,
                            dba=dba_instance, scheduler=scheduler_instance,
                            retriever=retriever_instance, vector_store=vector_store,
-                           lock=graph_lock, params_path=params_path)
+                           lock=graph_lock, params_path=params_path,
+                           reranker=reranker)
     print(f"[DBA MCP] 运行时参数: {params_path}"
           f"{'' if os.path.exists(params_path) else '（尚未创建，用默认值）'}", file=sys.stderr)
 

@@ -6,7 +6,7 @@
 
 - [README](../README.md)：项目定位、安装、快速开始与入口
 - [ALM 同步 HTTP 服务](ALM.md)：Add / Search / Health 契约、两层架构与部署
-- [MCP 服务详解](MCP.md)：9 个工具、传输模式、环境变量与 Agent 接入
+- [MCP 服务详解](MCP.md)：11 个工具、传输模式、环境变量与 Agent 接入
 - [架构与项目结构](architecture.md)：目录树与模块职责
 
 ## 理论与实验

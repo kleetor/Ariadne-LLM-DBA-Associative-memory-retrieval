@@ -294,6 +294,9 @@ class MaintenanceScheduler:
                     (ts for ts, _ in reversed(conversations) if ts), None
                 )
                 self.dba.store_raw(skipped_merged, timestamp=skipped_ts)
+                # 兜底落库只改内存，必须显式通知调用方落盘；否则重启即丢。
+                if self.on_maintenance_done:
+                    self.on_maintenance_done({"auto_skipped": True})
                 return
 
             merged = "\n\n".join(_format_round(ts, text) for ts, text in conversations)

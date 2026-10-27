@@ -42,6 +42,7 @@
     │   ├── renderer.py             # 离线自包含 HTML 生成
     │   ├── exporter.py
     │   └── static/                 # WebUI 前端（index.html / css / js）
+    ├── kwindex.py                  # 关键词倒排索引（笔记知识层）
     ├── mcp_server.py               # MCP Server 入口
     ├── graphlib.py                 # 图谱库与共享指针（面板与 MCP 共用）
     ├── webauth.py                  # 统一鉴权（会话 Cookie / Basic / Bearer）

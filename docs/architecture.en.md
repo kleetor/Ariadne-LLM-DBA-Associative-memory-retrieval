@@ -42,6 +42,7 @@
     │   ├── renderer.py             # offline self-contained HTML
     │   ├── exporter.py
     │   └── static/                 # WebUI frontend (index.html / css / js)
+    ├── kwindex.py                  # keyword inverted index (note knowledge layer)
     ├── mcp_server.py               # MCP server entry point
     ├── graphlib.py                 # graph library + shared pointer (panel & MCP)
     ├── webauth.py                  # unified auth (session cookie / Basic / Bearer)

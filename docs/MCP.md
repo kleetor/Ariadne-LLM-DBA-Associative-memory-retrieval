@@ -90,19 +90,35 @@ ariadne-mcp --yaml data.yaml --llm-model gpt-4o-mini --llm-api-key sk-xxx \
     --embedding-model BAAI/bge-large-zh-v1.5 --embedding-local
 ```
 
-### 9 个 Tool
+### 11 个 Tool
 
 | Tool                   | 说明                             |
 | ---------------------- | ------------------------------ |
 | `dba_add_conversation` | 追加对话，优先进入调度器批量累积，达阈值后异步维护 |
 | `dba_query_memory`     | 目的驱动联想检索（PAR 链路：跳转轴 + 目的回归 + 寻峰） |
+| `dba_add_note`         | 写入一条项目笔记（普通节点，可被记忆层召回） |
+| `dba_query_knowledge`  | 关键词精确检索项目事实/约定/接口/错误码，返回不含关系边 |
 | `dba_temporal_lookup`  | 独立单跳时序查询（仅"时间→事件"反向），用于定位某时间点发生的事 |
 | `dba_inspect_graph`    | 展开节点 1-hop 邻居                  |
 | `dba_intervene`        | 人工 CRUD 节点和边                   |
 | `dba_checkpoint`       | 保存完整检查点                        |
-| `dba_get_stats`        | 图谱统计信息                         |
+| `dba_get_stats`        | 图谱统计信息（含 notes 计数）           |
 | `dba_review_graph`     | 图谱体检（只读）：报出疑似重复节点对与孤立节点，不改图 |
 | `dba_review_sources`   | 溯源巡检（只读）：用原始对话核对抽取质量，需 `ARIADNE_SOURCE_STORE=1` |
+
+### 笔记与知识检索（`dba_add_note` / `dba_query_knowledge`）
+
+- 笔记就是普通节点：`metadata.channel="note"`，进向量索引，可被 PAR 当种子；它不是独立存储。
+- `dba_add_note(title, text, observed_at?, source_hint?, fidelity?, tags?)`
+  - `title` 必填；`text` ≤ 4000 字，超限拒绝并要求拆分；
+  - `tags` 用来表达项目归属（如 `project:alpha`），系统不做项目过滤；
+  - `source_hint` 只作提示，服务端不会抓取；
+  - 完全相同的 `title + text + tags` 返回已有节点（`duplicate=true`）。
+- `dba_query_knowledge(query, top_k?)`
+  - 关键词匹配：ASCII 词元 + 中文二元组；`title/tags/text` 权重 3/2/1；
+  - 返回 `node_id / text / score / observed_at / source_hint / fidelity`，**不含 edge**；
+  - 不设阈值、不拒答；无命中返回空列表。
+- `ARIADNE_MCP_RERANK=1` 可开启知识层重排，独立于 `ALM_RERANK`；失败静默回退关键词序。
 
 ### 检索说明（`dba_query_memory`）
 

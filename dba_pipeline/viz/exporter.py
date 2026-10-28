@@ -61,6 +61,11 @@ def precompute_degrees(graph: MemoryGraph) -> dict:
     }
 
 
+# 需要从 graph 节点 metadata 里透传到前端的字段
+_METADATA_KEYS = ("channel", "title", "tags", "observed_at", "created_at",
+                  "fidelity", "source_hint", "time_inferred")
+
+
 def _export_nodes(graph: MemoryGraph, degrees: dict = None) -> list:
     if degrees is None:
         degrees = precompute_degrees(graph)
@@ -68,6 +73,11 @@ def _export_nodes(graph: MemoryGraph, degrees: dict = None) -> list:
     for nid, data in graph.graph.nodes(data=True):
         raw_type = data["node_type"].value if hasattr(data["node_type"], "value") else str(data["node_type"])
         in_deg, out_deg = degrees.get(nid, (0, 0))
+
+        # 只挑约定字段透传，避免前端拿到内部 dump 的杂项 key
+        raw_meta = data.get("metadata") or {}
+        meta = {k: raw_meta[k] for k in _METADATA_KEYS if k in raw_meta}
+
         nodes.append({
             "id": nid,
             "label": (data.get("content") or "")[:50],
@@ -78,6 +88,7 @@ def _export_nodes(graph: MemoryGraph, degrees: dict = None) -> list:
             "in_degree": in_deg,
             "out_degree": out_deg,
             "radius": _RADIUS_MAP.get(raw_type.upper(), 2.5),
+            "metadata": meta,
         })
     return nodes
 

@@ -68,6 +68,7 @@ from dba_pipeline.viz.chain_runner import ChainRunner
 from dba_pipeline import envfile, filelock, graphlib, oplog
 from dba_pipeline import params as params_mod
 from dba_pipeline import webauth
+from dba_pipeline.kwindex import KeywordIndex
 
 
 NODE_TYPES = {t.value.upper(): t for t in NodeType}
@@ -81,6 +82,43 @@ _BODY_TOO_LARGE_MSG = f"请求体过大（上限 {_MAX_JSON_BODY // (1024 * 1024
 
 # /api/config 中需要脱敏的环境变量关键字
 _SECRET_HINTS = ("KEY", "PASS", "SECRET", "TOKEN", "CREDENTIAL")
+
+# 知识检索返回正文的截断长度（与 MCP 侧 NOTE_TEXT_LIMIT 同口径）
+_KNOWLEDGE_TEXT_LIMIT = 1200
+
+
+class KnowledgeIndexCache:
+    """知识层倒排索引缓存。
+
+    重建是纯 CPU 的 O(节点数 × 文本长度)：实测 5k 节点约 380ms、10k 约 860ms，
+    而单次查询只要 25~46ms。因此**不能**每次请求都重建。
+
+    失效判据用「图谱路径 + YAML mtime + 节点数」三元组：CRUD、MCP 外部写入、
+    图谱切换都会改变它；签名不变就直接复用已建好的索引。
+    """
+
+    def __init__(self):
+        self._sig = None
+        self._index = None
+        self._lock = threading.Lock()
+
+    def get(self, sig, loader):
+        """签名命中返回缓存索引，否则用 loader() 取节点快照重建。"""
+        index = self._index
+        if index is not None and self._sig == sig:
+            return index
+        index = KeywordIndex()
+        index.build(loader())
+        with self._lock:
+            self._sig, self._index = sig, index
+        return index
+
+    def invalidate(self):
+        with self._lock:
+            self._sig, self._index = None, None
+
+
+_kw_cache = KnowledgeIndexCache()
 
 
 # ---------------------------------------------------------------------------
@@ -868,6 +906,48 @@ def create_app(api: MemoryGraphAPI, config: VizConfig,
     async def graph_data(request: Request) -> JSONResponse:
         return JSONResponse(await asyncio.to_thread(api.get_graph_data))
 
+    async def knowledge_search(request: Request) -> JSONResponse:
+        """关键词检索：扫全图节点（笔记 + 普通节点），按命中打分排序。"""
+        q = (request.query_params.get("q") or "").strip()
+        if not q:
+            return JSONResponse({"query": "", "total": 0, "items": []})
+
+        try:
+            top_k = max(1, min(int(request.query_params.get("top_k", 8)), 50))
+        except (TypeError, ValueError):
+            top_k = 8
+
+        def _search():
+            api._reload_if_changed()
+            # 签名在图谱重载之后取，保证与快照一致（外部写入/切换都会变）
+            with api._lock:
+                sig = (api.yaml_path, api._yaml_mtime(), api.graph.graph.number_of_nodes())
+
+            def _snapshot():
+                # 遍历期间持锁：CRUD 走线程池真并发，锁外遍历会被改图
+                with api._lock:
+                    return [{"id": nid, **d} for nid, d in api.graph.graph.nodes(data=True)]
+
+            idx = _kw_cache.get(sig, _snapshot)
+            raw_results = idx.search(q, top_k=top_k)
+
+            items = []
+            for r in raw_results:
+                content = r.get("content") or ""
+                truncated = len(content) > _KNOWLEDGE_TEXT_LIMIT
+                items.append({
+                    "node_id": r["node_id"],
+                    "label": (r.get("content") or "")[:80],
+                    "content": content[:_KNOWLEDGE_TEXT_LIMIT] if truncated else content,
+                    "metadata": r.get("metadata") or {},
+                    "score": round(r.get("score", 0), 3),
+                    "observed_at": r.get("observed_at"),
+                    "truncated": truncated,
+                })
+            return {"query": q, "total": len(items), "items": items}
+
+        return JSONResponse(await asyncio.to_thread(_search))
+
     async def create_node(request: Request) -> JSONResponse:
         body = await _json_body(request)
         result = await asyncio.to_thread(api.create_node, body.get("node_type", ""), body.get("content", ""))
@@ -1245,6 +1325,7 @@ def create_app(api: MemoryGraphAPI, config: VizConfig,
         Route("/api/logout", logout, methods=["POST"]),
         Route("/api/password", password_change, methods=["POST"]),
         Route("/api/graph", graph_data, methods=["GET"]),
+        Route("/api/knowledge/search", knowledge_search, methods=["GET"]),
         Route("/api/graphs", graphs_view, methods=["GET"]),
         Route("/api/graphs", graphs_delete, methods=["DELETE"]),
         Route("/api/graphs/switch", graphs_switch, methods=["POST"]),

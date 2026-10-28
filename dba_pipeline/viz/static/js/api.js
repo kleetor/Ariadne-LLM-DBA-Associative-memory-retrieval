@@ -111,6 +111,12 @@
     // ---- 图谱库（面板内切换 / 管理；载入 MCP 是独立动作）----
     getGraphs: function () { return request('GET', '/api/graphs'); },
     switchGraph: function (name) { return request('POST', '/api/graphs/switch', { name: name }); },
+
+    // ---- 知识搜索（关键词倒排，非向量）----
+    knowledgeSearch: function (q, top_k) {
+      if (!isLive) return Promise.resolve({ query: q, total: 0, items: [] });
+      return request('GET', '/api/knowledge/search' + query({ q: q, top_k: top_k || 8 }));
+    },
     createGraph: function (name, yaml) {
       return request('POST', '/api/graphs/create', { name: name, yaml: yaml });
     },

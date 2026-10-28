@@ -18,6 +18,7 @@
       nodeTypes: {}, edgeTypes: {},
       showDeprecated: true, showForgotten: false,
       hideOrphans: false, highDegOnly: false,
+      showNotesOnly: false, hideNotes: false,
     },
     medianDegree: 1,
     settings: C.DEFAULT_SETTINGS,
@@ -176,6 +177,9 @@
   function visibleSets() {
     const f = state.filter;
     const nodes = state.nodes.filter(function (n) {
+      const isNote = n.metadata && n.metadata.channel === 'note';
+      if (f.showNotesOnly && !isNote) return false;
+      if (f.hideNotes && isNote) return false;
       if (f.nodeTypes[n.node_type] === false) return false;
       if (!f.showDeprecated && n.deprecated) return false;
       if (!f.showForgotten && n.forgotten) return false;
@@ -205,12 +209,16 @@
     if (hooks.onStats) hooks.onStats(statsOf(sets));
   }
 
+  function isNoteNode(n) { return !!(n.metadata && n.metadata.channel === 'note'); }
+
   function statsOf(sets) {
     return {
       visibleNodes: sets.nodes.length,
       visibleEdges: sets.links.length,
       totalNodes: state.nodes.length,
       totalEdges: state.links.length,
+      notes: state.nodes.filter(isNoteNode).length,
+      visibleNotes: sets.nodes.filter(isNoteNode).length,
       deprecated: state.nodes.filter(function (n) { return n.deprecated; }).length,
       forgotten: state.nodes.filter(function (n) { return n.forgotten; }).length,
       orphans: state.nodes.filter(function (n) {
@@ -266,10 +274,18 @@
     }
   }
 
+  // 节点主色：笔记节点走独立语义色，其余按类型色。
+  // createNodeObject 与 paintSelection 必须共用同一份判断，否则选中态/自发光
+  // 会退回类型色，出现「笔记色球体泛类型色光」的错位。
+  function nodeColorOf(node) {
+    if (node && node.metadata && node.metadata.channel === 'note') return C.NOTE_COLOR;
+    return C.NODE_COLORS[node && node.node_type] || '#64748b';
+  }
+
   function createNodeObject(node) {
     const group = new THREE.Group();
     const r = nodeRadius(node);
-    const color = C.NODE_COLORS[node.node_type] || '#64748b';
+    const color = nodeColorOf(node);
     const material = new THREE.MeshStandardMaterial({
       color: new THREE.Color(color),
       // 低自发光：浅色底上保持「实心色块」质感，避免霓虹感
@@ -316,7 +332,7 @@
     if (!ring) {
       ring = new THREE.Mesh(
         new THREE.TorusGeometry(radius * 1.9, 0.16, 6, 48),
-        new THREE.MeshBasicMaterial({ color: 0xf59e0b, transparent: true, opacity: 0.65 })
+        new THREE.MeshBasicMaterial({ color: 0x64748b, transparent: true, opacity: 0.7 })
       );
       ring.rotation.x = Math.PI / 2.6;
       state.pins.set(id, ring);
@@ -467,7 +483,7 @@
     state.materials.forEach(function (mats, id) {
       const node = state.byId.get(id);
       if (!node) return;
-      const base = C.NODE_COLORS[node.node_type] || '#64748b';
+      const base = nodeColorOf(node);
       const selected = id === state.selectedId;
       const focused = id === state.focusId;
       mats.forEach(function (m) {

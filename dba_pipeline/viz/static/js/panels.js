@@ -103,7 +103,8 @@
   }
 
   async function switchGraphTo(name) {
-    if (!window.confirm('切换到「' + name + '」？之后面板的增删改都会写入该文件。')) return;
+    const ok = await confirmDialog('切换图谱', '切换到「' + name + '」？之后面板的增删改都会写入该文件。', { confirmText: '切换' });
+    if (!ok) return;
     try {
       const res = await A.api.switchGraph(name);
       U.toast('已切换到 ' + name + '（' + res.nodes + ' 节点 / ' + res.edges + ' 边）', 'ok');
@@ -116,8 +117,10 @@
   }
 
   async function activateMcpGraph(name) {
-    if (!window.confirm('让 MCP 切换到「' + name + '」？\n' +
-      '它会清空并重建检索用的向量索引，大图可能耗时较久。')) return;
+    const ok = await confirmDialog('让 MCP 切换图谱',
+      '让 MCP 切换到「' + name + '」？\n它会清空并重建检索用的向量索引，大图可能耗时较久。',
+      { confirmText: '切换' });
+    if (!ok) return;
     try {
       await A.api.activateMcpGraph(name);
       U.toast('已通知 MCP 切换，正在等待它应用', 'ok');
@@ -144,7 +147,8 @@
   }
 
   async function removeGraph(name) {
-    if (!window.confirm('删除「' + name + '」？此操作不可撤销。')) return;
+    const ok = await confirmDialog('删除图谱', '删除「' + name + '」？此操作不可撤销。', { danger: true, confirmText: '删除' });
+    if (!ok) return;
     try {
       await A.api.deleteGraph(name);
       U.toast('已删除 ' + name, 'ok');
@@ -246,6 +250,8 @@
   function updateStatusbar(stats) {
     setStatus('stat-nodes', stats.visibleNodes + (stats.visibleNodes !== stats.totalNodes ? ' / ' + stats.totalNodes : ''));
     setStatus('stat-edges', stats.visibleEdges + (stats.visibleEdges !== stats.totalEdges ? ' / ' + stats.totalEdges : ''));
+    // 与节点/边同口径：被过滤掉时显示「可见 / 总数」
+    setStatus('stat-notes', (stats.visibleNotes || 0) + ((stats.visibleNotes || 0) !== (stats.notes || 0) ? ' / ' + (stats.notes || 0) : ''));
     setStatus('stat-deprecated', stats.deprecated);
     setStatus('stat-forgotten', stats.forgotten);
     setStatus('stat-orphans', stats.orphans);
@@ -305,6 +311,12 @@
 
       // 开关
       body.appendChild(el('div', { class: 'divider' }));
+      body.appendChild(toggle('仅看笔记节点', false, function (v) {
+        A.graph.setFilter({ showNotesOnly: v, hideNotes: false });
+      }));
+      body.appendChild(toggle('隐藏笔记节点', false, function (v) {
+        A.graph.setFilter({ hideNotes: v, showNotesOnly: false });
+      }));
       body.appendChild(toggle('显示废弃节点', true, function (v) { A.graph.setFilter({ showDeprecated: v }); }));
       body.appendChild(toggle('显示遗忘节点', false, function (v) { A.graph.setFilter({ showForgotten: v }); }));
       body.appendChild(toggle('隐藏孤立节点', false, function (v) { A.graph.setFilter({ hideOrphans: v }); }));
@@ -343,10 +355,12 @@
         cb.checked = filter.edgeTypes[C.EDGE_TYPES[i].key] !== false;
       });
       const toggles = $('panel-filters').querySelectorAll('.toggle input');
-      if (toggles[0]) toggles[0].checked = filter.showDeprecated;
-      if (toggles[1]) toggles[1].checked = filter.showForgotten;
-      if (toggles[2]) toggles[2].checked = filter.hideOrphans;
-      if (toggles[3]) toggles[3].checked = filter.highDegOnly;
+      if (toggles[0]) toggles[0].checked = filter.showNotesOnly;
+      if (toggles[1]) toggles[1].checked = filter.hideNotes;
+      if (toggles[2]) toggles[2].checked = filter.showDeprecated;
+      if (toggles[3]) toggles[3].checked = filter.showForgotten;
+      if (toggles[4]) toggles[4].checked = filter.hideOrphans;
+      if (toggles[5]) toggles[5].checked = filter.highDegOnly;
     },
   };
 
@@ -361,6 +375,7 @@
     A.graph.setFilter({
       nodeTypes: {}, edgeTypes: {},
       showDeprecated: true, showForgotten: false, hideOrphans: false, highDegOnly: false,
+      showNotesOnly: false, hideNotes: false,
     });
     // 空对象代表全部放行；重填后同步 UI
     const f = A.graph.getFilter();
@@ -400,9 +415,10 @@
     U.toast('已应用预设：' + preset.name, 'ok');
   }
 
-  function deleteSelectedPreset(id) {
+  async function deleteSelectedPreset(id) {
     if (!id) { U.toast('请先选择预设', 'warn'); return; }
-    if (!window.confirm('删除该预设？')) return;
+    const ok = await confirmDialog('删除预设', '删除该预设？', { danger: true, confirmText: '删除' });
+    if (!ok) return;
     A.store.deletePreset(id);
     refreshPresetSelect();
     settingsPanel.refreshPresets();
@@ -496,6 +512,51 @@
       }
       body.appendChild(nav);
 
+      // 笔记 metadata（标题、tags、observed_at 等）
+      const meta = node.metadata || {};
+      if (Object.keys(meta).length) {
+        body.appendChild(el('div', { class: 'divider' }));
+        body.appendChild(el('div', { class: 'group-label', text: '笔记信息' }));
+        if (meta.channel === 'note') {
+          body.appendChild(el('div', { class: 'hint', style: 'color:' + C.NOTE_COLOR }, '📝 项目笔记（无边、可被知识检索）'));
+          if (meta.title) body.appendChild(el('div', { class: 'field' }, [
+            el('span', { class: 'muted', text: '标题' }),
+            el('span', { class: 'mono', text: meta.title }),
+          ]));
+          if (meta.tags && meta.tags.length) {
+            const tagRow = el('div', { class: 'field' });
+            tagRow.appendChild(el('span', { class: 'muted', text: '标签' }));
+            meta.tags.forEach(function (t) { tagRow.appendChild(el('span', { class: 'tag', text: t })); });
+            body.appendChild(tagRow);
+          }
+          if (meta.observed_at) {
+            const d = new Date(meta.observed_at);
+            body.appendChild(el('div', { class: 'field' }, [
+              el('span', { class: 'muted', text: meta.time_inferred ? '事件时间（推断）' : '事件时间' }),
+              el('span', { class: 'mono', text: d.toLocaleString() }),
+            ]));
+          }
+          if (meta.created_at) {
+            body.appendChild(el('div', { class: 'field' }, [
+              el('span', { class: 'muted', text: '记录时间' }),
+              el('span', { class: 'mono', text: new Date(meta.created_at).toLocaleString() }),
+            ]));
+          }
+          if (meta.fidelity) body.appendChild(el('div', { class: 'field' }, [
+            el('span', { class: 'muted', text: '保真度' }),
+            el('span', { text: meta.fidelity }),
+          ]));
+          if (meta.source_hint) body.appendChild(el('div', { class: 'field' }, [
+            el('span', { class: 'muted', text: '来源' }),
+            el('span', { text: meta.source_hint }),
+          ]));
+        } else {
+          // 非笔记但有 metadata，简单列出
+          const parts = Object.keys(meta).map(function (k) { return k + ': ' + JSON.stringify(meta[k]); });
+          body.appendChild(el('div', { class: 'hint', text: parts.join(' · ') }));
+        }
+      }
+
       // 关联边
       const edges = edgesOf(node.id);
       body.appendChild(el('div', { class: 'group-label', text: '关联边（' + edges.length + '）' }));
@@ -564,7 +625,8 @@
   }
 
   async function removeEdge(source, target, relType) {
-    if (!window.confirm('删除边 ' + source + ' → ' + target + '？')) return;
+    const ok = await confirmDialog('删除边', '删除边 ' + source + ' → ' + target + '？', { danger: true, confirmText: '删除' });
+    if (!ok) return;
     try {
       await A.api.deleteEdge(source, target);
       pushUndo('删除边 ' + source + '→' + target, function () { return A.api.createEdge(source, target, relType); });
@@ -574,7 +636,8 @@
   }
 
   async function deleteNode(node) {
-    if (!window.confirm('确认删除节点 ' + node.id + '？关联边将一并删除。')) return;
+    const ok = await confirmDialog('删除节点', '确认删除节点 ' + node.id + '？关联边将一并删除。', { danger: true, confirmText: '删除' });
+    if (!ok) return;
     try {
       await A.api.deleteNode(node.id);
       U.toast('已删除 ' + node.id, 'ok');
@@ -658,6 +721,46 @@
     document.body.appendChild(overlay);
     const first = form.querySelector('input,textarea,select');
     if (first) first.focus();
+  }
+
+  // 统一确认弹窗：替代 window.confirm。
+  // 原生 confirm 会阻断主线程、样式与主题断裂，且无法统一危险操作的视觉语言。
+  function confirmDialog(title, message, opts) {
+    const o = opts || {};
+    return new Promise(function (resolve) {
+      const overlay = el('div', { class: 'modal-overlay' });
+      const box = el('div', { class: 'modal confirm-modal' });
+      box.appendChild(el('h3', { text: title }));
+      if (message) box.appendChild(el('div', { class: 'confirm-msg', text: message }));
+      const actions = el('div', { class: 'btn-row end' });
+      const cancel = el('button', { class: 'btn', text: o.cancelText || '取消' });
+      const ok = el('button', {
+        class: 'btn ' + (o.danger ? 'danger' : 'primary'),
+        text: o.confirmText || '确认',
+      });
+      let done = false;
+      function close(value) {
+        if (done) return;
+        done = true;
+        document.removeEventListener('keydown', onKey, true);
+        overlay.remove();
+        resolve(value);
+      }
+      // 捕获阶段拦 Esc：先于 shell 的「关最上层浮层」处理，保证 Promise 一定被 resolve
+      function onKey(e) {
+        if (e.key === 'Escape') { e.stopPropagation(); close(false); }
+      }
+      cancel.addEventListener('click', function () { close(false); });
+      ok.addEventListener('click', function () { close(true); });
+      overlay.addEventListener('click', function (e) { if (e.target === overlay) close(false); });
+      document.addEventListener('keydown', onKey, true);
+      actions.appendChild(cancel);
+      actions.appendChild(ok);
+      box.appendChild(actions);
+      overlay.appendChild(box);
+      document.body.appendChild(overlay);
+      ok.focus();
+    });
   }
 
   // ---- 边模式 ----
@@ -753,42 +856,208 @@
   // 搜索 / 右键菜单 / 悬浮提示
   // =========================================================
 
+  // 当前搜索模式：'node'（前端子串）| 'knowledge'（后端关键词）
+  let _searchMode = 'node';
+  let _searchRerun = null;   // 由 initSearch 注入：切换模式后按已输入内容重跑一次
+
+  function setSearchMode(mode, opts) {
+    if (mode !== 'node' && mode !== 'knowledge') return;
+    _searchMode = mode;
+    const modeBtn = $('search-mode');
+    const modeMenu = $('search-mode-menu');
+    const input = $('search-input');
+    if (modeMenu) modeMenu.hidden = true;
+    if (modeBtn) modeBtn.textContent = (mode === 'knowledge' ? '知识' : '节点') + ' ▾';
+    if (modeMenu) {
+      U.$$('.mode-item', modeMenu).forEach(function (el) {
+        el.classList.toggle('active', el.dataset.mode === mode);
+      });
+    }
+    if (input) {
+      input.placeholder = mode === 'knowledge'
+        ? '知识搜索（关键词，如 接口 / 超时）…'
+        : '搜索记忆节点（内容 / ID）…';
+      // 只有从菜单点选时才把焦点交给输入框；快捷键切模式不抢焦点，
+      // 否则焦点落进 input，后续单键快捷键会被输入保护全部吞掉。
+      if (opts && opts.focus) input.focus();
+    }
+    if (_searchRerun) _searchRerun();
+  }
+
+  function toggleSearchMode() {
+    setSearchMode(_searchMode === 'node' ? 'knowledge' : 'node');
+  }
+
   function initSearch() {
     const input = $('search-input');
     const dropdown = $('search-dropdown');
-    const run = U.debounce(function () {
+    const modeBtn = $('search-mode');
+    const modeMenu = $('search-mode-menu');
+
+    // 模式切换按钮
+    if (modeBtn) {
+      modeBtn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        modeMenu.hidden = !modeMenu.hidden;
+      });
+      U.$$('.mode-item', modeMenu).forEach(function (item) {
+        item.addEventListener('click', function (e) {
+          e.stopPropagation();
+          setSearchMode(item.dataset.mode, { focus: true });
+          if (input.value.trim()) input.dispatchEvent(new Event('input'));
+        });
+      });
+      // 点击外部关菜单
+      document.addEventListener('click', function (e) {
+        if (!modeMenu.contains(e.target) && e.target !== modeBtn) modeMenu.hidden = true;
+      });
+    }
+
+    // 结果列表状态：供 ↑↓ 键盘导航使用（activeIdx = -1 表示未选中）
+    let activeIdx = -1;
+
+    function renderResults(list, emptyText) {
+      activeIdx = -1;
+      dropdown.innerHTML = list.length ? list.map(function (it, i) {
+        return '<div class="search-item" role="option" tabindex="-1" data-idx="' + i + '" data-id="' + U.escapeHtml(it.id) + '">' +
+          '<span class="dot" style="background:' + it.color + '"></span>' +
+          '<div class="search-main">' +
+            '<div class="search-title">' + U.escapeHtml(it.title) + '</div>' +
+            (it.snippet ? '<div class="search-snippet">' + highlightSnippet(it.snippet, it.query) + '</div>' : '') +
+          '</div>' +
+          '<span class="type">' + U.escapeHtml(it.meta) + '</span></div>';
+      }).join('') : '<div class="search-empty">' + emptyText + '</div>';
+      dropdown.classList.add('open');
+      wireDropdown();
+    }
+
+    const runNode = U.debounce(function () {
       const q = input.value.trim();
       if (!q) { dropdown.classList.remove('open'); A.graph.clearSearch(); return; }
       const matched = A.graph.search(q);
-      dropdown.innerHTML = matched.slice(0, 20).map(function (n) {
-        return '<div class="search-item" tabindex="0" data-id="' + U.escapeHtml(n.id) + '">' +
-          '<span class="dot" style="background:' + (C.NODE_COLORS[n.node_type] || '#888') + '"></span>' +
-          '<span class="text">' + U.escapeHtml(n.content || '') + '</span>' +
-          '<span class="type">' + U.escapeHtml(n.node_type) + '</span></div>';
-      }).join('') || '<div class="search-empty">无匹配结果</div>';
-      dropdown.classList.add('open');
-      U.$$('.search-item', dropdown).forEach(function (item) {
-        const choose = function () {
-          const node = ctx.data.nodes.filter(function (x) { return x.id === item.dataset.id; })[0];
-          if (node) {
-            A.graph.select(node.id);
-            A.graph.focus(node.id, 1);
-          }
-          input.value = '';
-          dropdown.classList.remove('open');
-          A.graph.clearSearch();
+      renderResults(matched.slice(0, 20).map(function (n) {
+        const isNote = n.metadata && n.metadata.channel === 'note';
+        return {
+          id: n.id,
+          color: isNote ? C.NOTE_COLOR : (C.NODE_COLORS[n.node_type] || '#888'),
+          title: (n.metadata && n.metadata.title) || n.content || n.id,
+          snippet: n.content || '',
+          meta: isNote ? '笔记' : n.node_type,
+          query: q,
         };
-        item.addEventListener('click', choose);
-        // 结果项是 div，必须显式支持 Enter/Space，否则键盘用户选不中
+      }), '无匹配结果');
+    }, 160);
+
+    const runKnowledge = U.debounce(async function () {
+      const q = input.value.trim();
+      if (!q) { dropdown.classList.remove('open'); A.graph.clearSearch(); return; }
+      dropdown.innerHTML = '<div class="search-empty">搜索中…</div>';
+      dropdown.classList.add('open');
+      try {
+        const result = await A.api.knowledgeSearch(q, 10);
+        const items = result.items || [];
+        renderResults(items.map(function (r) {
+          const isNote = r.metadata && r.metadata.channel === 'note';
+          return {
+            id: r.node_id,
+            color: isNote ? C.NOTE_COLOR : '#64748b',
+            title: (r.metadata && r.metadata.title) || (r.content || '').slice(0, 60),
+            snippet: r.content || '',
+            meta: '★ ' + r.score.toFixed(2),
+            query: q,
+          };
+        }), '无关键词命中（' + U.escapeHtml(q) + '）');
+      } catch (err) {
+        dropdown.innerHTML = '<div class="search-empty">知识搜索失败：' + U.escapeHtml(err.message || err) + '</div>';
+      }
+    }, 200);
+
+    function chooseItem(item) {
+      const node = ctx.data.nodes.filter(function (x) { return x.id === item.dataset.id; })[0];
+      if (node) {
+        A.graph.select(node.id);
+        A.graph.focus(node.id, 1);
+      }
+      input.value = '';
+      dropdown.classList.remove('open');
+      activeIdx = -1;
+      A.graph.clearSearch();
+    }
+
+    // 键盘高亮项；滚动到可见区，长列表也能一路按到底
+    function moveActive(delta) {
+      const rows = U.$$('.search-item', dropdown);
+      if (!rows.length) return;
+      activeIdx = (activeIdx + delta + rows.length) % rows.length;
+      rows.forEach(function (row, i) { row.classList.toggle('active', i === activeIdx); });
+      if (rows[activeIdx].scrollIntoView) rows[activeIdx].scrollIntoView({ block: 'nearest' });
+    }
+
+    function wireDropdown() {
+      U.$$('.search-item', dropdown).forEach(function (item, i) {
+        item.addEventListener('click', function () { chooseItem(item); });
+        item.addEventListener('mouseenter', function () {
+          activeIdx = i;
+          U.$$('.search-item', dropdown).forEach(function (row, j) {
+            row.classList.toggle('active', j === i);
+          });
+        });
+        // 结果项可聚焦（Tab 到达），Enter/Space 选中
         item.addEventListener('keydown', function (e) {
-          if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); choose(); }
+          if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); chooseItem(item); }
         });
       });
-    }, 160);
-    input.addEventListener('input', run);
+    }
+
+    // ↑↓ 在结果间移动，Enter 选中；输入框保持焦点，符合命令面板式交互
+    input.addEventListener('keydown', function (e) {
+      if (!dropdown.classList.contains('open')) return;
+      if (e.key === 'ArrowDown') { e.preventDefault(); moveActive(1); }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); moveActive(-1); }
+      else if (e.key === 'Enter') {
+        const rows = U.$$('.search-item', dropdown);
+        if (activeIdx >= 0 && rows[activeIdx]) { e.preventDefault(); chooseItem(rows[activeIdx]); }
+      }
+    });
+
+    input.addEventListener('input', function () {
+      if (_searchMode === 'knowledge') runKnowledge(); else runNode();
+    });
+    // 供 setSearchMode 在输入框已有内容时重跑一次（模式切换立即生效）
+    _searchRerun = function () {
+      if (input.value.trim()) { input.dispatchEvent(new Event('input')); }
+      else { dropdown.classList.remove('open'); A.graph.clearSearch(); }
+    };
     document.addEventListener('click', function (e) {
       if (!dropdown.contains(e.target) && e.target !== input) dropdown.classList.remove('open');
     });
+  }
+
+  // 命中片段：先转义再包 <mark>，避免用户输入被当成 HTML。
+  // 以首次命中位置为中心截一段，命中词大小写不敏感高亮。
+  function highlightSnippet(text, query) {
+    const span = 140;
+    const raw = String(text || '');
+    const q = String(query || '').trim();
+    let start = 0;
+    if (q) {
+      const idx = raw.toLowerCase().indexOf(q.toLowerCase());
+      if (idx > 40) start = idx - 40;
+    }
+    let snippet = raw.slice(start, start + span);
+    if (start > 0) snippet = '…' + snippet;
+    if (start + span < raw.length) snippet += '…';
+    const safe = U.escapeHtml(snippet);
+    const terms = q.split(/\s+/).filter(Boolean).slice(0, 4);
+    if (!terms.length) return safe;
+    const pattern = terms.map(function (t) {
+      return t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    }).join('|');
+    try {
+      return safe.replace(new RegExp('(' + pattern + ')', 'gi'), '<mark>$1</mark>');
+    } catch (e) {
+      return safe;
+    }
   }
 
   function initContextMenu() {
@@ -1417,6 +1686,32 @@
   // 设置
   // =========================================================
 
+  // ---- 主题：auto 跟随系统，light/dark 手动固定 ----
+  // 只切 <html data-theme>，具体颜色全部由 CSS token 承担
+  let themeMedia = null;
+
+  function resolveTheme() {
+    const pref = (A.store.settings.ui || {}).theme || 'auto';
+    if (pref === 'light' || pref === 'dark') return pref;
+    return (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches)
+      ? 'dark' : 'light';
+  }
+
+  function applyTheme() {
+    document.documentElement.setAttribute('data-theme', resolveTheme());
+  }
+
+  // 系统主题变化时，仅 auto 模式需要跟随
+  function watchThemeMedia() {
+    if (themeMedia || !window.matchMedia) return;
+    themeMedia = window.matchMedia('(prefers-color-scheme: dark)');
+    const onChange = function () {
+      if (((A.store.settings.ui || {}).theme || 'auto') === 'auto') applyTheme();
+    };
+    if (themeMedia.addEventListener) themeMedia.addEventListener('change', onChange);
+    else if (themeMedia.addListener) themeMedia.addListener(onChange);
+  }
+
   const settingsPanel = {
     configData: null,
 
@@ -1430,6 +1725,24 @@
     render(host) {
       host.innerHTML = '';
       const s = A.store.settings.render;
+
+      // 0. 外观
+      const themeSection = section('外观', '深色模式可跟随系统，也可手动固定');
+      const themeSel = el('select', { class: 'input' });
+      const currentTheme = (A.store.settings.ui || {}).theme || 'auto';
+      [['auto', '跟随系统'], ['light', '浅色'], ['dark', '深色']].forEach(function (o) {
+        const opt = el('option', { value: o[0], text: o[1] });
+        if (o[0] === currentTheme) opt.selected = true;
+        themeSel.appendChild(opt);
+      });
+      themeSel.addEventListener('change', function () {
+        A.store.update('ui', 'theme', themeSel.value);
+        applyTheme();
+      });
+      themeSection.body.appendChild(el('label', { class: 'field inline' }, [
+        el('span', { text: '主题' }), themeSel,
+      ]));
+      host.appendChild(themeSection.root);
 
       // 1. 渲染与布局
       const renderSection = section('渲染与布局', '实时生效，保存在浏览器本地');
@@ -1456,7 +1769,28 @@
       renderSection.body.appendChild(resetRow);
       host.appendChild(renderSection.root);
 
-      // 2. 过滤预设
+      // 2. 交互与快捷键
+      const uiSection = section('交互与快捷键', '单键快捷键可按无障碍要求关闭');
+      const uiCfg = A.store.settings.ui || {};
+      const keyToggle = el('input', { type: 'checkbox' });
+      keyToggle.checked = uiCfg.singleKeyShortcuts !== false;
+      keyToggle.addEventListener('change', function () {
+        A.store.update('ui', 'singleKeyShortcuts', keyToggle.checked);
+        U.toast(keyToggle.checked
+          ? '已启用单键快捷键'
+          : '已关闭单键快捷键（Ctrl 组合键仍可用）', 'ok');
+      });
+      uiSection.body.appendChild(el('label', { class: 'toggle' }, [
+        keyToggle, el('span', { text: '启用单键快捷键（G / O / P / S / N / E …）' }),
+      ]));
+      const helpRow = el('div', { class: 'btn-row' });
+      helpRow.appendChild(el('button', {
+        class: 'btn', text: '查看快捷键一览（?）', onclick: openShortcutHelp,
+      }));
+      uiSection.body.appendChild(helpRow);
+      host.appendChild(uiSection.root);
+
+      // 3. 过滤预设
       const presetSection = section('过滤预设', '把节点/边过滤组合保存为命名方案');
       const presetList = el('div', { class: 'preset-list', id: 'settings-preset-list' });
       presetSection.body.appendChild(presetList);
@@ -1468,14 +1802,14 @@
       host.appendChild(presetSection.root);
       this.refreshPresets();
 
-      // 3. 服务端配置
+      // 4. 服务端配置
       const configSection = section('服务端配置', '只读；密钥类环境变量已脱敏');
       configSection.body.appendChild(el('div', { class: 'config-box', id: 'config-box' }, [
         el('div', { class: 'hint', text: A.api.isLive ? '加载中…' : '离线 HTML 模式：无服务端配置。' }),
       ]));
       host.appendChild(configSection.root);
 
-      // 4. MCP 连接（端点 / 鉴权 / 探活 / 客户端接入片段）
+      // 5. MCP 连接（端点 / 鉴权 / 探活 / 客户端接入片段）
       const mcpSection = section('MCP 连接', 'MCP 与面板是两个进程；这里显示接入端点、鉴权方式与探活情况');
       const mcpActions = el('div', { class: 'btn-row' });
       mcpActions.appendChild(el('button', {
@@ -1490,7 +1824,7 @@
       host.appendChild(mcpSection.root);
       if (A.api.isLive) mcpStatus.load();
 
-      // 5. 数据导入/导出
+      // 6. 数据导入/导出
       const dataSection = section('数据导入 / 导出', '导入前会校验并自动备份现有 YAML（.bak）');
       if (A.api.isLive) {
         const row = el('div', { class: 'btn-row' });
@@ -1508,7 +1842,7 @@
       }
       host.appendChild(dataSection.root);
 
-      // 6. 图谱库：管理图谱目录下的多份图谱；「载入 MCP」是独立动作，不自动跟随
+      // 7. 图谱库：管理图谱目录下的多份图谱；「载入 MCP」是独立动作，不自动跟随
       const libSection = section('图谱库', '图谱目录下的所有 YAML：可切换、导入、导出、删除');
       if (A.api.isLive) {
         const bar = el('div', { class: 'btn-row' });
@@ -2087,7 +2421,7 @@
     if (!file) return;
     const reader = new FileReader();
     reader.onload = async function () {
-      if (!window.confirm('导入将覆盖当前图谱（自动备份为 .bak），确认继续？')) return;
+      if (!(await confirmDialog('导入图谱', '导入将覆盖当前图谱（自动备份为 .bak），确认继续？', { danger: true, confirmText: '导入' }))) return;
       try {
         const result = await A.api.importYaml(reader.result);
         U.toast('导入成功：' + result.nodes + ' 节点 / ' + result.edges + ' 边', 'ok');
@@ -2104,6 +2438,8 @@
 
   function init(context) {
     ctx = context;
+    applyTheme();
+    watchThemeMedia();
     shell.init();
     filtersPanel.init();
     inspector.render(null);
@@ -2198,6 +2534,10 @@
     }
     const searchToggle = $('btn-search');
     if (searchToggle) searchToggle.addEventListener('click', function () { $('search-input').focus(); });
+    const helpBtn = $('btn-help');
+    if (helpBtn) helpBtn.addEventListener('click', openShortcutHelp);
+    const emptyReset = $('empty-reset');
+    if (emptyReset) emptyReset.addEventListener('click', resetFilters);
   }
 
   async function refreshHealth() {
@@ -2214,6 +2554,78 @@
     }
   }
 
+  // =========================================================
+  // 快捷键帮助（? / 设置页按钮）
+  // =========================================================
+
+  const SHORTCUT_GROUPS = [
+    { title: '视图', items: [
+      ['G', '回到图谱'],
+      ['O', '可观测'],
+      ['P', '运行时参数'],
+      ['S', '设置'],
+      ['?', '显示 / 关闭本帮助'],
+    ] },
+    { title: '画布', items: [
+      ['R', '全图适配'],
+      ['1 / 2 / 3', '正面 / 右视 / 俯视机位'],
+      ['F', '聚焦选中节点（1 跳）'],
+      ['Shift + F', '聚焦选中节点（2 跳）'],
+      ['C', '清除聚焦与选中'],
+      ['A', '自动旋转开关'],
+      ['+ / -', '拉近 / 拉远相机'],
+    ] },
+    { title: '检索与编辑', items: [
+      ['/', '聚焦搜索框'],
+      ['M', '切换 节点 / 知识 搜索'],
+      ['N', '新建节点'],
+      ['E', '新建边'],
+      ['Delete', '删除选中节点'],
+      ['Ctrl / Cmd + Z', '撤销上一步'],
+      ['Esc', '关闭浮层 / 清空搜索'],
+    ] },
+  ];
+
+  function openShortcutHelp() {
+    const existing = $('shortcut-help');
+    if (existing) { existing.remove(); return; }   // 再按一次 = 关闭
+    const overlay = el('div', { class: 'modal-overlay', id: 'shortcut-help' });
+    const box = el('div', { class: 'modal shortcut-modal' });
+    box.appendChild(el('h3', { text: '键盘快捷键' }));
+    SHORTCUT_GROUPS.forEach(function (g) {
+      box.appendChild(el('div', { class: 'group-label', text: g.title }));
+      const table = el('div', { class: 'shortcut-table' });
+      g.items.forEach(function (it) {
+        table.appendChild(el('div', { class: 'shortcut-row' }, [
+          el('kbd', { text: it[0] }),
+          el('span', { text: it[1] }),
+        ]));
+      });
+      box.appendChild(table);
+    });
+    const uiCfg = A.store.settings.ui || {};
+    if (uiCfg.singleKeyShortcuts === false) {
+      box.appendChild(el('div', {
+        class: 'hint',
+        text: '单键快捷键当前已关闭；可在「设置 → 交互与快捷键」重新开启（Ctrl 组合键始终可用）。',
+      }));
+    }
+    const actions = el('div', { class: 'btn-row end' });
+    actions.appendChild(el('button', {
+      class: 'btn primary', text: '关闭', onclick: function () { overlay.remove(); },
+    }));
+    box.appendChild(actions);
+    overlay.appendChild(box);
+    overlay.addEventListener('click', function (e) { if (e.target === overlay) overlay.remove(); });
+    document.body.appendChild(overlay);
+  }
+
+  function closeShortcutHelp() {
+    const box = $('shortcut-help');
+    if (box) { box.remove(); return true; }
+    return false;
+  }
+
   A.panels = {
     init: init,
     renderInspector: renderInspector,
@@ -2225,5 +2637,15 @@
     hideEdgeBanner: hideEdgeBanner,
     undo: doUndo,
     shell: shell,
+    // 供 app.js 的快捷键调用（保持单一实现，不在键位表里重复业务逻辑）
+    commands: {
+      newNode: openNewNode,
+      newEdge: openNewEdge,
+      deleteNode: deleteNode,
+      resetFilters: resetFilters,
+      help: openShortcutHelp,
+      closeHelp: closeShortcutHelp,
+      toggleSearchMode: toggleSearchMode,
+    },
   };
 })();

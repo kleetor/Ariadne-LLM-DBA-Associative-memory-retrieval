@@ -3,14 +3,14 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<meta name="theme-color" content="#f4f7f7">
+<meta name="theme-color" content="#e2eaeb">
 <meta name="robots" content="noindex">
 <title>登录 · Ariadne 记忆图谱控制台</title>
 <link rel="icon" type="image/png" href="/static/icon.png">
 <!-- 本页需在未登录时可达，故样式内联，不依赖受保护的 /static/css -->
 <style>
   :root {
-    --bg: #f4f7f7;
+    --bg: #e2eaeb;
     --line: rgba(15, 23, 42, 0.08);
     --line-strong: rgba(15, 23, 42, 0.18);
     --text: #1f2937;
@@ -18,6 +18,17 @@
     --te1: #0d9488;
     --tv: #334155;
     --rose: #be123c;
+    --grid-line: rgba(15, 23, 42, 0.09);
+    --surface-card: rgba(255, 255, 255, 0.6);
+    --surface-input: rgba(255, 255, 255, 0.55);
+    --card-line: rgba(255, 255, 255, 0.65);
+    --card-glow: rgba(255, 255, 255, 0.7);
+    --input-disabled: rgba(15, 23, 42, 0.03);
+    --btn-text: #fff;
+    --btn-hover: #0f766e;
+    --notice-text: #92400e;
+    --notice-bg: rgba(251, 191, 36, 0.14);
+    --notice-line: rgba(180, 83, 9, 0.28);
     --font-display: "Chakra Petch", "PingFang SC", "Microsoft YaHei", "Noto Sans SC", sans-serif;
     --font-body: "PingFang SC", "Microsoft YaHei", "Noto Sans SC", sans-serif;
   }
@@ -28,8 +39,8 @@
     /* 与官网 .grid-bg 同款：56px 网格底纹 */
     background-color: var(--bg);
     background-image:
-      linear-gradient(rgba(15, 23, 42, 0.045) 1px, transparent 1px),
-      linear-gradient(90deg, rgba(15, 23, 42, 0.045) 1px, transparent 1px);
+      linear-gradient(var(--grid-line) 1px, transparent 1px),
+      linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
     background-size: 56px 56px;
     color: var(--text); font-family: var(--font-body); font-size: 13px;
     overflow: hidden;
@@ -58,11 +69,11 @@
   .card {
     width: 360px; max-width: 92vw; padding: 32px 30px 26px;
     /* 半透明：背后的节点云透出来；blur 压到 8px，否则点会被糊成一片看不出结构 */
-    background: rgba(255, 255, 255, 0.6);
+    background: var(--surface-card);
     backdrop-filter: blur(8px) saturate(1.08);
-    border: 1px solid rgba(255, 255, 255, 0.65);
+    border: 1px solid var(--card-line);
     border-radius: 16px;
-    box-shadow: 0 8px 30px rgba(15, 23, 42, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.7);
+    box-shadow: 0 8px 30px rgba(15, 23, 42, 0.08), inset 0 1px 0 var(--card-glow);
   }
   .brand { display: flex; align-items: center; gap: 12px; margin-bottom: 26px; }
   .brand img { width: 40px; height: 40px; display: block; }
@@ -77,30 +88,72 @@
   label > span { display: block; font-size: 11px; color: var(--text-dim); margin-bottom: 6px; letter-spacing: 0.04em; }
   input {
     width: 100%; padding: 10px 12px; font-size: 13px; color: var(--text);
-    background: rgba(255, 255, 255, 0.55); outline: none;
+    background: var(--surface-input); outline: none;
     border: 1px solid var(--line); border-radius: 10px;
     transition: border-color 0.2s ease, box-shadow 0.2s ease;
   }
   input:focus { border-color: rgba(13, 148, 136, 0.5); box-shadow: 0 0 0 3px rgba(13, 148, 136, 0.1); }
-  input:disabled { color: var(--text-dim); background: rgba(15, 23, 42, 0.03); }
+  input:disabled { color: var(--text-dim); background: var(--input-disabled); }
   button {
     width: 100%; margin-top: 6px; padding: 11px 12px; cursor: pointer;
     font-family: var(--font-display); font-size: 13px; font-weight: 600; letter-spacing: 0.06em;
-    color: #fff; background: var(--te1); border: none; border-radius: 10px;
+    color: var(--btn-text); background: var(--te1); border: none; border-radius: 10px;
     transition: background-color 0.2s ease, opacity 0.2s ease;
   }
-  button:hover { background: #0f766e; }
+  button:hover { background: var(--btn-hover); }
   button:disabled { opacity: 0.55; cursor: default; }
   .msg { min-height: 18px; margin-top: 12px; font-size: 12px; color: var(--rose); }
   .notice {
     margin-bottom: 18px; padding: 9px 12px; font-size: 12px; line-height: 1.6;
-    color: #92400e; background: rgba(251, 191, 36, 0.14);
-    border: 1px solid rgba(180, 83, 9, 0.28); border-radius: 10px;
+    color: var(--notice-text); background: var(--notice-bg);
+    border: 1px solid var(--notice-line); border-radius: 10px;
   }
   .foot { margin-top: 18px; font-size: 11px; color: var(--text-dim); line-height: 1.7; }
   .foot a { color: var(--te1); text-decoration: none; }
   .foot a:hover { text-decoration: underline; }
+
+  /* 深色：登录页独立内联样式。默认跟随系统；若面板里手动选了主题，
+     下面的内联脚本会把 data-theme 写到 <html>，这里用 :not([data-theme="light"])
+     保证「系统深色 + 用户选浅色」时仍然是浅色。 */
+  @media (prefers-color-scheme: dark) {
+    html:not([data-theme="light"]) {
+      --bg: #0f1720;
+      --line: rgba(148, 163, 184, 0.18);
+      --line-strong: rgba(148, 163, 184, 0.34);
+      --text: #e6edf5;
+      --text-dim: #9db0c3;
+      --te1: #2dd4bf;
+      --tv: #cbd5e1;
+      --rose: #fb7185;
+      --grid-line: rgba(148, 163, 184, 0.10);
+      --surface-card: rgba(23, 33, 44, 0.9);
+      --surface-input: rgba(23, 33, 44, 0.7);
+      --card-line: rgba(148, 163, 184, 0.20);
+      --card-glow: rgba(255, 255, 255, 0.06);
+      --input-disabled: rgba(255, 255, 255, 0.04);
+      --btn-text: #06231f;
+      --btn-hover: #14b8a6;
+      --notice-text: #fcd34d;
+      --notice-bg: rgba(245, 158, 11, 0.14);
+      --notice-line: rgba(245, 158, 11, 0.34);
+      color-scheme: dark;
+    }
+  }
 </style>
+<script>
+// 与面板共用同源 localStorage：面板里手动选过 light/dark 时，登录页跟随同一选择。
+// 未选（auto）时不写 data-theme，交给 prefers-color-scheme。
+(function () {
+  try {
+    var raw = localStorage.getItem('ariadne.settings.v1');
+    if (!raw) return;
+    var theme = ((JSON.parse(raw) || {}).ui || {}).theme;
+    if (theme === 'light' || theme === 'dark') {
+      document.documentElement.setAttribute('data-theme', theme);
+    }
+  } catch (e) { /* 本地存储不可用：保持跟随系统 */ }
+})();
+</script>
 </head>
 <body>
 <div class="backdrop" aria-hidden="true"><div id="bg-3d"></div></div>
@@ -284,8 +337,12 @@
 })();
 </script>
 
-<script src="https://unpkg.com/three@0.148.0/build/three.min.js"></script>
-<script src="https://unpkg.com/3d-force-graph@1.71.3/dist/3d-force-graph.min.js"></script>
+<script src="https://unpkg.com/three@0.148.0/build/three.min.js"
+        integrity="sha384-dExwZC37YQmIFi07hOTp5AMpKvCAuwaFkvXuCMAHySEMMI5H5H/HrQYYjDtUgEnC"
+        crossorigin="anonymous"></script>
+<script src="https://unpkg.com/3d-force-graph@1.71.3/dist/3d-force-graph.min.js"
+        integrity="sha384-lYOnQ1YCYNpw4DqFoM5qbUYLBhIz6bcOPgAGyDZ4MZKbitVt5th++9qclFjW+ja/"
+        crossorigin="anonymous"></script>
 <script>
 (function () {
   // 与官网「3D 渲染页」同源：同一份图谱（data/LiFEMem.yaml 烘成的 graph.json，已去掉 content）
@@ -315,9 +372,6 @@
       .linkColor(function () { return 'rgba(0, 0, 0, 0.5)'; })
       .linkWidth(0.6)
       .linkOpacity(0.5)
-      .linkDirectionalParticles(1)
-      .linkDirectionalParticleSpeed(0.004)
-      .linkDirectionalParticleWidth(1.2)
       .cooldownTicks(90)        // 同官网：让力模拟自己收敛出布局（90 tick / 1.5s），然后冻结
       .cooldownTime(1500)
       .enableNodeDrag(false)

@@ -81,7 +81,10 @@
           setStatus('stat-sel', node ? node.id : '-');
           A.panels.renderInspector(node);
         },
-        onStats: function (stats) { A.panels.updateStatusbar(stats); },
+        onStats: function (stats) {
+          A.panels.updateStatusbar(stats);
+          updateEmptyState(stats);
+        },
         onHover: function (pos, node) { A.panels.showTooltip(pos, node); },
         onEdgeHover: function (pos, info) { A.panels.showEdgeTooltip(pos, info); },
         onContextMenu: function (node, evt) { A.panels.showContextMenu(node, evt); },
@@ -110,22 +113,130 @@
     })();
   }
 
+  // ---- 快捷键 ----
+  // 设计口径（参考 WCAG 2.1.4 与常见 Web 应用做法）：
+  //   1) 焦点在输入控件内一律不拦截，避免抢走打字；
+  //   2) 单字符快捷键可整体关闭（设置 → 交互与快捷键），Ctrl 组合键不受影响；
+  //   3) 不用浏览器保留组合（Ctrl+W/T/N/L 等），只用单字母与 Ctrl+Z；
+  //   4) 帮助（?）始终可用，作为快捷键的可发现入口。
+
+  function toggleAutoRotate() {
+    const next = !A.store.settings.render.autoRotate;
+    A.store.update('render', 'autoRotate', next);
+    A.graph.applySettings(A.store.settings);
+    const btn = document.getElementById('btn-autorotate');
+    if (btn) btn.classList.toggle('active', next);
+    U.toast(next ? '自动旋转：开' : '自动旋转：关', 'ok');
+  }
+
+  // factor > 1 拉远，< 1 拉近
+  function zoomBy(factor) {
+    const st = A.graph.cameraState();
+    if (st) A.graph.setCameraDistance(st.distance * factor);
+  }
+
+  function focusSelected(hops) {
+    if (!selectedId) { U.toast('先选中一个节点再聚焦', 'warn'); return; }
+    A.graph.focus(selectedId, hops);
+  }
+
+  function deleteSelected() {
+    if (!selectedId) { U.toast('先选中一个节点再删除', 'warn'); return; }
+    if (!ensureEditable()) return;
+    A.panels.commands.deleteNode({ id: selectedId });
+  }
+
+  // 离线导出包只读：编辑类动作统一给出同一句提示，避免落到一个注定失败的请求
+  function ensureEditable() {
+    if (A.api.isLive) return true;
+    U.toast('离线 HTML 模式只读，编辑需要连接面板服务', 'warn');
+    return false;
+  }
+
+  // 空状态：过滤后一个节点都不剩时，画布不该只剩一片空白
+  function updateEmptyState(stats) {
+    const box = document.getElementById('graph-empty');
+    if (!box) return;
+    if (stats.visibleNodes > 0) { box.hidden = true; return; }
+    const title = document.getElementById('empty-title');
+    const desc = document.getElementById('empty-desc');
+    const f = A.graph.getFilter();
+    if (!stats.totalNodes) {
+      title.textContent = '当前图谱是空的';
+      desc.textContent = '用 MCP 的 dba_add_conversation 写入对话，或用 dba_add_note 写入一条笔记。';
+    } else if (f.showNotesOnly && !stats.notes) {
+      // 判断「图里真的没有笔记」而不是「当前没显示笔记」：后者可能只是类型过滤挡掉了
+      title.textContent = '当前图谱没有笔记';
+      desc.textContent = '笔记是 channel=note 的普通节点，通过 MCP 的 dba_add_note 写入；也可以先切回全部节点。';
+    } else {
+      title.textContent = '当前过滤条件下没有节点';
+      desc.textContent = '放宽节点类型 / 边类型过滤，或点击下方按钮恢复默认。';
+    }
+    box.hidden = false;
+  }
+
+  // 返回 true 表示这次按键已被消费（调用方应 preventDefault）
+  function handleShortcut(e) {
+    // Ctrl/Cmd+Z 撤销：不受单键开关限制
+    if ((e.ctrlKey || e.metaKey) && String(e.key).toLowerCase() === 'z' && !e.shiftKey) {
+      e.preventDefault();
+      A.panels.undo();
+      return true;
+    }
+    // 其余组合键交还给浏览器（Ctrl+K 等留给外部工具）
+    if (e.ctrlKey || e.metaKey || e.altKey) return false;
+
+    // 帮助：始终可用，否则用户没法知道快捷键被关掉了
+    if (e.key === '?') { A.panels.commands.help(); return true; }
+
+    // 模态框打开时其余快捷键不生效，避免误触到底层画布/编辑动作
+    if (document.querySelector('.modal-overlay')) return false;
+
+    const ui = A.store.settings.ui || {};
+    if (ui.singleKeyShortcuts === false) return false;
+    if (!graphReady) return false;
+
+    const input = document.getElementById('search-input');
+
+    switch (e.key) {
+      // 视图切换
+      case 'g': case 'G': A.panels.shell.closeDrawer(); return true;
+      case 'o': case 'O': A.panels.shell.openDrawer('observability'); return true;
+      case 'p': case 'P': A.panels.shell.openDrawer('params'); return true;
+      case 's': case 'S': A.panels.shell.openDrawer('settings'); return true;
+
+      // 画布
+      case 'r': case 'R': A.graph.zoomFit(); return true;
+      case 'f': case 'F': focusSelected(e.shiftKey ? 2 : 1); return true;
+      case 'c': case 'C': A.graph.exitFocus(); A.graph.select(null); return true;
+      case 'a': case 'A': toggleAutoRotate(); return true;
+      case '+': case '=': zoomBy(0.8); return true;
+      case '-': case '_': zoomBy(1.25); return true;
+      case '1': A.graph.setCamera(0, 0, 800); return true;
+      case '2': A.graph.setCamera(800, 0, 0); return true;
+      case '3': A.graph.setCamera(0, 800, 0); return true;
+
+      // 检索与编辑
+      case '/':
+        if (input) input.focus();
+        return true;
+      case 'm': case 'M': A.panels.commands.toggleSearchMode(); return true;
+      case 'n': case 'N': if (ensureEditable()) A.panels.commands.newNode(); return true;
+      case 'e': case 'E': if (ensureEditable()) A.panels.commands.newEdge(); return true;
+      case 'Delete': case 'Backspace': deleteSelected(); return true;
+      default: return false;
+    }
+  }
+
   function bindKeys() {
     document.addEventListener('keydown', function (e) {
-      const tag = (e.target.tagName || '').toLowerCase();
-      if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
-      // 撤销按钮的 title 写的就是 Ctrl+Z，这里补上对应绑定
-      if ((e.ctrlKey || e.metaKey) && String(e.key).toLowerCase() === 'z') {
-        e.preventDefault();
-        A.panels.undo();
-        return;
-      }
-      if (!graphReady) return;
-      if (e.key === 'r' || e.key === 'R') A.graph.zoomFit();
-      else if (e.key === '1') A.graph.setCamera(0, 0, 800);
-      else if (e.key === '2') A.graph.setCamera(800, 0, 0);
-      else if (e.key === '3') A.graph.setCamera(0, 800, 0);
-      else if (e.key === '/') { e.preventDefault(); const s = document.getElementById('search-input'); if (s) s.focus(); }
+      const target = e.target || {};
+      const tag = (target.tagName || '').toLowerCase();
+      // 输入控件与可编辑区域不拦截（含设置页的数字/文本输入）
+      if (tag === 'input' || tag === 'textarea' || tag === 'select' || target.isContentEditable) return;
+      // 已有浮层时只放行 Esc（由 panels.js 统一处理）
+      if (e.key === 'Escape') return;
+      if (handleShortcut(e)) e.preventDefault();
     });
   }
 

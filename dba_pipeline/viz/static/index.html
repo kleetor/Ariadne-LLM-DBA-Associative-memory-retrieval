@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<meta name="theme-color" content="#f4f7f7">
+<meta name="theme-color" content="#e2eaeb">
 <title>Ariadne · 记忆图谱控制台</title>
 <!-- 站点图标：assets/icon.ico 按主题色（--te1）上色后的版本 -->
 <link rel="icon" type="image/png" href="/static/icon.png">
@@ -36,8 +36,9 @@
     <span class="stat-chip">节点 <b id="topbar-nodes">-</b></span>
     <span class="stat-chip">边 <b id="topbar-edges">-</b></span>
     <button class="icon-btn" id="btn-undo" title="撤销（Ctrl+Z）">↩</button>
-    <button class="icon-btn" id="btn-autorotate" title="自动旋转">⟳</button>
+    <button class="icon-btn" id="btn-autorotate" title="自动旋转（A）">⟳</button>
     <button class="icon-btn" id="btn-zoom-fit" title="全图适配（R）">⤢</button>
+    <button class="icon-btn" id="btn-help" title="键盘快捷键（?）" aria-label="键盘快捷键">?</button>
     <button class="icon-btn" id="btn-search" title="搜索（/）" aria-label="搜索">
       <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor"
            stroke-width="1.7" stroke-linecap="round" aria-hidden="true">
@@ -62,9 +63,22 @@
 <main id="stage">
   <div id="graph-container"></div>
 
+  <div id="graph-empty" hidden>
+    <div class="empty-card">
+      <div class="empty-title" id="empty-title">当前没有可显示的节点</div>
+      <div class="empty-desc" id="empty-desc"></div>
+      <button class="btn primary" id="empty-reset">显示全部节点</button>
+    </div>
+  </div>
+
   <div id="search-wrap">
     <input id="search-input" type="text" placeholder="搜索记忆节点（内容 / ID）…" autocomplete="off">
-    <div id="search-dropdown"></div>
+    <button id="search-mode" class="search-mode" title="切换搜索范围：当前是「节点」">节点 ▾</button>
+    <div id="search-mode-menu" class="search-mode-menu" hidden>
+      <div class="mode-item active" data-mode="node">节点（前端子串）</div>
+      <div class="mode-item" data-mode="knowledge">知识（关键词）</div>
+    </div>
+    <div id="search-dropdown" role="listbox" aria-label="搜索结果"></div>
   </div>
 
   <section class="panel" id="panel-filters"></section>
@@ -93,6 +107,7 @@
 <footer id="statusbar">
   <span>节点 <b id="stat-nodes">-</b></span>
   <span>边 <b id="stat-edges">-</b></span>
+  <span>笔记 <b id="stat-notes">-</b></span>
   <span>废弃 <b id="stat-deprecated">-</b></span>
   <span>遗忘 <b id="stat-forgotten">-</b></span>
   <span>孤立 <b id="stat-orphans">-</b></span>
@@ -118,8 +133,12 @@
 
 <div id="ctx-menu"></div>
 
-<script src="https://unpkg.com/three@0.148.0/build/three.min.js"></script>
-<script src="https://unpkg.com/3d-force-graph@1.71.3/dist/3d-force-graph.min.js"></script>
+<script src="https://unpkg.com/three@0.148.0/build/three.min.js"
+        integrity="sha384-dExwZC37YQmIFi07hOTp5AMpKvCAuwaFkvXuCMAHySEMMI5H5H/HrQYYjDtUgEnC"
+        crossorigin="anonymous"></script>
+<script src="https://unpkg.com/3d-force-graph@1.71.3/dist/3d-force-graph.min.js"
+        integrity="sha384-lYOnQ1YCYNpw4DqFoM5qbUYLBhIz6bcOPgAGyDZ4MZKbitVt5th++9qclFjW+ja/"
+        crossorigin="anonymous"></script>
 <script src="/static/js/util.js"></script>
 <script src="/static/js/store.js"></script>
 <script src="/static/js/api.js"></script>

@@ -36,6 +36,10 @@
   EDGE_TYPES.forEach(function (t) { EDGE_COLORS[t.key] = t.color; });
   const BIDIRECTIONAL = ['scenario', 'social', 'attribute'];
 
+  // 笔记节点的语义色。刻意不复用 amber(#f59e0b)——那个颜色已经承担
+  // 「固定图钉环」与「StoryRank 采纳高亮」两种含义，再加第三义会读不出来。
+  const NOTE_COLOR = '#7c3aed';
+
   // 渲染默认值对齐官网图谱（透明画布 + 56px 网格、粒子数 1、力参数 -160/36）
   const DEFAULT_SETTINGS = {
     render: {
@@ -50,6 +54,13 @@
       autoRotate: false,
       showPipes: true,
       grid: true,              // 页面/画布 56px 网格底纹
+    },
+    ui: {
+      // 单键快捷键（G/O/P/S/N/E…）总开关：无障碍要求（WCAG 2.1.4）单字符快捷键
+      // 必须可关闭，避免与读屏等辅助技术的按键冲突。关掉后仍保留 Ctrl 组合键。
+      singleKeyShortcuts: true,
+      // 主题：auto（跟随系统）| light | dark
+      theme: 'auto',
     },
   };
 
@@ -123,7 +134,8 @@
   A.const = {
     NODE_TYPES: NODE_TYPES, EDGE_TYPES: EDGE_TYPES,
     NODE_COLORS: NODE_COLORS, EDGE_COLORS: EDGE_COLORS,
-    BIDIRECTIONAL: BIDIRECTIONAL, DEFAULT_SETTINGS: clone(DEFAULT_SETTINGS),
+    BIDIRECTIONAL: BIDIRECTIONAL, NOTE_COLOR: NOTE_COLOR,
+    DEFAULT_SETTINGS: clone(DEFAULT_SETTINGS),
   };
 
   A.store = {

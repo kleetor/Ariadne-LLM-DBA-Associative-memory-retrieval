@@ -506,13 +506,19 @@ class AuthMiddleware:
     def __init__(self, app, store: AuthStore, signer: Optional[SessionSigner] = None,
                  bearer_token: Optional[str] = None,
                  exempt_paths: Sequence[str] = ALWAYS_EXEMPT,
-                 login_path: Optional[str] = "/login"):
+                 login_path: Optional[str] = "/login",
+                 rate_limiter: Optional[LoginRateLimiter] = None):
         self.app = app
         self.store = store
         self.signer = signer
         self.bearer_token = bearer_token
         self.exempt_paths = tuple(exempt_paths)
         self.login_path = login_path
+        # Basic 失败限速：登录接口的限速只管 /login，而脚本客户端可以无限次
+        # 用 Basic 打 API（面板/MCP SSE）——口令校验是 PBKDF2-20 万次，既耗 CPU
+        # 又给了在线爆破窗口，故在中间件这一层再兜一道（只统计显式携带凭据的请求，
+        # 避免把普通浏览器的导航也计入失败）。
+        self.rate_limiter = rate_limiter if rate_limiter is not None else LoginRateLimiter()
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
@@ -522,7 +528,25 @@ class AuthMiddleware:
         if path in self.exempt_paths:
             return await self.app(scope, receive, send)
 
+        # 显式携带 Authorization 才计入失败限速（无凭据的导航不计数）
+        authorization = Headers(scope=scope).get("authorization", "")
+        limiter_key = client_key(scope) if authorization else ""
+        if limiter_key:
+            wait = self.rate_limiter.retry_after(limiter_key)
+            if wait:
+                await JSONResponse(
+                    {"error": f"凭据尝试过于频繁，请 {wait} 秒后重试"},
+                    status_code=429,
+                    headers={"Retry-After": str(wait)},
+                )(scope, receive, send)
+                return
+
         session = resolve_session(scope, self.store, self.signer, self.bearer_token)
+        if limiter_key:
+            if session is None:
+                self.rate_limiter.record_failure(limiter_key)
+            else:
+                self.rate_limiter.record_success(limiter_key)
         if session is None:
             # 浏览器直接导航（非接口、非静态资源）→ 引导到登录页；
             # login_path 为 None 表示没有登录页（如 MCP SSE），一律返回 401

@@ -10,12 +10,30 @@
 """
 
 from typing import Dict, List, Tuple, Optional
+import logging
 import networkx as nx
 
 from dba_pipeline.core.jump_axis import (
     NodeType, RelationType,
     get_jump_weight,
 )
+
+logger = logging.getLogger(__name__)
+
+
+def _parse_enum(enum_cls, raw, default, what: str, ident: str):
+    """把落盘的类型字符串还原成枚举；未知值告警后退回默认。
+
+    手改 YAML / 跨版本前向兼容时，单个未知类型不该让**整张图**加载失败
+    （直接 `NodeType(raw)` 会抛 ValueError，整份图谱就读不出来）。
+    """
+    if not raw:
+        return default
+    try:
+        return enum_cls(raw)
+    except ValueError:
+        logger.warning("未知%s类型 %r（%s），按 %s 处理", what, raw, ident, default.value)
+        return default
 
 
 class MemoryGraph:
@@ -288,7 +306,7 @@ class MemoryGraph:
             g.add_memory(
                 memory_id=nd["id"],
                 content=nd.get("content", ""),
-                node_type=NodeType(nd["type"]) if nd.get("type") else NodeType.THING,
+                node_type=_parse_enum(NodeType, nd.get("type"), NodeType.THING, "节点", nd["id"]),
                 deprecated=nd.get("deprecated", False),
                 forgotten=nd.get("forgotten", False),
             )
@@ -298,7 +316,10 @@ class MemoryGraph:
                     g.graph.nodes[nd["id"]][field] = nd[field]
 
         for ed in data.get("edges", []):
-            rt = RelationType(ed["type"]) if ed.get("type") else RelationType.CAUSAL
+            rt = _parse_enum(
+                RelationType, ed.get("type"), RelationType.CAUSAL,
+                "边", f"{ed.get('from')}→{ed.get('to')}",
+            )
             if ed.get("bidirectional"):
                 g.add_edge_bidirectional(ed["from"], ed["to"], rt)
             else:

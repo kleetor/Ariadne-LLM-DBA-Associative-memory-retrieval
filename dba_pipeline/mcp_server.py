@@ -39,7 +39,7 @@ from typing import Optional
 
 from dba_pipeline.graph.memory_graph import MemoryGraph
 from dba_pipeline.graph.review import find_duplicate_candidates
-from dba_pipeline.kwindex import KeywordIndex
+from dba_pipeline.kwindex import KeywordIndex, truncate_for_return
 from dba_pipeline.loader import load_graph, load_into
 from dba_pipeline.core.jump_axis import NodeType, RelationType, get_jump_weight
 from dba_pipeline.core.path_tracker import PathTracker
@@ -81,6 +81,9 @@ REL_TYPES = {t.value: t for t in RelationType}
 
 # 单次对话输入的最大字符数（防止异常输入打爆 LLM token / 缓冲内存）
 MAX_CONVERSATION_LENGTH = 20000
+# 人工干预（dba_intervene update_node）允许的正文上限：与对话同量级，防止把
+# 超大文本固化进图（每次 to_dict / yaml.dump / 检索响应都会被拖累）
+MAX_NODE_CONTENT_LENGTH = 20000
 
 # 笔记：单条正文上限、返回单条截断长度、默认返回条数
 MAX_NOTE_LENGTH = 4000
@@ -88,6 +91,44 @@ NOTE_TEXT_LIMIT = 1200
 NOTE_TOP_K = 8
 NOTE_MAX_TOP_K = 50
 NOTE_FIDELITIES = {"verbatim", "transcript", "summary"}
+
+# 笔记的附属字段上限：标题/tags/source_hint 会整份进 metadata（落到 YAML 并随
+# 检索返回），不设上限等于给了另一条灌大文本的通道。
+MAX_NOTE_TITLE_LENGTH = 200
+MAX_NOTE_TAGS = 20
+MAX_NOTE_TAG_LENGTH = 50
+MAX_NOTE_SOURCE_HINT_LENGTH = 500
+
+# inspect_graph 的返回体积上限：hub 节点可能有几千条边，逐条返回邻居正文会把
+# 整张图塞进一次工具响应（也是把私有内容交给调用方的放大器）。
+INSPECT_MAX_NEIGHBORS = 80
+INSPECT_MAX_EDGES = 200
+INSPECT_TEXT_LIMIT = 400
+
+# review_graph 的孤立节点返回上限：孤立节点可能成千上万，整份返回会把
+# 工具响应撑爆（调用方真正需要的只是"有没有、大概多少"）。
+REVIEW_MAX_ISOLATED = 100
+
+
+def _write_text_atomic(path: Path, text: str) -> None:
+    """原子写文本（checkpoint 快照用）：先写临时文件再 os.replace。
+
+    快照目录后续会被「恢复图谱」读回来，普通 open("w") 中途崩溃会留下半截
+    YAML/JSON——恢复时才发现，且现场已不可复现。
+    """
+    directory = os.path.dirname(os.path.abspath(path)) or "."
+    os.makedirs(directory, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=directory, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 class DBAServer:
@@ -479,7 +520,8 @@ class DBAServer:
                 # evidence 产出情况（开启时才有）：用于区分"LLM 主动留空"与"被子串校验拦掉"
                 if result.get("evidence_stats") is not None:
                     out["evidence_stats"] = result["evidence_stats"]
-                # 原文兜底的触发原因（triage / no_ops / no_create）：静默兜底必须可观测
+                # 原文兜底的触发原因（triage / no_ops / no_create / create_rejected）：
+                # 静默兜底必须可观测
                 if fallback:
                     out["fallback_reason"] = fallback
                 # 批次标识（开启原文存储时才有）：用于事后调 dba_review_sources 核对这一批
@@ -586,6 +628,8 @@ class DBAServer:
         text = (text or "").strip()
         if not title:
             return {"error": "title 不能为空"}
+        if len(title) > MAX_NOTE_TITLE_LENGTH:
+            return {"error": f"title 超过 {MAX_NOTE_TITLE_LENGTH} 字符上限"}
         if not text:
             return {"error": "text 不能为空"}
         if len(text) > MAX_NOTE_LENGTH:
@@ -605,7 +649,13 @@ class DBAServer:
         if not isinstance(tags, list) or any(not isinstance(t, str) for t in tags):
             return {"error": "tags 必须是字符串数组"}
         tags = [t.strip() for t in tags if t and t.strip()]
+        if len(tags) > MAX_NOTE_TAGS:
+            return {"error": f"tags 最多 {MAX_NOTE_TAGS} 个"}
+        if any(len(t) > MAX_NOTE_TAG_LENGTH for t in tags):
+            return {"error": f"单个 tag 不能超过 {MAX_NOTE_TAG_LENGTH} 字符"}
         source_hint = (source_hint or "").strip() or None
+        if source_hint and len(source_hint) > MAX_NOTE_SOURCE_HINT_LENGTH:
+            return {"error": f"source_hint 超过 {MAX_NOTE_SOURCE_HINT_LENGTH} 字符上限"}
 
         now = int(time.time() * 1000)
         try:
@@ -702,11 +752,12 @@ class DBAServer:
         for hit in hits[:top_k]:
             meta = hit.get("metadata") or {}
             content = hit.get("content") or ""
+            shown, truncated = truncate_for_return(content, NOTE_TEXT_LIMIT)
             item = {
                 "node_id": hit["node_id"],
-                "text": content[:NOTE_TEXT_LIMIT],
+                "text": shown,
                 "score": hit["score"],
-                "truncated": len(content) > NOTE_TEXT_LIMIT,
+                "truncated": truncated,
             }
             for key in ("title", "observed_at", "source_hint", "fidelity", "channel"):
                 if meta.get(key) is not None:
@@ -980,25 +1031,34 @@ class DBAServer:
                     nd = index.get(p[side]) or {}
                     p[side] = {
                         "id": p[side],
-                        "content": nd.get("content", ""),
+                        "content": truncate_for_return(
+                            nd.get("content", "") or "", INSPECT_TEXT_LIMIT)[0],
                         "node_type": (str(nd.get("node_type") or "").split(".")[-1].lower()),
                     }
 
             isolated = []
+            isolated_total = 0
             if include_isolated:
                 with self._lock:
-                    isolated = [
-                        {"id": nid, "content": (nd.get("content") or "")}
-                        for nid, nd in self.graph.graph.nodes(data=True)
-                        if not nd.get("deprecated") and not nd.get("forgotten")
-                        and (nd.get("metadata") or {}).get("channel") != "note"
-                        and self.graph.graph.in_degree(nid) + self.graph.graph.out_degree(nid) == 0
-                    ]
+                    for nid, nd in self.graph.graph.nodes(data=True):
+                        if (nd.get("deprecated") or nd.get("forgotten")
+                                or (nd.get("metadata") or {}).get("channel") == "note"):
+                            continue
+                        if self.graph.graph.in_degree(nid) + self.graph.graph.out_degree(nid):
+                            continue
+                        isolated_total += 1
+                        if len(isolated) < REVIEW_MAX_ISOLATED:
+                            isolated.append({
+                                "id": nid,
+                                "content": truncate_for_return(
+                                    nd.get("content") or "", INSPECT_TEXT_LIMIT)[0],
+                            })
 
             return {
                 "scanned": len(active),
                 "duplicate_candidates": pairs,
                 "isolated_nodes": isolated,
+                "isolated_total": isolated_total,
                 "threshold": threshold,
                 "note": ("本报告只做候选发现，**未修改图谱**。确认后请用 dba_intervene "
                          "（update_node 合并内容 / delete_node 删除冗余）落盘；"
@@ -1042,16 +1102,14 @@ class DBAServer:
 
         # 出边
         for _, tgt, edata in self.graph.graph.out_edges(nid, data=True):
+            if len(edges) >= INSPECT_MAX_EDGES:
+                break
             rt = edata["rel_type"]
             tgt_node = self.graph.graph.nodes[tgt]
             tgt_nt = tgt_node.get("node_type")
-            if tgt not in seen_nodes:
+            if tgt not in seen_nodes and len(nodes) < INSPECT_MAX_NEIGHBORS + 1:
                 seen_nodes.add(tgt)
-                nodes.append({
-                    "id": tgt,
-                    "content": tgt_node.get("content", ""),
-                    "node_type": tgt_nt.value if hasattr(tgt_nt, "value") else str(tgt_nt),
-                })
+                nodes.append(self._neighbor_entry(tgt, tgt_node, tgt_nt))
             edges.append({
                 "from": nid,
                 "to": tgt,
@@ -1060,23 +1118,38 @@ class DBAServer:
 
         # 入边
         for src, _, edata in self.graph.graph.in_edges(nid, data=True):
+            if len(edges) >= INSPECT_MAX_EDGES:
+                break
             rt = edata["rel_type"]
             src_node = self.graph.graph.nodes[src]
             src_nt = src_node.get("node_type")
-            if src not in seen_nodes:
+            if src not in seen_nodes and len(nodes) < INSPECT_MAX_NEIGHBORS + 1:
                 seen_nodes.add(src)
-                nodes.append({
-                    "id": src,
-                    "content": src_node.get("content", ""),
-                    "node_type": src_nt.value if hasattr(src_nt, "value") else str(src_nt),
-                })
+                nodes.append(self._neighbor_entry(src, src_node, src_nt))
             edges.append({
                 "from": src,
                 "to": nid,
                 "type": rt.value if hasattr(rt, "value") else str(rt),
             })
 
-        return {"nodes": nodes, "edges": edges}
+        out = {"nodes": nodes, "edges": edges}
+        # 截断必须显式告知：否则调用方会把"只有 80 个邻居"当成事实
+        out["truncated"] = len(edges) >= INSPECT_MAX_EDGES or len(nodes) > INSPECT_MAX_NEIGHBORS
+        return out
+
+    @staticmethod
+    def _neighbor_entry(nid: str, node: dict, nt) -> dict:
+        """1-hop 邻居的精简表示：正文按 INSPECT_TEXT_LIMIT 截断"""
+        content = node.get("content", "") or ""
+        shown, truncated = truncate_for_return(content, INSPECT_TEXT_LIMIT)
+        entry = {
+            "id": nid,
+            "content": shown,
+            "node_type": nt.value if hasattr(nt, "value") else str(nt),
+        }
+        if truncated:
+            entry["truncated"] = True
+        return entry
 
     def intervene(self, action: str, params: dict) -> dict:
         """人工干预 CRUD 操作（跨进程文件锁 + 进程内锁保护）"""
@@ -1165,12 +1238,20 @@ class DBAServer:
                     return {"error": "timestamp 必须为 Unix 毫秒整数，或 null 表示清空",
                             "action": action}
                 if "content" in params:
+                    new_content = params["content"]
+                    # 与 create_node 同口径：非字符串 / 空 / 超长都会写坏图（后续
+                    # `content.strip()` 全线 AttributeError），必须在落地前挡掉
+                    if not isinstance(new_content, str) or not new_content.strip():
+                        return {"error": "content 必须是非空字符串", "action": action}
+                    if len(new_content) > MAX_NODE_CONTENT_LENGTH:
+                        return {"error": f"content 超过 {MAX_NODE_CONTENT_LENGTH} 字符上限",
+                                "action": action}
                     old_content = node.get("content", "")
-                    node["content"] = params["content"]
+                    node["content"] = new_content
                     # 同步向量（失败时回滚内容并向调用方报错，与 GraphBuilder 一致）
                     if self.vector_store is not None:
                         try:
-                            self.vector_store.update_memories([nid], [params["content"]])
+                            self.vector_store.update_memories([nid], [new_content])
                         except Exception as e:
                             node["content"] = old_content
                             return {"error": f"向量更新失败，内容已回滚: {e}", "action": action}
@@ -1260,17 +1341,21 @@ class DBAServer:
         return result
 
     def _is_safe_save_dir(self, save_dir: str) -> bool:
-        """限制 checkpoint 落盘目录在图谱目录之内。
+        """限制 checkpoint 落盘目录在图谱目录的**子目录**内。
 
         `save_dir` 来自工具入参（由 LLM/Agent 提供），不约束即可被提示注入诱导写入
         任意目录；这里拒绝越出图谱目录的路径（含绝对路径与 `..`）。
+
+        注意**必须排除图谱目录本身**：`save_checkpoint()` 固定写
+        `<save_dir>/memory_graph.yaml`（非原子），而活图谱默认就叫这个名字；
+        允许 `save_dir="."` 等于原地重写正在使用的图谱。
         """
         base = os.path.abspath(os.path.dirname(self.yaml_path)) if self.yaml_path else None
         if not base:
             return False
         target = os.path.abspath(save_dir if os.path.isabs(save_dir)
                                  else os.path.join(base, save_dir))
-        return target == base or target.startswith(base + os.sep)
+        return target.startswith(base + os.sep)
 
     def checkpoint(self, save_dir: str = None) -> dict:
         """保存检查点（若 DBA 管线已接入则保存完整状态）
@@ -1282,7 +1367,7 @@ class DBAServer:
         base = os.path.abspath(os.path.dirname(self.yaml_path)) if self.yaml_path else None
         if save_dir:
             if not self._is_safe_save_dir(save_dir):
-                return {"error": f"非法的 save_dir（仅允许图谱目录及其子目录）: {save_dir}"}
+                return {"error": f"非法的 save_dir（仅允许图谱目录的子目录，不能是图谱目录本身）: {save_dir}"}
             target = os.path.abspath(
                 save_dir if os.path.isabs(save_dir) else os.path.join(base, save_dir)
             )
@@ -1304,8 +1389,10 @@ class DBAServer:
                 scheduler_state = None
                 if self.scheduler:
                     sched_path = Path(target) / "scheduler_state.json"
-                    with open(sched_path, "w", encoding="utf-8") as f:
-                        json.dump(self.scheduler.save_state(), f, ensure_ascii=False, indent=2)
+                    _write_text_atomic(
+                        sched_path,
+                        json.dumps(self.scheduler.save_state(), ensure_ascii=False, indent=2),
+                    )
                     scheduler_state = "saved"
                 return {
                     "save_dir": target,
@@ -1325,8 +1412,10 @@ class DBAServer:
             data = self.graph.to_dict()
             nodes = self.graph.node_count
             edges = self.graph.edge_count
-        with open(out_path, "w", encoding="utf-8") as f:
-            yaml.dump(data, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+        _write_text_atomic(
+            out_path,
+            yaml.dump(data, allow_unicode=True, default_flow_style=False, sort_keys=False),
+        )
         return {
             "save_dir": str(out_path),
             "nodes": nodes,
@@ -1686,6 +1775,37 @@ def _oplog_request(name: str, arguments: dict) -> dict:
     return out
 
 
+# 这些工具的返回值里含正文载荷：操作日志只记长度/条数（对话、笔记、检索片段
+# 都不该落进共享日志）
+_OPLOG_RESULT_PAYLOAD_KEYS = {
+    "stories", "notes", "results", "facts", "nodes", "snippets",
+    "query", "content", "text", "title", "summary", "source_hint",
+}
+
+# 其余字段中超过该长度的字符串同样按长度记，防止新增字段绕过上面的清单
+_OPLOG_MAX_STRING = 200
+
+
+def _oplog_result(name: str, result):
+    """构造写入操作日志的返回值字段：敏感工具的正文载荷只记长度/条数。"""
+    if name not in _OPLOG_REDACT_TOOLS or not isinstance(result, dict):
+        return result
+    out = {}
+    for k, v in result.items():
+        if k in _OPLOG_RESULT_PAYLOAD_KEYS:
+            if isinstance(v, (list, tuple)):
+                out[k] = f"<{len(v)} 条>"
+            elif isinstance(v, str):
+                out[k] = f"<{len(v)} 字符>"
+            else:
+                out[k] = v
+        elif isinstance(v, str) and len(v) > _OPLOG_MAX_STRING:
+            out[k] = f"<{len(v)} 字符>"
+        else:
+            out[k] = v
+    return out
+
+
 def create_mcp_server(dba: DBAServer) -> "Server":
     """构建 MCP Server 实例 (MCP v2.0 API)"""
     # 工具 handler 是协程，而下面的记忆链路全是**阻塞式**的（embedding + 多次 LLM，
@@ -1742,13 +1862,14 @@ def create_mcp_server(dba: DBAServer) -> "Server":
                 result = {"error": f"Unknown tool: {name}"}
         except Exception as e:
             oplog.log_operation("llm", op=name, request=_oplog_request(name, arguments),
-                                result={"status": "error", "error": str(e)},
+                                result=_oplog_result(name, {"status": "error", "error": str(e)}),
                                 actor=actor, tool=name, path=log_path)
             return CallToolResult(
                 content=[TextContent(type="text", text=json.dumps({"error": str(e)}, ensure_ascii=False, indent=2))]
             )
 
-        oplog.log_operation("llm", op=name, request=_oplog_request(name, arguments), result=result,
+        oplog.log_operation("llm", op=name, request=_oplog_request(name, arguments),
+                            result=_oplog_result(name, result),
                             actor=actor, tool=name, path=log_path)
         return CallToolResult(
             content=[TextContent(type="text", text=json.dumps(result, ensure_ascii=False, indent=2))]
@@ -1811,7 +1932,10 @@ async def run_sse(server: "Server", host: str, port: int, store: "webauth.AuthSt
         login_path=None,
     )
 
-    config = uvicorn.Config(starlette_app, host=host, port=port, log_level="info")
+    # limit_concurrency：SSE 连接是长连接（每个客户端至少一条），不设上限等于
+    # 任何一个能连上端口的进程都能把文件描述符/内存耗尽。256 对正常使用远远够用。
+    config = uvicorn.Config(starlette_app, host=host, port=port, log_level="info",
+                            limit_concurrency=256)
     http_server = uvicorn.Server(config)
     await http_server.serve()
 

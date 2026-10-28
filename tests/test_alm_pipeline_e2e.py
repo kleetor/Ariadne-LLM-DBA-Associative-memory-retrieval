@@ -801,12 +801,12 @@ def test_fallback_reason_treats_omitted_action_as_create(tmp_path):
 
     # ① 有 create（省略 action）但 created 为空 = 全被合并 → 正常，不该兜底
     merged = {"ops": {"node_ops": [{"content": "x", "node_type": "action"}]},
-              "result": {}}
+              "result": {"deduped": 1}}
     assert space._fallback_reason(merged, []) is None
 
     # ② 显式写了 action: create 也要同样放行
     explicit = {"ops": {"node_ops": [{"action": "create", "content": "x"}]},
-                "result": {}}
+                "result": {"deduped": 1}}
     assert space._fallback_reason(explicit, []) is None
 
     # ③ 真的有节点落库时更不该兜底（早退分支）
@@ -815,6 +815,11 @@ def test_fallback_reason_treats_omitted_action_as_create(tmp_path):
     # ④ triage 跳过 / 空 ops 两种原因不能被这次改动影响
     assert space._fallback_reason({"skipped": True}, []) == "triage"
     assert space._fallback_reason({"ops": {"node_ops": []}, "result": {}}, []) == "no_ops"
+
+    # ⑤ create 全被拒（致命错误整批回滚，created 清空）→ 内容确实没进图，必须兜底
+    rejected = {"ops": {"node_ops": [{"content": "x", "node_type": "action"}]},
+                "result": {"deduped": 0, "errors": [{"error": "boom"}]}}
+    assert space._fallback_reason(rejected, []) == "create_rejected"
 
 
 # ---------------------------------------------------------------------------

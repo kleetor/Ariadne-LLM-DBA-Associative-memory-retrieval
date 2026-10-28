@@ -677,6 +677,7 @@ class MemoryDBA:
             "ops": {"node_ops": node_ops, "edge_ops": edge_ops},
             "result": {
                 "created_ids": result1.get("created_ids", []),
+                "deduped": result1.get("deduped", 0),
                 "skipped": result1.get("skipped", []) + result2.get("skipped", []),
                 "errors": result1.get("errors", []) + result2.get("errors", []),
             },
@@ -781,12 +782,13 @@ class MemoryDBA:
         """内容没能进入图谱时返回原因标识，否则返回 None（MCP 兜底判定）。
 
         与 ALM `space._fallback_reason` 同口径，覆盖三态互补的失效：
-            "triage"    —— 维护判断前置直接跳过，压根没跑抽取
-            "no_ops"    —— 跑了抽取但一个 node_op 都没有（解析失败 / 截断）
-            "no_create" —— 有 ops 却没有 create，且没有任何 update/deprecate/fix_type
+            "triage"          —— 维护判断前置直接跳过，压根没跑抽取
+            "no_ops"          —— 跑了抽取但一个 node_op 都没有（解析失败 / 截断）
+            "no_create"       —— 有 ops 却没有 create，且没有任何 update/deprecate/fix_type
+            "create_rejected" —— 发起了 create 但全被校验拒绝（缺字段等），一个都没落地
 
-        「LLM 发起了 create 却一个都没落地」**不**算：那说明命中了语义去重，
-        图中已有等价记忆；此时再兜底反而会把同一内容以原文重复写入。
+        「create 全部命中语义去重」**不**算失效：图中已有等价记忆，再兜底只会
+        把同一内容以原文重复写入。因此这里用 `deduped` 计数区分「去重」与「被拒」。
         """
         if result.get("skipped"):
             return "triage"
@@ -800,8 +802,11 @@ class MemoryDBA:
 
         if not node_ops:
             return "no_ops"
-        if any(_act(op) == "create" for op in node_ops):
-            return None
+        create_count = sum(1 for op in node_ops if _act(op) == "create")
+        if create_count:
+            deduped = (result.get("result") or {}).get("deduped") or 0
+            # 全部 create 都落在语义去重上：内容已在图中，不需要兜底
+            return None if deduped >= create_count else "create_rejected"
         if not any(_act(op) in ("update", "deprecate", "fix_type") for op in node_ops):
             return "no_create"
         return None
@@ -1101,19 +1106,39 @@ class MemoryDBA:
     # ---- 检查点 ----
 
     def save_checkpoint(self, save_dir: str):
-        """保存完整检查点（图谱 + 向量 + 构建器状态）"""
-        import yaml
+        """保存完整检查点（图谱 + 向量 + 构建器状态）
+
+        所有 JSON/YAML 文件走「临时文件 + os.replace」原子替换：检查点目录可能
+        就是活图谱目录的子目录（甚至被误指到别处），普通 ``open("w")`` 先截断再写，
+        中途失败会留下空/半截文件。
+        """
         import json
         import os
+        import tempfile
+        import yaml
         from datetime import datetime
 
         os.makedirs(save_dir, exist_ok=True)
 
+        def _atomic_write(path: str, text: str) -> None:
+            fd, tmp_path = tempfile.mkstemp(dir=save_dir, suffix=".tmp")
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    f.write(text)
+                os.replace(tmp_path, path)
+            except BaseException:
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+                raise
+
         # 1. 图谱 → YAML
         graph_path = os.path.join(save_dir, "memory_graph.yaml")
-        with open(graph_path, "w", encoding="utf-8") as f:
-            yaml.dump(self.graph.to_dict(), f, allow_unicode=True,
-                      default_flow_style=False, sort_keys=False)
+        _atomic_write(graph_path, yaml.dump(
+            self.graph.to_dict(), allow_unicode=True,
+            default_flow_style=False, sort_keys=False,
+        ))
 
         # 2. 向量存储
         vs_path = os.path.join(save_dir, "faiss_index")
@@ -1122,18 +1147,18 @@ class MemoryDBA:
 
         # 3. 构建器状态 → JSON
         builder_path = os.path.join(save_dir, "builder_state.json")
-        with open(builder_path, "w", encoding="utf-8") as f:
-            json.dump(self.builder.save_state(), f, ensure_ascii=False)
+        _atomic_write(builder_path, json.dumps(
+            self.builder.save_state(), ensure_ascii=False,
+        ))
 
         # 4. 检查点元数据
         checkpoint_path = os.path.join(save_dir, "checkpoint.json")
-        with open(checkpoint_path, "w", encoding="utf-8") as f:
-            json.dump({
-                "version": "1",
-                "timestamp": datetime.now().isoformat(),
-                "nodes": self.graph.node_count,
-                "edges": self.graph.edge_count,
-            }, f, ensure_ascii=False, indent=2)
+        _atomic_write(checkpoint_path, json.dumps({
+            "version": "1",
+            "timestamp": datetime.now().isoformat(),
+            "nodes": self.graph.node_count,
+            "edges": self.graph.edge_count,
+        }, ensure_ascii=False, indent=2))
 
         logger.info(f"检查点已保存: {save_dir} ({self.graph.node_count} 节点, {self.graph.edge_count} 边)")
         return save_dir

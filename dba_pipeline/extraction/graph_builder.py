@@ -40,6 +40,8 @@ class _WriteTransaction:
         self._deleted_edges: List[Tuple[str, str, RelationType]] = []
         # 统计快照（回滚时恢复）
         self._stats_snapshot: Dict = {}
+        # 语义去重的 create 次数（区别于"被校验拒绝"，供调用方判断是否需要原文兜底）
+        self.deduped = 0
 
     def track_create_node(self, node_id: str):
         self._created_nodes.append(node_id)
@@ -209,7 +211,8 @@ class GraphBuilder:
             edge_ops: 边操作列表 [{"action": "create", ...}, ...]
 
         Returns:
-            {"created_ids": [...], "skipped": [...], "errors": [...]}
+            {"created_ids": [...], "skipped": [...], "errors": [...], "deduped": int}
+            deduped 表示因语义去重而跳过创建的 create 操作数。
 
         事务保护：跟踪写入操作，如 graph 写入成功但 vector_store 写入失败，
         回滚 graph 变更并记录错误。
@@ -263,12 +266,25 @@ class GraphBuilder:
         if not errors and check_orphans:
             self._check_orphans()
 
+        if errors:
+            # 已回滚：created_ids 里那些节点已从 graph 删除，不能再交给调用方
+            # 去落盘/建索引，否则会写出悬空 ID。
+            created_ids.clear()
+            txn.commit()
+            return {
+                "created_ids": created_ids,
+                "skipped": skipped,
+                "errors": errors,
+                "deduped": 0,
+            }
+
         txn.commit()
 
         return {
             "created_ids": created_ids,
             "skipped": skipped,
             "errors": errors,
+            "deduped": txn.deduped,
         }
 
     # ---- 节点操作 ----
@@ -307,6 +323,7 @@ class GraphBuilder:
         dup_id = self._find_duplicate(content)
         if dup_id:
             id_mapping[op.get("temp_id", "")] = dup_id
+            txn.deduped += 1
             logger.info(f"节点去重: '{content[:40]}...' → 已有节点 {dup_id}")
             return None
 

@@ -68,7 +68,7 @@ from dba_pipeline.viz.chain_runner import ChainRunner
 from dba_pipeline import envfile, filelock, graphlib, oplog
 from dba_pipeline import params as params_mod
 from dba_pipeline import webauth
-from dba_pipeline.kwindex import KeywordIndex
+from dba_pipeline.kwindex import KeywordIndex, truncate_for_return
 
 
 NODE_TYPES = {t.value.upper(): t for t in NodeType}
@@ -934,11 +934,11 @@ def create_app(api: MemoryGraphAPI, config: VizConfig,
             items = []
             for r in raw_results:
                 content = r.get("content") or ""
-                truncated = len(content) > _KNOWLEDGE_TEXT_LIMIT
+                shown, truncated = truncate_for_return(content, _KNOWLEDGE_TEXT_LIMIT)
                 items.append({
                     "node_id": r["node_id"],
-                    "label": (r.get("content") or "")[:80],
-                    "content": content[:_KNOWLEDGE_TEXT_LIMIT] if truncated else content,
+                    "label": shown[:80],
+                    "content": shown,
                     "metadata": r.get("metadata") or {},
                     "score": round(r.get("score", 0), 3),
                     "observed_at": r.get("observed_at"),
@@ -1542,7 +1542,10 @@ def main():
     print(f"操作日志: {config.oplog_path}")
     print("按 Ctrl+C 停止")
 
-    uvicorn.run(app, host=config.host, port=config.port, log_level="warning")
+    # limit_concurrency：面板同时挂着 3 条 SSE 长连接 + 短请求，不设上限时
+    # 任何能连上端口的进程都能耗尽文件描述符；512 远超正常使用量。
+    uvicorn.run(app, host=config.host, port=config.port, log_level="warning",
+                limit_concurrency=512)
 
 
 if __name__ == "__main__":

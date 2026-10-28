@@ -27,6 +27,8 @@
   --ta: #0f766e;          /* teal-700 */
   --amber: #b45309;
   --rose: #be123c;
+  /* 笔记的文字色：与画布球体同色系，但深色底上要提亮才能满足正文 4.5:1 */
+  --note-text: #7c3aed;
   --font-display: "Chakra Petch", "PingFang SC", "Microsoft YaHei", "Noto Sans SC", sans-serif;
   --font-body: "PingFang SC", "Microsoft YaHei", "Noto Sans SC", sans-serif;
   --radius: 12px;
@@ -58,6 +60,7 @@ html[data-theme="dark"] {
   --text-dim: #9db0c3;
   --amber: #f59e0b;       /* 深色底上加深琥珀会糊成一片，提亮一档 */
   --rose: #fb7185;
+  --note-text: #a78bfa;   /* #7c3aed 在深色底只有 3.17:1，正文需要 ≥4.5:1 */
   --shadow-card: 0 8px 30px rgba(0, 0, 0, 0.38);
   color-scheme: dark;
 }
@@ -297,6 +300,7 @@ select.input option { background: var(--surface-solid); color: var(--text); }
 
 .hint { color: var(--text-dim); font-size: 12px; line-height: 1.75; padding: 4px 0; }
 .hint.error { color: var(--rose); }
+.hint.note-hint { color: var(--note-text); }
 .muted { color: var(--text-dim); font-size: 11px; }
 
 /* ---------- 搜索 ---------- */

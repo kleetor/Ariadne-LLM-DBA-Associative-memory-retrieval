@@ -51,6 +51,8 @@ def _engine(tmp_path, max_spaces=16):
     engine._constructing = set()
     engine._space_cv = threading.Condition(engine._registry_lock)
     engine._construct_slots = threading.BoundedSemaphore(4)
+    engine._dirname_owners = {}
+    engine._case_insensitive = False  # 与真实探测解耦：这些用例不测大小写冲突
     return engine
 
 

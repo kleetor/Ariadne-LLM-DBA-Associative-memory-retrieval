@@ -398,7 +398,10 @@ def main():
     app = create_app(engine, config)
 
     try:
-        uvicorn.run(app, host=config.host, port=config.port, log_level="warning")
+        # limit_concurrency：ALM 的 Add/Search 会自动重试，连接数失控时宁可
+        # 快速返回 503 也不要把进程拖到 OOM（正常租户量远低于该上限）。
+        uvicorn.run(app, host=config.host, port=config.port, log_level="warning",
+                    limit_concurrency=512)
     finally:
         engine.close()
         # 退出时报账：token 用量与成本、检索余弦分布（均用于压测 / 运行后的标定）

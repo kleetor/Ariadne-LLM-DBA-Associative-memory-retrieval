@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
-"""关键词倒排索引单元测试：分词、字段权重、过滤与排序。"""
-from dba_pipeline.kwindex import KeywordIndex, tokenize
+"""关键词倒排索引单元测试：分词、字段权重、过滤、排序与返回截断。"""
+from dba_pipeline.kwindex import KeywordIndex, tokenize, truncate_for_return
 
 
 def _note(nid, title, text, tags=None, ts=None, deprecated=False, forgotten=False):
@@ -75,3 +75,48 @@ def test_empty_and_no_match():
     idx.build([_note("n1", "接口超时", "x")])
     assert idx.search("") == []
     assert idx.search("完全无关的词汇") == []
+
+
+# ---- 返回截断：优先句末/换行，长度不超过预算 ----
+
+def test_truncate_short_text_untouched():
+    text = "接口超时统一 30s。"
+    out, cut = truncate_for_return(text, 100)
+    assert out == text and cut is False
+
+
+def test_truncate_exact_limit_untouched():
+    text = "a" * 50
+    out, cut = truncate_for_return(text, 50)
+    assert out == text and cut is False
+
+
+def test_truncate_breaks_at_sentence_end():
+    text = "第一句话讲背景。" + "第二句话很长" * 80
+    out, cut = truncate_for_return(text, 120)
+    assert cut is True
+    assert out.endswith("…")
+    assert len(out) <= 120
+    assert out.startswith("第一句话讲背景。")   # 在句号后断开
+
+
+def test_truncate_breaks_at_newline():
+    text = "配置项如下：\n" + "x" * 400
+    out, cut = truncate_for_return(text, 80)
+    assert cut is True
+    assert out.endswith("…") and len(out) <= 80
+    # 在换行处断开，且断点后的换行本身被 rstrip 掉（避免返回值尾部挂空行）
+    assert out == "配置项如下：…"
+
+
+def test_truncate_falls_back_to_hard_cut():
+    text = "无标点" * 200
+    out, cut = truncate_for_return(text, 60)
+    assert cut is True
+    assert out.endswith("…") and len(out) == 60
+
+
+def test_truncate_zero_limit_disables():
+    text = "任意内容" * 10
+    out, cut = truncate_for_return(text, 0)
+    assert out == text and cut is False

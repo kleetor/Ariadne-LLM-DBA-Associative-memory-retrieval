@@ -2,7 +2,6 @@
 
 """VectorStore 单元测试：原地更新 + 追加式分片落盘"""
 import numpy as np
-import pytest
 from langchain_core.embeddings import Embeddings
 
 from dba_pipeline.embedding.store import VectorStore
@@ -178,8 +177,9 @@ def test_clear_vectors_invalidates_disk_shards(tmp_path):
     vs.save(path)
 
     vs2 = _store()
-    with pytest.raises(FileNotFoundError):
-        vs2.load(path)
+    # 空分片目录按空向量库启动（不再抛 FileNotFoundError）
+    vs2.load(path)
+    assert vs2._content_vectors == {}
 
 
 def test_compact_merges_fragmented_shards(tmp_path):
@@ -246,3 +246,40 @@ def test_load_legacy_npz_format(tmp_path):
     vs.load(str(idx / "faiss"))
     assert np.asarray(vs._content_vectors["n1"]).tolist() == [3.0, 1.0]
     assert vs._contents["n1"] == "aaa"
+
+
+def test_add_memories_does_not_resurrect_node_removed_during_embedding():
+    """TOCTOU：锁外嵌入期间被删除的节点不能在写回时复活"""
+    holder = {}
+
+    class DeletingEmbeddings(FakeEmbeddings):
+        def embed_documents(self, texts):
+            # 模拟嵌入期间另一线程删除了 n2
+            holder["vs"].remove_memories(["n2"])
+            return super().embed_documents(texts)
+
+    vs = VectorStore(embeddings=DeletingEmbeddings(), backend="faiss")
+    holder["vs"] = vs
+    vs.add_memories(["n2"], ["bbb"])
+
+    assert "n2" not in vs._content_vectors
+    assert "n2" not in vs._contents
+
+
+def test_add_memories_allows_readd_after_removal():
+    """删除之后重新发起的 add（新纪元）仍应正常写入"""
+    vs = _store()
+    vs.add_memories(["n1"], ["aaa"])
+    vs.remove_memories(["n1"])
+    vs.add_memories(["n1"], ["aaa"])
+
+    assert "n1" in vs._content_vectors
+
+
+def test_load_empty_shard_dir_starts_empty(tmp_path):
+    """空分片目录 = 全新空间，按空向量库启动而不是抛 FileNotFoundError"""
+    vs = _store()
+    vs.load(str(tmp_path / "faiss"))
+
+    assert vs._content_vectors == {}
+    assert vs.search("x", k=3) == []

@@ -518,7 +518,7 @@
         body.appendChild(el('div', { class: 'divider' }));
         body.appendChild(el('div', { class: 'group-label', text: '笔记信息' }));
         if (meta.channel === 'note') {
-          body.appendChild(el('div', { class: 'hint', style: 'color:' + C.NOTE_COLOR }, '📝 项目笔记（无边、可被知识检索）'));
+          body.appendChild(el('div', { class: 'hint note-hint' }, '📝 项目笔记（无边、可被知识检索）'));
           if (meta.title) body.appendChild(el('div', { class: 'field' }, [
             el('span', { class: 'muted', text: '标题' }),
             el('span', { class: 'mono', text: meta.title }),
@@ -954,7 +954,8 @@
       dropdown.innerHTML = '<div class="search-empty">搜索中…</div>';
       dropdown.classList.add('open');
       try {
-        const result = await A.api.knowledgeSearch(q, 10);
+        // 默认 8 条与 MCP 侧 NOTE_TOP_K 对齐：知识层是精确查找，过量结果只增噪声
+        const result = await A.api.knowledgeSearch(q, 8);
         const items = result.items || [];
         renderResults(items.map(function (r) {
           const isNote = r.metadata && r.metadata.channel === 'note';

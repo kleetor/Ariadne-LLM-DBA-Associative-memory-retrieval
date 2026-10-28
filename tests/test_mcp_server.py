@@ -5,9 +5,11 @@ import os
 import threading
 
 from dba_pipeline.graph.memory_graph import MemoryGraph
-from dba_pipeline.core.jump_axis import NodeType
+from dba_pipeline.core.jump_axis import NodeType, RelationType
 from dba_pipeline import envfile
-from dba_pipeline.mcp_server import DBAServer, MAX_CONVERSATION_LENGTH
+from dba_pipeline.mcp_server import (
+    DBAServer, MAX_CONVERSATION_LENGTH, _oplog_result,
+)
 
 
 class FakeVectorStore:
@@ -51,6 +53,43 @@ def test_create_node_id_avoids_existing_nodes(tmp_path):
     assert result.get("success") is True
     assert result["node"]["id"] == "n6"
     assert server.graph.graph.nodes["n5"]["content"] == "dba 创建"
+
+
+def test_inspect_graph_caps_neighbors_and_truncates(tmp_path):
+    """hub 节点的 1-hop 展开必须有上限，否则一次工具响应会塞进整张图"""
+    server = _server(tmp_path)
+    server.graph.graph.add_node(
+        "n1", content="种子", node_type=NodeType.STATUS,
+        deprecated=False, forgotten=False,
+    )
+    for i in range(120):
+        mid = f"m{i}"
+        server.graph.graph.add_node(
+            mid, content="长" * 600, node_type=NodeType.THING,
+            deprecated=False, forgotten=False,
+        )
+        server.graph.graph.add_edge("n1", mid, rel_type=RelationType.CAUSAL)
+
+    out = server.inspect_graph("n1")
+
+    assert out["truncated"] is True
+    assert len(out["nodes"]) <= 81          # 种子 + 最多 80 个邻居
+    assert len(out["edges"]) <= 200
+    neighbor = out["nodes"][1]
+    assert neighbor["truncated"] is True    # 600 字邻居被截到 400 字
+    assert len(neighbor["content"]) <= 400
+
+
+def test_oplog_result_redacts_payload():
+    out = _oplog_result("dba_query_memory", {
+        "query": "我的私密问题", "stories": ["正文" * 100], "returned": 1,
+    })
+    assert out["query"] == "<6 字符>"
+    assert out["stories"] == "<1 条>"
+    assert out["returned"] == 1
+
+    # 非敏感工具原样返回
+    assert _oplog_result("dba_get_stats", {"query": "x"}) == {"query": "x"}
 
 
 def test_intervene_create_edge_bidirectional(tmp_path):

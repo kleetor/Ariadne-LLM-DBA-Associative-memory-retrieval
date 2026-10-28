@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import copy
+import logging
 import os
 import tempfile
 from typing import Dict
@@ -24,6 +25,8 @@ import yaml
 
 from dba_pipeline import filelock
 from dba_pipeline.core.jump_axis import JUMP_AXIS_RULES, NodeType, RelationType
+
+logger = logging.getLogger(__name__)
 
 PARAMS_FILENAME = "retrieval_params.yaml"
 
@@ -88,7 +91,7 @@ _SCALAR_DEFAULTS = {
     "distance_decay": 0.85,           # retriever.py:206
     "jump_weight_coef": 0.5,          # retriever.py:207
     "purpose_weight_coef": 0.5,       # retriever.py:208
-    "purpose_filter_threshold": 0.2,  # retriever.py:209
+    "purpose_filter_threshold": 0.30,  # retriever.py:261（bge-m3 标定值，非 0.2）
     "purpose_filter_decay": 0.0,      # retriever.py:210
 }
 
@@ -201,7 +204,7 @@ def normalize(params: dict) -> dict:
 
 
 def load(path: str) -> dict:
-    """读取参数文件（缺失/损坏时回退默认值，不抛异常）。不加锁。
+    """读取参数文件（缺失时回退默认值；损坏时告警并回退，不抛异常）。不加锁。
 
     若需要「读-改-写」请改用 :func:`update`，否则并发调参会互相覆盖。
     """
@@ -211,7 +214,10 @@ def load(path: str) -> dict:
         with open(path, "r", encoding="utf-8") as f:
             raw = yaml.safe_load(f) or {}
         return normalize(raw)
-    except Exception:
+    except Exception as e:
+        # 整份回退是静默降级：调参文件坏了会让面板显示的值与运行值不一致，
+        # 必须留下告警，否则只能靠"参数怎么不生效"这类现象反推。
+        logger.warning("参数文件 %s 无法解析，已整份回退默认值: %s", path, e)
         return default_params()
 
 

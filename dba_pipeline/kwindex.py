@@ -31,6 +31,30 @@ _STOP = {
 _FIELD_WEIGHTS = {"title": 3, "tags": 2, "text": 1}
 _MAX_TOP_K = 50
 
+# 截断时优先在这些字符之后断开，避免把一句话/代码行从中间切断
+_SENTENCE_ENDS = "。！？；\n.!?;"
+
+
+def truncate_for_return(text: str, limit: int) -> "tuple[str, bool]":
+    """按返回预算截断正文，优先在句末/换行处断开。
+
+    返回 ``(text, truncated)``。截断后长度不超过 ``limit``（省略号计入）。
+    找不到合适断点时退化为硬截断——比在句子中间切要差，但仍然可控。
+    """
+    s = text or ""
+    if limit <= 0 or len(s) <= limit:
+        return s, False
+
+    cut = s[:limit]
+    # 只在尾部 200 字内找断点：更早的断点会让返回过短、信息量不足
+    window_start = max(0, limit - 200)
+    pos = max(cut.rfind(ch) for ch in _SENTENCE_ENDS)
+    if pos >= window_start and pos + 1 < limit:
+        out = cut[:pos + 1].rstrip() + "…"
+    else:
+        out = cut.rstrip()[: max(0, limit - 1)] + "…"
+    return out, True
+
 
 def tokenize(text: str) -> Set[str]:
     """把文本切成关键词集合。

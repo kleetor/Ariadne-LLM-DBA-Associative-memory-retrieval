@@ -314,6 +314,11 @@ class VectorStore:
         self._vec_log: list = []
         # clear_vectors() 之后必须把盘上分片整体作废，否则 load 会把旧向量"复活"
         self._cleared: bool = False
+        # 删除纪元：每次 remove_memories 递增，并记下各 id 最近一次被删的纪元。
+        # 锁外嵌入期间被删的节点不能在写回时"复活"（TOCTOU）；而删除之后**重新**
+        # 发起的 add 纪元更大，仍可正常写回。
+        self._epoch: int = 0
+        self._removed_at: dict = {}
         # 串行化对内部状态（缓存字典 + FAISS store）的访问。
         # 检索读线程与 DBA 维护写线程（maintenance_scheduler）共享同一实例，
         # FAISS 为 C++ 原生实现，读写并发不受 GIL 保护，须加锁避免竞态/崩溃。
@@ -355,6 +360,7 @@ class VectorStore:
         # 锁外批量嵌入（网络/CPU 开销大），避免阻塞并发检索线程
         with self._lock:
             new_ids = [mid for mid in memory_ids if mid not in self._content_vectors]
+            start_epoch = self._epoch
         new_vectors = self.embed_batch(
             [c for mid, c in zip(memory_ids, contents) if mid in new_ids]
         ) if new_ids else []
@@ -380,12 +386,33 @@ class VectorStore:
             })
 
         with self._lock:
-            for mid, vec in vec_map.items():
-                self._content_vectors[mid] = vec
-                self._log_vec(mid, vec)
+            # 锁外嵌入期间并发写入可能改变权威状态（TOCTOU）：写回前复查——
+            # 已被删除的 id 不能复活（墓碑），已被别人写入的 id 不能覆盖。
+            accepted = {
+                mid for mid in vec_map
+                if mid not in self._content_vectors
+                and self._removed_at.get(mid, -1) <= start_epoch
+            }
+            if len(accepted) != len(vec_map):
+                skipped = len(vec_map) - len(accepted)
+                logger.info("向量写回复查：%d 条在嵌入期间已被删除/写入，跳过", skipped)
+                text_embeddings = [
+                    (c, v) for (c, v), meta in zip(text_embeddings, doc_metadatas)
+                    if meta["memory_id"] in accepted
+                ]
+                embed_contents = [
+                    c for c, meta in zip(embed_contents, doc_metadatas)
+                    if meta["memory_id"] in accepted
+                ]
+                doc_metadatas = [m for m in doc_metadatas if m["memory_id"] in accepted]
+
+            for mid in accepted:
+                self._content_vectors[mid] = vec_map[mid]
+                self._log_vec(mid, vec_map[mid])
             # 同步内容映射（用于全量重建）
             for mid, content in zip(memory_ids, contents):
-                self._contents[mid] = content
+                if mid in accepted or self._removed_at.get(mid, -1) <= start_epoch:
+                    self._contents[mid] = content
 
             if not text_embeddings:
                 return
@@ -447,7 +474,10 @@ class VectorStore:
         """从向量库移除节点（更新缓存后全量重建索引）"""
         with self._lock:
             changed = False
+            self._epoch += 1
             for mid in memory_ids:
+                # 记墓碑纪元：锁外嵌入中的 add_memories 写回时必须跳过它（否则复活已删节点）
+                self._removed_at[mid] = self._epoch
                 if mid in self._content_vectors:
                     del self._content_vectors[mid]
                     self._log_vec(mid, None)
@@ -515,6 +545,7 @@ class VectorStore:
             self.store = None
             # 盘上分片必须整体作废：否则下次 load 会把"已清空"的向量又读回来
             self._vec_log.clear()
+            self._removed_at.clear()
             self._cleared = True
 
     def _rebuild_index(self):
@@ -808,12 +839,20 @@ class VectorStore:
                     len(self._content_vectors),
                 )
                 return
-            raise FileNotFoundError(f"向量分片目录不存在: {shard_dir}")
+            # 空空间（首次启动）：分片目录还没建出来是正常情况，按空库返回。
+            # 这里抛 FileNotFoundError 会把"全新数据目录"变成启动失败——
+            # 调用方只能在 except 里吞掉，反而掩盖真正的读写错误。
+            logger.info("向量分片目录为空或不存在，按空向量库启动: %s", shard_dir)
+            self._content_vectors = {}
+            self._contents = {}
+            self._removed_at.clear()
+            self.store = None
 
     def _load_shards(self, shard_dir: str) -> None:
         """按序号回放所有分片（后写覆盖先写，墓碑即删）"""
         self._content_vectors = {}
         self._contents = {}
+        self._removed_at.clear()
         files = self._shard_files(shard_dir)
         for name in files:
             with open(os.path.join(shard_dir, name), "rb") as f:
@@ -837,6 +876,7 @@ class VectorStore:
         """读取旧格式 `content_vectors.npz`（含 ids/vectors/contents），仅为兼容存量数据"""
         data = np.load(vec_path, allow_pickle=False)
         ids, vectors = data["ids"], data["vectors"]
+        self._removed_at.clear()
         self._content_vectors = {
             str(k): np.asarray(v, dtype=np.float32) for k, v in zip(ids, vectors)
         }

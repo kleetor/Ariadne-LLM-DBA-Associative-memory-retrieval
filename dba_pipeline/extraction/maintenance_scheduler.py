@@ -249,10 +249,21 @@ class MaintenanceScheduler:
 
         必须整段覆盖「重载外部改动 → LLM 维护改图 → 落盘」，否则维护期间面板写入
         会被随后的 `_save()` 覆盖（丢失更新）。
+
+        `maintain_context()` 的 `__enter__` 会取跨进程文件锁（超时 300s）并做向量对账，
+        这两步都可能抛异常。若在进入临界区时就失败，`_do_flush_locked` 根本不会执行，
+        它 `finally` 里的 `_on_flush_done()` 也就不会跑 —— `_flushing` 会永久停在 True，
+        此后所有维护只被标记、不再执行（缓冲区无限增长、切图永久报"仍有待维护会话"）。
+        因此这里必须兜底复位。
         """
         guard = self.maintain_context() if self.maintain_context else nullcontext()
-        with guard:
-            self._do_flush_locked(conversations, reason)
+        try:
+            with guard:
+                self._do_flush_locked(conversations, reason)
+        except Exception:
+            logger.exception("[DBA 维护] 进入写临界区失败或维护异常逃逸")
+            if self._flushing:
+                self._on_flush_done()
 
     def _do_flush_locked(self, conversations: List[Tuple[Optional[int], str]], reason: TriggerReason):
         batch_count = len(conversations)
@@ -307,9 +318,10 @@ class MaintenanceScheduler:
             source_rounds = [{"ts": ts, "text": text} for ts, text in conversations]
             result = self.dba.maintain(merged, timestamp=batch_ts, source_rounds=source_rounds)
 
-            # triage 判 SKIP、抽取空产出（no_ops/no_create）时内容原本被静默丢弃
-            # （MCP 没有 ALM 的文档通道）。补一步原文兜底落库——三态判定与 ALM 的
-            # `space._fallback_reason` 同口径。这**不**改变下面的空转判定：
+            # triage 判 SKIP、抽取空产出（no_ops/no_create）、create 全被拒
+            # （create_rejected）时内容原本被静默丢弃（MCP 没有 ALM 的文档通道）。
+            # 补一步原文兜底落库——判定与 ALM 的 `space._fallback_reason` 同口径。
+            # 这**不**改变下面的空转判定：
             # 兜底不消耗 LLM，把"跳过"算成"有效"会让连续空转保护失效。
             fallback = self.dba.needs_raw_fallback(result)
             if fallback:

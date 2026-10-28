@@ -16,6 +16,12 @@ tests/
 *.tar
 *.tar.gz
 
+# ALM 的本地环境文件含**真实**服务 Key 与上游模型 Key，绝不能进入构建上下文。
+# Dockerfile.alm 会 `COPY alm ./alm`，仅排除根目录 .env 不足以挡住这些文件。
+# 保留 .env.alm.example（模板无真实值）。
+alm/.env.alm
+alm/.env.alm.bak*
+
 # data/ 会被 COPY 进镜像，但其中的**运行期状态与凭据绝不能入库**：
 #   .ariadne_secret 是会话 Cookie 的签名密钥，泄漏即可伪造任意用户的登录态；
 #   auth.json 是账号密码散列（默认 docker run 不挂载时会直接沿用镜像里这份）；

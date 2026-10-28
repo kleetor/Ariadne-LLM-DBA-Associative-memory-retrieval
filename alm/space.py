@@ -1334,16 +1334,26 @@ class MemorySpace:
         # `(doc_id, msg_index)` 因此不同，内容去重挡不住。
         seen_rids = {d.get("rid") for d in self.doc_msgs if d.get("rid")}
         good = 0
-        for line in raw.splitlines(keepends=True):
+        corrupt_lines = 0
+        for lineno, line in enumerate(raw.splitlines(keepends=True), 1):
             if not line.strip():
                 good += len(line)
                 continue
             if not line.endswith(b"\n"):
-                break  # 半行：丢弃
+                break  # 真正的末尾半行：循环后统一截断
             try:
                 rec = json.loads(line)
             except Exception:
-                break
+                # 单行损坏**不能连坐后面的行**：旧实现直接 break，随后用 "wb" 把
+                # 文件截断到 good，等于把坏行之后的全部原文永久删除。这里改为
+                # 跳过该行但保留其字节（good 照常前移），只修剪真正的末尾半行。
+                corrupt_lines += 1
+                logger.warning(
+                    "空间 %s 文档日志第 %d 行无法解析，已跳过（原字节保留）: %s",
+                    self._masked_id(), lineno, line[:120],
+                )
+                good += len(line)
+                continue
             rec_msgs = rec.get("msgs") or rec.get("docs") or []
             # 整批同 rid（`_store_documents` 写时逐条挂同一个值），取首条即可。
             rid = rec_msgs[0].get("rid") if rec_msgs else None
@@ -1364,6 +1374,11 @@ class MemorySpace:
                 self.doc_msgs.append(doc)
             self._doc_seq = max(self._doc_seq, int(rec.get("seq") or 0))
             good += len(line)
+        if corrupt_lines:
+            logger.warning(
+                "空间 %s 文档日志共 %d 行损坏（已跳过，未删除任何完整行）",
+                self._masked_id(), corrupt_lines,
+            )
         if good != len(raw):
             try:
                 with open(log_path, "wb") as f:
@@ -1372,7 +1387,7 @@ class MemorySpace:
                 logger.warning("空间 %s 文档日志残行截断失败: %s", self._masked_id(), exc)
             else:
                 logger.warning(
-                    "空间 %s 文档日志尾部残行已截断（%d → %d 字节）",
+                    "空间 %s 文档日志尾部半行已截断（%d → %d 字节）",
                     self._masked_id(), len(raw), good,
                 )
 
@@ -2075,7 +2090,7 @@ class MemorySpace:
                 if reason:
                     # 只记原因与条数，不记正文。用 WARNING 而非 INFO：兜底意味着本批
                     # **没有建图**（只留下孤立原文节点），是系统退化的信号，不该随着
-                    # 日志级别被压掉。reason 的三取值见 _fallback_reason。
+                    # 日志级别被压掉。reason 的取值见 _fallback_reason。
                     logger.warning(
                         "空间 %s 兜底触发: reason=%s messages=%d",
                         self._masked_id(), reason, len(group),
@@ -2279,10 +2294,11 @@ class MemorySpace:
 
         返回值是可观测性的一部分：调用方流量下兜底率偏高时，必须能区分是
         triage 判 SKIP（调用链上游决策）还是抽取产出为空（调用链下游问题），
-        否则两条完全不同的处置路径无从选择。三种取值互补：
-            "triage"    —— 维护判断前置直接跳过，压根没跑抽取
-            "no_ops"    —— 跑了抽取但一个 node_op 都没有
-            "no_create" —— 有 ops 却没有 create，且没有任何 update/deprecate/fix_type
+        否则两条完全不同的处置路径无从选择。四种取值互补：
+            "triage"          —— 维护判断前置直接跳过，压根没跑抽取
+            "no_ops"          —— 跑了抽取但一个 node_op 都没有
+            "no_create"       —— 有 ops 却没有 create，且没有任何 update/deprecate/fix_type
+            "create_rejected" —— 发起了 create 但全被校验拒绝（缺字段等），一个都没落地
         """
         if result.get("skipped"):
             return "triage"
@@ -2302,8 +2318,12 @@ class MemorySpace:
         def _act(op: Dict[str, Any]) -> str:
             return (op or {}).get("action") or "create"
 
-        if any(_act(op) == "create" for op in node_ops):
-            return None
+        create_count = sum(1 for op in node_ops if _act(op) == "create")
+        if create_count:
+            # 用 deduped 计数区分「全部命中语义去重」（内容已在图中，无需兜底）
+            # 与「create 全被校验拒绝」（内容确实没进图，必须兜底）。
+            deduped = (result.get("result") or {}).get("deduped") or 0
+            return None if deduped >= create_count else "create_rejected"
         if not any(_act(op) in ("update", "deprecate", "fix_type") for op in node_ops):
             return "no_create"
         return None
@@ -2319,7 +2339,7 @@ class MemorySpace:
 
         调用点有三处，语义相同——内容没能变成图节点：
           ① 形态判定为文档型（极端长输入，先去保护 LLM）
-          ② 抽取判定无记忆价值：triage SKIP / no_ops / no_create
+          ② 抽取判定无记忆价值：triage SKIP / no_ops / no_create / create_rejected
           ③ 超过 `max_messages_per_add` 的溢出部分
 
         为什么默认送**文档通道**而不是像原来那样切成孤立节点灌进图：实测那些孤立块

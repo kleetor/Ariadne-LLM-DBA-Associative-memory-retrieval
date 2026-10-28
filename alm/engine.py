@@ -8,6 +8,7 @@
 """
 
 import logging
+import os
 import threading
 from collections import OrderedDict
 from contextlib import contextmanager
@@ -41,6 +42,15 @@ _SAFE_FILENAME_CHARS = frozenset(
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-"
 )
 
+# Windows 保留设备名：即使作为**目录**名也会被系统当作设备（CON/NUL/COM1…），
+# 且大小写不敏感。命中时把首字节转义成 %XX（映射依然可逆），例如
+# "con" → "%43on"，"NUL" → "%4EUL"。
+_WINDOWS_RESERVED_NAMES = frozenset(
+    ["CON", "PRN", "AUX", "NUL"]
+    + [f"COM{i}" for i in range(1, 10)]
+    + [f"LPT{i}" for i in range(1, 10)]
+)
+
 # 空间目录内的固定文件名。全部产物都在**同一个目录**里，故名字只需在该目录内唯一，
 # 不再需要 `<user_id>.xxx` 那种前缀（原来五份产物平铺在 data_dir 下，
 # 一个空间一个小目录后 `ls data_dir` 才可读，留存清理也退化成"删一个目录"）。
@@ -59,11 +69,23 @@ def space_dirname(user_id: str) -> str:
 
     转义规则与"% 编码"同构：`%2E`/`%3A` 这些序列在结果里不可能由别的字符产生，
     故映射可逆、无碰撞，且 `..` → `%2E%2E`（不再是上跳目录）。
+
+    另外两条平台约束：
+      · Windows 保留设备名（CON/NUL/COM1…）不能做目录名 → 转义首字节；
+      · Windows/macOS 文件系统大小写不敏感，仅大小写不同的 user_id 会落到同一
+        目录（见 `ALMEngine._claim_dirname` 的拦截）。
     """
-    return "".join(
+    raw = user_id.encode("utf-8")
+    name = "".join(
         chr(byte) if chr(byte) in _SAFE_FILENAME_CHARS else f"%{byte:02X}"
-        for byte in user_id.encode("utf-8")
+        for byte in raw
     )
+    if name.upper() in _WINDOWS_RESERVED_NAMES:
+        name = f"%{raw[0]:02X}" + "".join(
+            chr(byte) if chr(byte) in _SAFE_FILENAME_CHARS else f"%{byte:02X}"
+            for byte in raw[1:]
+        )
+    return name
 
 
 class ALMEngine:
@@ -116,6 +138,11 @@ class ALMEngine:
         # 正在构造的 user_id（仅在持有 _registry_lock 时读写）。同一 user 的并发首次
         # 访问必须等首个构造完成，否则会同时建出两个实例、各自覆盖写同一个 YAML。
         self._constructing: set = set()
+        # 目录名归属（casefold(dirname) → user_id）：用于拦截仅大小写不同的 user_id
+        # 在大小写不敏感的文件系统上共用同一空间目录（会互相读到对方记忆）。
+        self._dirname_owners: Dict[str, str] = {}
+        # 文件系统是否大小写不敏感（懒探测，见 `_case_insensitive_fs`）
+        self._case_insensitive: Optional[bool] = None
         # 构造完成 / 失败后唤醒同一 user 的等待者（锁与 _registry_lock 绑定）
         self._space_cv = threading.Condition(self._registry_lock)
         # 构造并发上限：不同 user 可以并行冷启动，同一时刻最多 N 个
@@ -190,6 +217,52 @@ class ALMEngine:
         """
         return self.config.data_dir / space_dirname(user_id) / GRAPH_FILENAME
 
+    def _case_insensitive_fs(self) -> bool:
+        """探测 data_dir 所在文件系统是否大小写不敏感（结果缓存）。
+
+        Linux 上 "Alice"/"alice" 是两个目录，无需拦截；Windows 与 macOS（默认）
+        是同一个目录，必须拦截。用一次临时文件探测而不是按 `os.name` 猜。
+        """
+        if self._case_insensitive is None:
+            probe = self.config.data_dir / ".ariadne_case_probe"
+            alt = self.config.data_dir / ".ARIADNE_CASE_PROBE"
+            try:
+                probe.write_text("", encoding="utf-8")
+                self._case_insensitive = alt.exists()
+            except OSError:
+                self._case_insensitive = os.name == "nt"
+            finally:
+                try:
+                    probe.unlink()
+                except OSError:
+                    pass
+        return self._case_insensitive
+
+    def _claim_dirname(self, user_id: str) -> None:
+        """登记目录名归属；被**另一个** user_id 占用时抛 ValueError。
+
+        Windows / macOS 的文件系统大小写不敏感：`space_dirname("Alice")` 与
+        `space_dirname("alice")` 字符串不同，却会落到同一个目录。若放任两个空间
+        写同一目录，等于租户间互相读写记忆，因此宁可拒绝也不能静默混写。
+
+        局限：进程重启后归属表为空，跨进程（多实例共享 data_dir）无法发现。
+        彻底解决需要目录内落一份 user_id 指纹，这里只做进程内拦截。
+        """
+        if not self._case_insensitive_fs():
+            return  # 大小写敏感的文件系统上两个 user_id 落在不同目录，无冲突
+        key = space_dirname(user_id).casefold()
+        with self._registry_lock:
+            owner = self._dirname_owners.get(key)
+            if owner is None:
+                self._dirname_owners[key] = user_id
+                return
+        if owner != user_id:
+            logger.error(
+                "user_id 大小写冲突: %s*** 与 %s*** 会映射到同一空间目录，拒绝访问",
+                owner[:4], user_id[:4],
+            )
+            raise ValueError("user_id 与另一个仅大小写不同的 user_id 冲突，已拒绝访问")
+
     def _acquire_space(
         self, user_id: str, create: bool, *, lease: bool
     ) -> Optional[MemorySpace]:
@@ -209,6 +282,7 @@ class ALMEngine:
         graph_path = self._graph_path(user_id)
         with self._space_cv:
             while True:
+                self._claim_dirname(user_id)
                 space = self._spaces.get(user_id)
                 if space is not None:
                     self._spaces.move_to_end(user_id)

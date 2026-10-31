@@ -5,6 +5,8 @@
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-10-31
+
 ### Added
 
 - MCP 知识层：`dba_add_note` 写入项目笔记、`dba_query_knowledge` 按关键词精筛；笔记作为普通节点（`metadata.channel="note"`）参与向量召回与倒排索引，不引入第二套存储。
@@ -15,18 +17,25 @@
 - 工程化配置：`.gitattributes`、`.editorconfig`、`.pre-commit-config.yaml`、coverage 配置。
 - CI 打包冒烟测试：非 editable 安装后校验全部 console scripts。
 - `CHANGELOG.md` 与 `CITATION.cff`。
+- npm 薄壳 `ariadne-memory`（`packages/npm/`）与 `packaging/quickstart/` 一键脚本包。
+- 本地生图脚本 `imagegen/generate.py`（仅素材生成，两个服务都不读取）。
 
 ### Changed
 
 - 根目录瘦身：理论文档移入 `docs/theory/`，图片移入 `assets/`，Docker 文件移入 `deploy/`。
 - README 中英双版拆分长章节，补充文档索引与示例入口。
 - 安装命令统一使用 `constraints.txt` 约束传递依赖的安全下限。
+- 发布流水线改为 tag 驱动：`v*` 同时发布 PyPI 与 npm（trusted publishing，无需长期 token）。
+
+### Fixed
+
+- `alm/space.py` 的 `mode.yaml` 与索引 stamp 改为原子写（临时文件 + `os.replace`），避免半截文件让空间归属判定被兜底覆盖、或触发整空间重新 embedding。
 
 ### Security
 
 - 启用 Dependabot、漏洞告警与自动安全修复，并为 `main` 配置分支保护（CI 必过、1 次 review、线性历史）。
 - `mcp` 最低版本提升至 `2.2.0`；直接依赖增加上界，避免无界升级。
-- 新增 `constraints.txt`，将 `urllib3`、`pillow`、`aiohttp`、`setuptools` 等传递依赖锁定到已修复版本。
+- 新增 `constraints.txt`，将 `urllib3`、`pillow`、`aiohttp`、`setuptools` 等传递依赖锁定到已修复版本；由 Dependabot 组更新继续抬升安全下限。
 
 ### Removed
 
@@ -61,7 +70,9 @@
 
 - 首个公开版本：LLM DBA 图谱构建、PAR 检索、StoryRank、3D 可视化面板与 MCP Server。
 
-[Unreleased]: https://github.com/kleetor/Ariadne-LLM-DBA-Associative-memory-retrieval/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/kleetor/Ariadne-LLM-DBA-Associative-memory-retrieval/compare/v0.1.4...HEAD
+[0.1.4]: https://github.com/kleetor/Ariadne-LLM-DBA-Associative-memory-retrieval/compare/v0.1.3...v0.1.4
+[0.1.3]: https://github.com/kleetor/Ariadne-LLM-DBA-Associative-memory-retrieval/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/kleetor/Ariadne-LLM-DBA-Associative-memory-retrieval/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/kleetor/Ariadne-LLM-DBA-Associative-memory-retrieval/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/kleetor/Ariadne-LLM-DBA-Associative-memory-retrieval/releases/tag/v0.1.0

@@ -45,6 +45,9 @@ website/
 website/scripts/bake_graph.py
 website/public/graph.json
 
+# 生图产物（本地素材中转，不入库；需要时用 imagegen/generate.py 重新生成）
+/assets/generated/
+
 # 本地模型缓存与权重（仅本地运行用；超出 GitHub 100MB 限制，不入库）
 models/
 

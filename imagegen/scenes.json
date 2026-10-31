@@ -1,0 +1,34 @@
+{
+  "hero-bg": {
+    "desc": "首屏背景：暗色记忆星图，teal 光路",
+    "prompt": "Abstract dark visualization of a living memory graph: hundreds of small luminous nodes connected by thin glowing edges, clustered like constellations, drifting in deep charcoal space. Teal and cyan light paths, a few warm amber accents, subtle volumetric haze, shallow depth of field, ultra-clean minimal composition with empty space on the right for headline text. Cinematic, high-end product key visual, no text, no logos.",
+    "size": "2048x1152",
+    "quality": "high",
+    "output_format": "png",
+    "background": "auto"
+  },
+  "prologue-illustration": {
+    "desc": "序章插图：记忆从噪声中浮现",
+    "prompt": "Editorial illustration: scattered dim memory fragments emerging from soft grey fog and gradually aligning into a clean ordered graph with a few bright teal nodes. Minimal, calm, lots of negative space, subtle grain, muted palette of charcoal, slate, teal and a single warm accent. Concept art for a technical essay, no text.",
+    "size": "1536x1024",
+    "quality": "high",
+    "output_format": "png",
+    "background": "auto"
+  },
+  "empty-state": {
+    "desc": "空图谱占位插画（透明背景）",
+    "prompt": "Minimal line-art illustration of an empty network: three outlined nodes with dashed unfinished edges fading into nothing, single teal accent dot, thin strokes, flat vector aesthetic, transparent background, centered, no text.",
+    "size": "1024x1024",
+    "quality": "high",
+    "output_format": "png",
+    "background": "transparent"
+  },
+  "og-image": {
+    "desc": "社交分享图（接近 1.91:1）",
+    "prompt": "Wide social share card background: deep charcoal gradient with a delicate teal network of memory nodes across the lower half, soft glow, generous empty space in the upper half, premium minimal tech aesthetic, no text, no logos.",
+    "size": "1216x640",
+    "quality": "high",
+    "output_format": "png",
+    "background": "opaque"
+  }
+}

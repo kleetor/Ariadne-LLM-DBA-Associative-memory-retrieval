@@ -139,6 +139,8 @@ pip install -c constraints.txt -e ".[local]"
 pip install -c constraints.txt -e ".[dev]"
 ```
 
+> 发布到 PyPI 时包名为 `ariadne-mcp-server`（`pip install ariadne-mcp-server`）；命令仍是 `ariadne-api` / `ariadne-mcp`，不需要改启动方式。
+
 ## 快速开始
 
 `data/` 目录就是**图谱库**：目录下所有能被解析成图谱的 `*.yaml` 都会出现在面板的「设置 → 图谱库」中，可切换、导入、导出、删除。仓库自带两份：

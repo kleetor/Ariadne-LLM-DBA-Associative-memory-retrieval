@@ -1,6 +1,7 @@
 name: Release
 
 # 打 v* tag 时：构建 sdist/wheel → twine check → 发布 PyPI（trusted publishing）
+# → 同步版本并发布 npm 薄壳（trusted publishing，版本已存在则跳过）
 # → 把 packaging/quickstart 打成 zip 挂到 GitHub Release。
 on:
   push:
@@ -64,6 +65,43 @@ jobs:
           name: python-dist
           path: dist
       - uses: pypa/gh-action-pypi-publish@release/v1
+
+  publish-npm:
+    name: Publish to npm
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # OIDC trusted publishing
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      # 可信发布要求 npm CLI >= 11.5.1（Node 22 自带的是 10.x）
+      - name: Upgrade npm
+        run: npm install -g "npm@^11"
+
+      - name: Sync launcher version from package
+        id: version
+        run: |
+          VERSION=$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' dba_pipeline/__init__.py)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          cd packages/npm
+          npm version "$VERSION" --no-git-tag-version --allow-same-version
+
+      - name: Publish
+        working-directory: packages/npm
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          if npm view "ariadne-memory@$VERSION" version >/dev/null 2>&1; then
+            echo "ariadne-memory@$VERSION 已存在，跳过"
+            exit 0
+          fi
+          npm publish --access public
 
   github-release:
     name: Attach quickstart to release

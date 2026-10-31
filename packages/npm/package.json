@@ -16,7 +16,7 @@
   "license": "AGPL-3.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/kleetor/Ariadne-LLM-DBA-Associative-memory-retrieval.git",
+    "url": "git+https://github.com/kleetor/Ariadne-LLM-DBA-Associative-memory-retrieval.git",
     "directory": "packages/npm"
   },
   "keywords": [

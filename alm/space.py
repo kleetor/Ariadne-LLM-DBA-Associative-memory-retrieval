@@ -752,8 +752,19 @@ class MemorySpace:
         try:
             path = self._mode_path()
             path.parent.mkdir(parents=True, exist_ok=True)
-            with open(path, "w", encoding="utf-8") as f:
-                yaml.dump(payload, f, allow_unicode=True)
+            # 原子写：半截 mode.yaml 会让 `_read_space_mode` 解析失败 → 显式判定被
+            # 静默降级成「图非空按 graph」的兼容兜底，等于这次归属决定白做。
+            fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    yaml.dump(payload, f, allow_unicode=True)
+                os.replace(tmp_path, path)
+            except Exception:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
             logger.info(
                 "空间 %s 归属已定并冻结: mode=%s reason=%s",
                 self._masked_id(), mode, reason or "-",
@@ -1261,8 +1272,19 @@ class MemorySpace:
         try:
             self.vector_store.save(str(index_path))
             stamp_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(stamp_path, "w", encoding="utf-8") as f:
-                yaml.dump(digest, f, allow_unicode=True)
+            # 原子写：stamp 是索引指纹，半截文件解析失败 → 下次载入判定不一致 →
+            # 整个空间重新 embedding（不坏数据，但代价很大）。
+            fd, tmp_path = tempfile.mkstemp(dir=str(stamp_path.parent), suffix=".tmp")
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    yaml.dump(digest, f, allow_unicode=True)
+                os.replace(tmp_path, stamp_path)
+            except Exception:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
         except Exception as exc:
             logger.warning("空间 %s 索引保存失败: %s", self._masked_id(), exc)
 

@@ -16,7 +16,7 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, Iterable, List, Optional, Set
+from typing import Any, Dict, Iterable, List, Set
 
 _ASCII_RE = re.compile(r"[a-z0-9_./:-]{2,}")
 _CJK_RE = re.compile(r"[\u4e00-\u9fff]+")

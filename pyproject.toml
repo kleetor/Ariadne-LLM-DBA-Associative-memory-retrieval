@@ -25,7 +25,7 @@ dependencies = [
     "requests>=2.31,<3",
     "mcp>=2.2.0,<3",
     "uvicorn>=0.30,<1",
-    "starlette>=0.37,<1",
+    "starlette>=0.37,<2",
 ]
 
 [project.optional-dependencies]

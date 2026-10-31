@@ -7,16 +7,16 @@
 # 说明：这些是“至少使用该版本”的约束，用于阻止已知漏洞版本被解析进来。
 # 依赖的单一来源仍是 pyproject.toml；本文件只约束传递依赖的安全下限。
 
-aiohttp>=3.14.4
-curl-cffi>=0.15.0
-httpx2>=2.12.0
-langgraph-sdk>=0.4.4
+aiohttp>=3.14.5
+curl-cffi>=0.17.0
+httpx2>=2.14.0
+langgraph-sdk>=0.4.10
 mcp>=2.2.0
-multidict>=6.9.1
+multidict>=7.1.0
 oauthlib>=4.0.0
 pillow>=12.3.0,<13  # 13.x 与 streamlit<1.62 冲突
-pydantic-settings>=2.14.2
-pyjwt>=2.15.0
+pydantic-settings>=2.15.0
+pyjwt>=2.15.1
 setuptools>=83.0.0
-soupsieve>=2.9.0
-urllib3>=2.7.0
+soupsieve>=2.10
+urllib3>=2.8.0

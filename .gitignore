@@ -78,6 +78,10 @@ data/alm/
 data/alm*/
 *.index/
 
+# 体验服务（ariadne-service）的运行期数据。keys.json 里是**明文体验 Key**，
+# 一旦入库等于把可用的接入凭据公开；其余是同 ALM 的空间目录，属运行产物。
+data/service/
+
 engine*
 # 注：`engine*` 无斜杠，会匹配任意层级下以 engine 开头的文件，会误伤 `alm/engine.py`
 # （ALM 包的核心模块）。故必须显式放行，否则它会静默漏提交。
@@ -102,3 +106,13 @@ engine*
 # 本地运维脚本与部署凭据（不入库）
 /Server/
 /memory/
+
+# 本地生图工具与生成物（仅素材生成，两个服务都不读取）
+/imagegen/
+/gpt-image-*.ico
+
+# 运行期图谱（面板/MCP 会持续改写，可能含记忆正文；空模板见 data/sample_graph.yaml）
+/data/memory_graph.yaml
+
+# 本地演示服务（仅本机运行，不入库）
+/ariadne_service/

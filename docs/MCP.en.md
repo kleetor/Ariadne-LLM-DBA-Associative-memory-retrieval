@@ -11,7 +11,7 @@ Built on the open [Model Context Protocol (MCP)](https://modelcontextprotocol.io
 
 > `--yaml` / `--graph-dir` are both optional: which graph to use comes first from the shared pointer, falling back to `--yaml`, then to the empty placeholder `sample_graph.yaml` inside the graph directory.
 
-> ⚠️ The SSE default port `8765` clashes with `ariadne-api`; change it (e.g. `--port 8766`) when running both. The one-command start (`start_all.py`) auto-separates to 8766.
+> ⚠️ The SSE default port is now `8766` (`ariadne-api` stays on `8765`), so they no longer clash.
 
 ### Environment variables (optional)
 
@@ -32,7 +32,7 @@ Besides CLI flags, LLM/Embedding config can live in the project root `.env` (or 
 OPENAI_API_KEY=sk-xxx
 OPENAI_API_BASE=https://api.deepseek.com/v1
 OPENAI_MODEL=deepseek-v4-flash
-EMBEDDING_MODEL=BAAI/bge-large-zh-v1.5
+EMBEDDING_MODEL=BAAI/bge-m3
 EMBEDDING_LOCAL=true
 ```
 
@@ -70,7 +70,7 @@ ariadne-mcp --yaml data.yaml --llm-model gpt-4o-mini --llm-api-key sk-xxx \
 
 # Local embedding
 ariadne-mcp --yaml data.yaml --llm-model gpt-4o-mini --llm-api-key sk-xxx \
-    --embedding-model BAAI/bge-large-zh-v1.5 --embedding-local
+    --embedding-model BAAI/bge-m3 --embedding-local
 ```
 
 ### 11 tools
@@ -142,3 +142,14 @@ ariadne-mcp --yaml /path/to/memory_graph.yaml --sse --port 8766
   }
 }
 ```
+
+### Remote access and security
+
+`--sse` listens on `127.0.0.1:8766` by default (override with `--host`) and **always requires auth**:
+
+- **Same machine**: `http://127.0.0.1:8766/sse` with HTTP Basic, or a Bearer token from `ARIADNE_MCP_TOKEN`;
+- **Another machine**: prefer an SSH tunnel (`ssh -L 8766:127.0.0.1:8766 <user>@<host>`); the client still uses the local address, so the plaintext port never leaves the host;
+- **Direct public access**: terminate TLS at a front proxy first (this service does not do TLS), then set `--host 0.0.0.0` and restrict the source;
+- In containers the host port binds to loopback by default (`ARIADNE_BIND_HOST`) — see "Public exposure and remote access" in the README.
+
+Failed tool calls return `isError: true` with only an `error_id` in the body (the full traceback goes to the server log and operation log), so debugging stays possible without leaking internals.

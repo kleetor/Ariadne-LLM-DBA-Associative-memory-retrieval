@@ -16,6 +16,7 @@
 │   ├── ALM.md / MCP.md             # 服务说明
 │   └── architecture.md             # 本文件
 ├── examples/                       # ALM / MCP 快速开始示例
+├── packaging/                      # 发行打包（npm 薄壳、quickstart 启动脚本）
 ├── tests/                          # pytest 测试
 └── dba_pipeline/
     ├── core/                       # 检索核心：跳转轴、目的回归、寻峰

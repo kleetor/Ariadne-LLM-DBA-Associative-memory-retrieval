@@ -17,6 +17,7 @@
 
 ## 部署与运维
 
+- [容器部署与公网暴露](../README.md#docker-部署)：compose、embedding 模式、回环绑定与 SSH 隧道
 - [ALM 回补修复记录](ALM_BACKFILL_FIX_20261018.md)
 - [ALM 空间注册表锁重构计划](ALM_REGISTRY_LOCK_PLAN_20261020.md)
 - 数据卷清理方案：已移至私有目录 `alm/almplan/`（不入库；含生产主机与卷名等运行信息）

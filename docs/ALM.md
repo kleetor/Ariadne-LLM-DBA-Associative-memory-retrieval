@@ -66,6 +66,7 @@ python -m alm.status --base-url http://127.0.0.1:8770 --api-key <your-key>
 ```
 
 - 默认只监听 `127.0.0.1:8770`；公网部署需前置反向代理终止 TLS（本服务自身不做 TLS）。
+- 单请求体上限默认 8 MB（`ALM_MAX_BODY_BYTES`），超限返回 **413**：这道防线在容器内，不依赖前置 nginx 的 `client_max_body_size`。
 - 记忆持久化在具名卷 `alm-data`（容器内 `/data`）——容器重启 / 镜像升级不丢。
 - 仓库**不收录**镜像 tar（体积大）；镜像用上面的 `--build` 现场构建即可。若需分发预构建镜像，
   把 `docker save` 的产物作为 **GitHub Release 附件**上传，不要提交进 git。

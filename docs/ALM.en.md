@@ -73,6 +73,8 @@ python -m alm.status --base-url http://127.0.0.1:8770 --api-key <your-key>
 
 - Listens on `127.0.0.1:8770` by default; public deployment requires a reverse proxy terminating TLS (the service
   itself does not do TLS).
+- Request bodies are capped at 8 MB by default (`ALM_MAX_BODY_BYTES`); over-limit requests get a **413**. The check
+  lives inside the container and does not rely on a front nginx's `client_max_body_size`.
 - Memory is persisted in the named volume `alm-data` (container `/data`) — surviving restarts and image upgrades.
 - The repository **does not ship** the image tarball (too large); just build it on site with `--build` above. To
   distribute a prebuilt image, upload the `docker save` output as a **GitHub Release asset** instead of committing it.

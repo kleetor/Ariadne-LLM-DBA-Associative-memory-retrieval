@@ -2,16 +2,27 @@
 
 **LLM DBA Management & Purpose-Driven Associative Memory Retrieval System**
 
-A full-pipeline system for LLM-driven memory graph construction, retrieval, and visualization.
+Ariadne applies Database Administration (DBA) ideas — fact extraction, correction, deduplication, deprecation — to
+LLM memory, modeling long-term memory as a **directed, typed knowledge graph** and implementing **purpose-driven
+associative retrieval (PAR)** on top of it: results are not a flat candidate list but causal story fragments
+organized by StoryRank.
 
-The documents under `docs/` are curated so that handing them to an AI lets it quickly grasp this system's functionality and implementation value. The `data/` directory contains an empty `sample` dataset for first-time use and a pre-populated `memory` dataset for quickly experiencing the system.
+```bash
+pip install -c constraints.txt -e .
+cp .env.example .env        # fill in your LLM / Embedding settings
+python start_all.py         # panel 127.0.0.1:8765 + MCP SSE 127.0.0.1:8766
+```
+
+The documents under `docs/` are organized by topic and can be handed straight to an AI to grasp the whole system.
+`data/` contains an empty `sample` dataset (the default landing spot on first start) and a pre-populated `memory`
+dataset for quickly experiencing the system.
 
 Future direction: further research on the retrieval algorithm — in different usage scenarios, the base weight table and other collaborating parts may be tuned via parameters to achieve different retrieval behaviors (e.g. opening up taxonomic weights could enable a knowledge-base-style query mode).
 
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue)](https://www.python.org/)
 [![MCP](https://img.shields.io/badge/MCP-Model_Context_Protocol-orange)](https://modelcontextprotocol.io/)
 [![License](https://img.shields.io/badge/License-AGPLv3-blue)](LICENSE)
-![Version](https://img.shields.io/badge/Version-0.1.2-lightgrey)
+![Version](https://img.shields.io/badge/Version-0.1.4-lightgrey)
 
 > *"A thread through the labyrinth of memory."*
 
@@ -20,13 +31,6 @@ Future direction: further research on the retrieval algorithm — in different u
 **Docs**: [Index](docs/README.md) · [ALM](docs/ALM.en.md) · [MCP](docs/MCP.en.md) · [Architecture](docs/architecture.en.md)
 
 ---
-
-## ALM Service
-
-A synchronous HTTP memory service (`POST /add`, `POST /search`, `GET /health`) that isolates
-spaces by `user_id` and uses a two-layer architecture (raw-text layer L1 + graph layer L2).
-
-- Architecture, routing and deployment: [docs/ALM.en.md](docs/ALM.en.md)
 
 ## Goals & Rationale
 
@@ -57,7 +61,6 @@ The ultimate goal is to let an Agent **recall an experience like a person rememb
 
 ## Table of Contents
 
-- [ALM Service: Deployment & Architectural Differences](#alm-service-deployment--architectural-differences)
 - [Goals & Rationale](#goals--rationale)
 - [Overview](#overview)
 - [Key Features](#key-features)
@@ -67,6 +70,7 @@ The ultimate goal is to let an Agent **recall an experience like a person rememb
 - [Docker Deployment](#docker-deployment)
 - [Retrieval Method: PAR Baseline](#retrieval-method-par-baseline)
 - [MCP Server](#mcp-server)
+- [ALM Synchronous HTTP Service](#alm-synchronous-http-service)
 - [Data Format and Type System](#data-format-and-type-system)
 - [Project Structure](#project-structure)
 - [References](#references)
@@ -94,6 +98,8 @@ The core thesis is that the value of memory lies not in storing more, but in bei
 | 🎯 Purpose-driven retrieval | Jump Axis + Purpose Regression + Peak Finding, replacing fixed top-K |
 | 📖 StoryRank narrativization | causal chains → story fragments, avoiding context pollution for the chat LLM |
 | 🔌 MCP integration | 11 tools (including note-taking and knowledge lookup) over stdio / SSE |
+| ☁️ ALM synchronous HTTP | `/add` / `/search` contract for external programs, spaces isolated by `user_id` |
+| 🔐 Unified auth | panel and MCP share `auth.json` (Cookie / Basic / Bearer); changing the password revokes old sessions |
 | 🖥️ 3D visualization | force-directed graph, layer filtering, focus mode, online CRUD |
 | 📄 Offline export | one-command, self-contained HTML, no server required |
 
@@ -108,6 +114,7 @@ Conversation ──► DBA Maintenance ──► MemoryGraph + VectorStore ─�
     │                │                        │
     │      MaintenanceScheduler               ├──► API Server (HTTP REST + 3D panel)
     │      (batched async)                    ├──► MCP Server (11 tools, stdio / SSE)
+    │                                         ├──► ALM sync HTTP (/add /search, spaces by user_id)
     │                                         └──► Offline HTML
     └──► Human intervention (CRUD panel + MCP dba_intervene)
 ```
@@ -211,8 +218,8 @@ cp .env.example .env        # fill in your model settings
 docker compose --env-file .env -f deploy/docker-compose.yml up -d --build
 ```
 
-- **Panel**: `http://<host>:8765` (override with `ARIADNE_VIZ_PORT`); default account `ariadne / ariadne`, with a forced password change on first login.
-- **MCP**: host ports are **not published** by default; it is reachable only from other containers on the same compose network at `http://ariadne-mcp:8766/sse`. To connect from an IDE on the host, uncomment the `ports:` block in `deploy/docker-compose.yml` (it binds to loopback, so no firewall change is needed).
+- **Panel**: `http://127.0.0.1:8765` — the host port binds to loopback by default; for remote access use an SSH tunnel (`ssh -L 8765:127.0.0.1:8765 <user>@<host>`). Override with `ARIADNE_VIZ_PORT` / `ARIADNE_BIND_HOST`. Default account `ariadne / ariadne`, with a forced password change on first login.
+- **MCP**: the host port also binds to loopback by default (`127.0.0.1:8766`); containers on the same compose network reach it at `http://ariadne-mcp:8766/sse`. Panel/MCP speak plain HTTP with password/Basic auth — to expose them publicly set `ARIADNE_BIND_HOST=0.0.0.0` in .env, but only behind a TLS-terminating proxy.
 - Both services mount `./data:/app/data`, so **the host's `./data` is the graph library**: switching graphs in the panel creates/updates `active_graph.json` there.
 
 ### Option 2: load a prebuilt image
@@ -220,15 +227,30 @@ docker compose --env-file .env -f deploy/docker-compose.yml up -d --build
 ```bash
 docker load -i package/ariadne-mcp.tar
 
-docker run -d --name ariadne-mcp -p 8766:8766 \
+docker run -d --name ariadne-mcp -p 127.0.0.1:8766:8766 \
   -e OPENAI_API_KEY=sk-xxx -e OPENAI_API_BASE=https://api.deepseek.com/v1 -e OPENAI_MODEL=deepseek-v4-flash \
   -e EMBEDDING_LOCAL=false \
-  -e EMBEDDING_API_KEY=sk-xxx -e EMBEDDING_API_BASE=https://api.siliconflow.cn/v1 -e EMBEDDING_MODEL=BAAI/bge-large-zh-v1.5 \
+  -e EMBEDDING_API_KEY=sk-xxx -e EMBEDDING_API_BASE=https://api.siliconflow.cn/v1 -e EMBEDDING_MODEL=BAAI/bge-m3 \
   -v $(pwd)/data:/app/data \
   ariadne-mcp:latest
 ```
 
 > The tar uses the OCI layout and loads on Docker 25+ / Podman / containerd; for older Docker, convert it once with `skopeo copy docker-archive:ariadne-mcp.tar docker-archive:out.tar`.
+
+### Option 3: ALM synchronous HTTP service
+
+`alm/` is a separate external interface (`POST /add`, `POST /search`, `GET /health`) with config **fully isolated** from the root `.env`:
+
+```bash
+cp alm/.env.alm.example alm/.env.alm   # ALM_API_KEYS / LLM / Embedding are required
+docker compose --env-file alm/.env.alm -f deploy/docker-compose.alm.yml up -d --build
+python -m alm.status --base-url http://127.0.0.1:8770 --api-key <your-key>   # read-only self-check
+```
+
+- The host port binds to `127.0.0.1:8770` by default; public access needs a TLS-terminating reverse proxy in front (the service does not do TLS itself);
+- With `ALM_API_KEYS` empty and a non-loopback listener, the service **refuses to start** (it does not allow all requests);
+- Memories live in the named volume `alm-data` and survive restarts / upgrades;
+- Two-layer architecture, `user_id` space isolation and tuning knobs: see [docs/ALM.en.md](docs/ALM.en.md).
 
 ### The embedding mode decides the image size
 
@@ -256,12 +278,26 @@ Identical to a local run: which graph is in use comes from the shared pointer. T
 - The image ships **no credentials**. So without a `./data` mount, upgrading the image resets the account to the default and invalidates existing sessions (the signing key is regenerated) — this is intentional.
 - The panel's **"chain test"** (running a real chain from the panel) needs model settings; compose already injects `.env` into `ariadne-viz` and sets `ARIADNE_MCP_URL=http://ariadne-mcp:8766/sse` so the panel's MCP block can health-check the other container. **The prerequisite is** that the image's embedding mode matches `EMBEDDING_LOCAL` in `.env` (an API-mode image has no torch, so `1` raises an ImportError).
 
+### Public exposure and remote access
+
+Both the panel and MCP speak **plain HTTP with password / Basic auth**, so credentials can be sniffed on the wire. The host ports therefore bind to `127.0.0.1` by default (controlled by `ARIADNE_BIND_HOST`):
+
+| Scenario | How |
+| --- | --- |
+| Local browser / local IDE | `http://127.0.0.1:8765` and `http://127.0.0.1:8766/sse` directly |
+| Remote panel | SSH tunnel `ssh -L 8765:127.0.0.1:8765 <user>@<host>`, then open `http://127.0.0.1:8765` |
+| Remote MCP | Add `-L 8766:127.0.0.1:8766` to the same tunnel, or point the client at an HTTPS domain behind a proxy |
+| Public service | Terminate TLS at nginx / Caddy, then set `ARIADNE_BIND_HOST=0.0.0.0` and give the panel and MCP a vhost each |
+
+> Container-to-container traffic (the panel's MCP health check) goes over the compose network at `http://ariadne-mcp:8766/sse` and is unaffected by the bind address. ALM is the same: loopback by default, public access needs a reverse proxy plus a non-empty `ALM_API_KEYS`.
+
 ### Updating an existing deployment
 
 | Scenario | What to replace |
 | --- | --- |
 | Using a prebuilt image | `docker load` the new tar; if your `deploy/docker-compose.yml` lacks `env_file` / `ARIADNE_MCP_URL` on `ariadne-viz`, replace it too |
 | Building on the deploy host | `deploy/Dockerfile`, `.dockerignore`, `deploy/docker-compose.yml`, `dba_pipeline/`, `data/*.yaml`, `pyproject.toml` |
+| ALM service | `deploy/Dockerfile.alm`, `deploy/docker-compose.alm.yml`, `alm/`, `alm/.env.alm.example` |
 
 > **`.dockerignore` must be updated too**, otherwise a freshly built image will bake the credentials and signing key under `data/` back in.
 
@@ -305,6 +341,17 @@ Two of them form the knowledge layer: `dba_add_note` writes project notes and `d
 - Tool reference, environment variables, graph switching and agent setup: [docs/MCP.en.md](docs/MCP.en.md)
 - One-command start: `python start_all.py`
 
+## ALM Synchronous HTTP Service
+
+A synchronous HTTP interface for external programs: `POST /add` (write), `POST /search` (retrieve),
+`GET /health` (liveness). Spaces are isolated by `user_id`, over a two-layer architecture
+(raw-text layer L1 + graph layer L2): long documents are chunked into the raw-text layer without
+graph construction, while conversational material is extracted into nodes and edges — keeping LLM
+cost where it pays off.
+
+- Architectural differences, two-layer routing and tuning knobs: [docs/ALM.en.md](docs/ALM.en.md)
+- Container deployment: see Option 3 under [Docker Deployment](#docker-deployment); config template `alm/.env.alm.example`
+
 ## Data Format and Type System
 
 See [docs/architecture.en.md](docs/architecture.en.md#data-format-and-type-system) for the
@@ -316,6 +363,8 @@ See [docs/architecture.en.md](docs/architecture.en.md) for the full tree and mod
 
 - `dba_pipeline/`: retrieval, extraction, graph, LLM, WebUI and MCP server
 - `alm/`: synchronous HTTP memory service
+- `deploy/`: container files (`Dockerfile` + `docker-compose.yml` for MCP/panel, `Dockerfile.alm` + `docker-compose.alm.yml` for ALM)
+- `packaging/`: release packaging (npm shim, quickstart scripts)
 - `data/`: graph library and sample data
 - `tests/`: pytest suite
 

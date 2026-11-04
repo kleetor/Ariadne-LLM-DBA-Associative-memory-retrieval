@@ -5,6 +5,26 @@
 
 ## [Unreleased]
 
+### Added
+
+- `ARIADNE_BIND_HOST`：面板与 MCP 的宿主端口绑定地址，默认 `127.0.0.1`（仅回环）。
+- 容器健康检查：compose 级 MCP / 面板探活与镜像级 `HEALTHCHECK`；`stop_grace_period: 20s`。
+- `ALM_MAX_BODY_BYTES`：`/add`、`/search` 的请求体上限，默认 8 MB，超限返回 413。
+- `Server/connect.py -L`：SSH 本地端口转发，便于访问只绑回环的面板 / MCP。
+
+### Changed
+
+- 面板与 MCP 的宿主端口默认不再暴露公网（明文 HTTP + 密码 / Basic 鉴权），远程访问改走 SSH 隧道或前置 TLS 代理。
+- MCP SSE 默认端口改为 `8766`（与面板 `8765` 错开），并在退出时保留 8 秒宽限以 flush 调度器缓冲。
+- MCP / 面板容器日志启用轮转（20 MB × 5），避免长期驻留撑满磁盘。
+
+### Fixed
+
+- `deploy/docker-compose.yml` 端口映射两侧统一使用同一变量：自定义端口不再出现「容器 Up 但外部打不通」。
+- MCP 工具调用失败返回 `isError: true`，正文只含 `error_id`，堆栈仅进服务端日志。
+- 修改密码后此前签发的会话 Cookie 立即失效（`session_epoch`），旧 3 段格式 Cookie 自动作废。
+- ALM 增加容器内请求体上限，不再依赖前置 nginx 的 `client_max_body_size`。
+
 ## [0.1.4] - 2026-10-31
 
 ### Added

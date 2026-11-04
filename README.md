@@ -2,16 +2,24 @@
 
 **LLM DBA 管理与目的驱动的联想记忆检索系统**
 
-LLM 驱动的记忆图谱构建、检索、可视化全链路管线。
+Ariadne 把 LLM 对话中的事实抽取、纠错、去重与废弃（DBA）引入记忆系统，将长期记忆建模为**有向类型化知识图谱**，
+并在其上实现**目的驱动的联想检索（PAR）**：检索结果不是扁平候选列表，而是经 StoryRank 整理的因果故事片段。
 
-`docs/` 目录下的文档已经过整理，可交由 AI 快速掌握本系统的功能与实现价值。`data/` 目录包含一份空数据集 sample 供初次使用，以及一份预设数据集 memory 供快速体验系统效果。
+```bash
+pip install -c constraints.txt -e .
+cp .env.example .env        # 填入 LLM / Embedding 配置
+python start_all.py         # 面板 127.0.0.1:8765 + MCP SSE 127.0.0.1:8766
+```
+
+`docs/` 已按主题整理，可直接交给 AI 快速掌握系统全貌；`data/` 含空数据集 `sample`（首次启动的默认落点）
+与预设数据集 `memory`（用于快速体验效果）。
 
 后续方向：针对检索算法部分进行深入研究，在不同的使用场景下，基础权重表与其他配合部分或可经过参数调整实现不同的检索效果（如开放分类学权重或可实现知识库查询功能）
 
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue)](https://www.python.org/)
 [![MCP](https://img.shields.io/badge/MCP-Model_Context_Protocol-orange)](https://modelcontextprotocol.io/)
 [![License](https://img.shields.io/badge/License-AGPLv3-blue)](LICENSE)
-![Version](https://img.shields.io/badge/Version-0.1.2-lightgrey)
+![Version](https://img.shields.io/badge/Version-0.1.4-lightgrey)
 
 > *"A thread through the labyrinth of memory."*
 >
@@ -22,13 +30,6 @@ LLM 驱动的记忆图谱构建、检索、可视化全链路管线。
 **文档**：[文档索引](docs/README.md) · [ALM](docs/ALM.md) · [MCP](docs/MCP.md) · [架构](docs/architecture.md)
 
 ***
-
-## ALM 同步 HTTP 服务
-
-面向外部程序的 `POST /add`、`POST /search`、`GET /health` 同步接口，按 `user_id` 隔离空间，
-并采用「原文层 L1 + 图谱层 L2」两层架构。
-
-- 架构差异、两层路由与部署说明：[docs/ALM.md](docs/ALM.md)
 
 ## 项目的目标与思考
 
@@ -59,7 +60,6 @@ Ariadne 的长期目标是回答一个问题：**Agent 应如何像人类一样�
 
 ## 目录
 
-- [ALM 同步 HTTP 服务](#alm-同步-http-服务)
 - [项目的目标与思考](#项目的目标与思考)
 - [项目简介](#项目简介)
 - [核心特性](#核心特性)
@@ -69,6 +69,7 @@ Ariadne 的长期目标是回答一个问题：**Agent 应如何像人类一样�
 - [Docker 部署](#docker-部署)
 - [检索方法：PAR 基线](#检索方法par-基线)
 - [MCP 服务](#mcp-服务)
+- [ALM 同步 HTTP 服务](#alm-同步-http-服务)
 - [数据格式与类型体系](#数据格式与类型体系)
 - [项目结构](#项目结构)
 - [参考与论文](#参考与论文)
@@ -96,6 +97,8 @@ Ariadne 将 LLM 对话中的事实抽取、纠错、去重、废弃等数据库�
 | 🎯 目的驱动检索        | 跳转轴 + 目的回归 + 寻峰终止，替代固定 top-K    |
 | 📖 StoryRank 故事化 | 因果链路 → 故事片段，避免污染聊天上下文           |
 | 🔌 MCP 集成        | 11 个工具（含笔记与知识检索），支持 stdio / SSE 两种传输 |
+| ☁️ ALM 同步 HTTP   | `/add` `/search` 契约供外部程序调用，按 `user_id` 隔离空间 |
+| 🔐 统一鉴权        | 面板与 MCP 共用 `auth.json`，Cookie / Basic / Bearer；改密即吊销旧会话 |
 | 🖥️ 3D 可视化       | 力导向图、图层过滤、聚焦模式、在线 CRUD          |
 | 🗂️ 图谱库          | 多图谱管理与切换，可一键载入 MCP（各自跨重启记住）  |
 | 📄 离线导出          | 一键生成自包含 HTML，无需服务器              |
@@ -111,6 +114,7 @@ Ariadne 将 LLM 对话中的事实抽取、纠错、去重、废弃等数据库�
    │            │                    │
    │    MaintenanceScheduler        ├──► API Server（HTTP REST + 3D 面板）
    │    （批量异步调度）              ├──► MCP Server（11 tools，stdio / SSE）
+   │                                 ├──► ALM 同步 HTTP（/add /search，按 user_id 隔离）
    │                                 └──► 离线 HTML
    └──► 人工干预（CRUD 面板 + MCP dba_intervene）
 ```
@@ -236,8 +240,8 @@ cp .env.example .env        # 填入模型信息
 docker compose --env-file .env -f deploy/docker-compose.yml up -d --build
 ```
 
-- **面板**：`http://<主机>:8765`（`ARIADNE_VIZ_PORT` 可改），默认账号 `ariadne / ariadne`，首次登录强制改密；
-- **MCP**：默认**不发布宿主端口**，仅供同一 compose 网络内的容器访问 `http://ariadne-mcp:8766/sse`。若本机 IDE 要直连，把 `deploy/docker-compose.yml` 里那段 `ports` 注释打开（已绑定回环，无需开防火墙）；
+- **面板**：`http://127.0.0.1:8765`（宿主端口默认只绑回环；远程用 SSH 隧道 `ssh -L 8765:127.0.0.1:8765 <user>@<主机>` 访问，`ARIADNE_VIZ_PORT` / `ARIADNE_BIND_HOST` 可改），默认账号 `ariadne / ariadne`，首次登录强制改密；
+- **MCP**：宿主端口同样默认只绑回环（`127.0.0.1:8766`），同一 compose 网络内的容器直接访问 `http://ariadne-mcp:8766/sse`。面板/MCP 是 HTTP 明文 + 密码/Basic 鉴权，要暴露公网需先在 .env 设 `ARIADNE_BIND_HOST=0.0.0.0`——仅限前面有 TLS 终止代理的场景；
 - 两个服务都挂载 `./data:/app/data`，因此**宿主机的 `./data` 就是图谱库**：在面板里切换图谱会在那里生成/更新 `active_graph.json`。
 
 ### 方式二：加载预构建镜像
@@ -245,15 +249,30 @@ docker compose --env-file .env -f deploy/docker-compose.yml up -d --build
 ```bash
 docker load -i package/ariadne-mcp.tar
 
-docker run -d --name ariadne-mcp -p 8766:8766 \
+docker run -d --name ariadne-mcp -p 127.0.0.1:8766:8766 \
   -e OPENAI_API_KEY=sk-xxx -e OPENAI_API_BASE=https://api.deepseek.com/v1 -e OPENAI_MODEL=deepseek-v4-flash \
   -e EMBEDDING_LOCAL=false \
-  -e EMBEDDING_API_KEY=sk-xxx -e EMBEDDING_API_BASE=https://api.siliconflow.cn/v1 -e EMBEDDING_MODEL=BAAI/bge-large-zh-v1.5 \
+  -e EMBEDDING_API_KEY=sk-xxx -e EMBEDDING_API_BASE=https://api.siliconflow.cn/v1 -e EMBEDDING_MODEL=BAAI/bge-m3 \
   -v $(pwd)/data:/app/data \
   ariadne-mcp:latest
 ```
 
 > tar 是 OCI 布局，Docker 25+ / Podman / containerd 均可导入；更老的 Docker 可用 `skopeo copy docker-archive:ariadne-mcp.tar docker-archive:out.tar` 转换一次。
+
+### 方式三：ALM 同步 HTTP 服务
+
+`alm/` 是独立的对外同步接口（`POST /add`、`POST /search`、`GET /health`），配置与根目录 `.env` **完全隔离**：
+
+```bash
+cp alm/.env.alm.example alm/.env.alm   # 必填 ALM_API_KEYS / LLM / Embedding
+docker compose --env-file alm/.env.alm -f deploy/docker-compose.alm.yml up -d --build
+python -m alm.status --base-url http://127.0.0.1:8770 --api-key <your-key>   # 只读自检
+```
+
+- 宿主端口默认只绑 `127.0.0.1:8770`；公网访问需前置反向代理终止 TLS（本服务自身不做 TLS）；
+- `ALM_API_KEYS` 为空且监听非回环地址时**拒绝启动**（不是放行所有请求）；
+- 记忆落在具名卷 `alm-data`，容器重启 / 升级不丢；
+- 两层架构、`user_id` 空间隔离与调参项见 [docs/ALM.md](docs/ALM.md)。
 
 ### embedding 模式决定镜像大小
 
@@ -281,12 +300,26 @@ docker run -d --name ariadne-mcp -p 8766:8766 \
 - 镜像**不预置凭据**。因此不挂载 `./data` 时，升级镜像会让凭据回到默认账号、并使已有登录态失效（签名密钥重新生成）——这是有意为之。
 - 面板的**「调用测试」**（在面板内跑真实链路）需要模型配置，compose 里已给 `ariadne-viz` 注入 `.env`，并设了 `ARIADNE_MCP_URL=http://ariadne-mcp:8766/sse`，让面板的「MCP 连接」区块能探活到另一个容器。**前提是**镜像的 embedding 模式与 `.env` 的 `EMBEDDING_LOCAL` 一致（API 模式的镜像不含 torch，写 `1` 会 ImportError）。
 
+### 公网暴露与远程访问
+
+面板与 MCP 都是**HTTP 明文 + 密码 / Basic 鉴权**，凭据在链路上可被嗅探，因此宿主端口**默认只绑 `127.0.0.1`**（由 `ARIADNE_BIND_HOST` 控制）：
+
+| 场景 | 做法 |
+| --- | --- |
+| 本机浏览器 / 本机 IDE | 直接访问 `http://127.0.0.1:8765`、`http://127.0.0.1:8766/sse` |
+| 远程看面板 | SSH 隧道 `ssh -L 8765:127.0.0.1:8765 <user>@<host>`，浏览器开 `http://127.0.0.1:8765` |
+| 远程接 MCP | 同一隧道追加 `-L 8766:127.0.0.1:8766`，或让客户端直连反代后的 HTTPS 域名 |
+| 对外正式服务 | 前置 nginx / Caddy 终止 TLS，再设 `ARIADNE_BIND_HOST=0.0.0.0`，并为面板与 MCP 各配一个 vhost |
+
+> 容器之间互访（面板的「MCP 连接」探活）走 compose 内部网络 `http://ariadne-mcp:8766/sse`，不受绑定地址影响。ALM 同理：默认只绑回环，公网需反代 + 非空 `ALM_API_KEYS`。
+
 ### 更新已有部署
 
 | 场景 | 需要替换 |
 | --- | --- |
 | 用预构建镜像 | 重新 `docker load` 新 tar；`deploy/docker-compose.yml` 若缺 `ariadne-viz` 的 `env_file` / `ARIADNE_MCP_URL`，建议一并替换 |
 | 在部署机上构建 | `deploy/Dockerfile`、`.dockerignore`、`deploy/docker-compose.yml`、`dba_pipeline/`、`data/*.yaml`、`pyproject.toml` |
+| ALM 服务 | `deploy/Dockerfile.alm`、`deploy/docker-compose.alm.yml`、`alm/`、`alm/.env.alm.example` |
 
 > **`.dockerignore` 必须一起更新**，否则新构建的镜像会把 `data/` 下的凭据与密钥重新打进去。
 
@@ -330,6 +363,15 @@ MCP Server 将记忆图谱暴露为 11 个工具，支持 stdio 与 SSE 两种�
 - 工具清单、环境变量、图谱切换与 Agent 接入：[docs/MCP.md](docs/MCP.md)
 - 一键启动：`python start_all.py`
 
+## ALM 同步 HTTP 服务
+
+面向外部程序的同步接口：`POST /add`（写入）、`POST /search`（检索）、`GET /health`（探活）。
+按 `user_id` 隔离空间，并采用「原文层 L1 + 图谱层 L2」两层架构：长文档只切块入原文层、不建图，
+会话型语料才抽取成节点与边，把 LLM 开销压在划算的地方。
+
+- 架构差异、两层路由与调参项：[docs/ALM.md](docs/ALM.md)
+- 容器部署见上文 [Docker 部署](#docker-部署) 的方式三；配置模板 `alm/.env.alm.example`
+
 ## 数据格式与类型体系
 
 图谱 YAML 结构、6 类节点与 8 类关系的完整定义见
@@ -341,6 +383,8 @@ MCP Server 将记忆图谱暴露为 11 个工具，支持 stdio 与 SSE 两种�
 
 - `dba_pipeline/`：检索、抽取、图谱、LLM、WebUI 与 MCP Server
 - `alm/`：同步 HTTP 记忆服务
+- `deploy/`：两套容器化文件（`Dockerfile` + `docker-compose.yml` 供 MCP/面板，`Dockerfile.alm` + `docker-compose.alm.yml` 供 ALM）
+- `packaging/`：发行打包（npm 薄壳、quickstart 启动脚本）
 - `data/`：图谱库与示例数据
 - `tests/`：pytest 测试
 

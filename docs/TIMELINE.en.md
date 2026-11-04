@@ -108,6 +108,32 @@ graph library and the MCP graph.
   re-embedding); cleaned comments and docs for open source; moved internal planning and experiment reports out of
   the repository.
 
+### 10-18 ~ 10-31 · ALM hardening and the v0.1.4 release
+
+| Date | Topic |
+| --- | --- |
+| 10-18 | ALM backfill fixes (wait window, independent batches, progress accounting) and regression runs |
+| 10-20 | ALM space-registry lock refactor: atomic writes, concurrency safety and index stamps |
+| 10-22 | Embedding-model replacement evaluation (bge-m3 ↔ text-embedding-v4, threshold re-calibration) |
+| 10-31 | v0.1.4 release: MCP knowledge layer, docs split, CI packaging and the npm shim |
+
+**Outcome**: reproducible fixes and concurrency safety on the ALM write path; a feasibility study for migrating the
+embedding model; the 0.1.4 release.
+
+---
+
+## 2026-11
+
+### 11-04 · Deployment security hardening
+
+| Date | Topic |
+| --- | --- |
+| 11-04 | Panel / MCP host ports bound back to loopback, remote access via SSH tunnel; container health checks, graceful shutdown and log rotation |
+| 11-04 | ALM request-body cap (413); MCP tool errors redacted and marked `isError`; password change revokes old sessions |
+
+**Outcome**: exposed interfaces no longer serve plaintext HTTP to the public network; container observability and
+error semantics completed; session revocation capability.
+
 ---
 
 ## Notes

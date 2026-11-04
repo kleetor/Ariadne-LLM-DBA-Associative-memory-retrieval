@@ -11,7 +11,7 @@
 
 > `--yaml` / `--graph-dir` 均为可选：用哪份图谱优先取共享指针里记录的选择，没有记录时才回落到 `--yaml`，再回落到图谱目录内的空图谱占位 `sample_graph.yaml`。
 
-> ⚠️ SSE 默认端口 `8765` 与 `ariadne-api` 相同，同时运行需改端口（如 `--port 8766`）。一键启动（`start_all.py`）会自动错开为 8766。
+> ⚠️ SSE 默认端口已改为 `8766`（`ariadne-api` 仍为 `8765`），两者不再冲突。
 
 ### 环境变量配置（可选）
 
@@ -32,7 +32,7 @@ LLM / Embedding 配置除命令行传参外，也可写入项目根 `.env`（或
 OPENAI_API_KEY=sk-xxx
 OPENAI_API_BASE=https://api.deepseek.com/v1
 OPENAI_MODEL=deepseek-v4-flash
-EMBEDDING_MODEL=BAAI/bge-large-zh-v1.5
+EMBEDDING_MODEL=BAAI/bge-m3
 EMBEDDING_LOCAL=true
 ```
 
@@ -87,7 +87,7 @@ ariadne-mcp --yaml data.yaml --llm-model gpt-4o-mini --llm-api-key sk-xxx \
 
 # 本地 embedding
 ariadne-mcp --yaml data.yaml --llm-model gpt-4o-mini --llm-api-key sk-xxx \
-    --embedding-model BAAI/bge-large-zh-v1.5 --embedding-local
+    --embedding-model BAAI/bge-m3 --embedding-local
 ```
 
 ### 11 个 Tool
@@ -159,3 +159,14 @@ ariadne-mcp --yaml /path/to/memory_graph.yaml --sse --port 8766
   }
 }
 ```
+
+### 远程接入与安全
+
+`--sse` 默认只监听 `127.0.0.1:8766`（`--host` 可改），且**始终鉴权**：
+
+- **本机**：`http://127.0.0.1:8766/sse`，用 HTTP Basic 或 `ARIADNE_MCP_TOKEN` 的 Bearer；
+- **跨机**：优先走 SSH 隧道 `ssh -L 8766:127.0.0.1:8766 <user>@<host>`，客户端仍填本地地址——明文端口不出网；
+- **公网直连**：必须先在前置代理终止 TLS（本服务自身不做 TLS），再把 `--host` 改为 `0.0.0.0` 并限制来源；
+- 容器部署时宿主端口默认只绑回环（`ARIADNE_BIND_HOST`），详见 README 的「公网暴露与远程访问」。
+
+工具调用失败时返回 `isError: true`，正文只给 `error_id`（完整堆栈仅进服务端日志与操作日志），便于排障又不泄漏内部信息。

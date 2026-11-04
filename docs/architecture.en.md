@@ -16,6 +16,7 @@
 │   ├── ALM.en.md / MCP.en.md       # service guides (English)
 │   └── architecture.en.md          # this file
 ├── examples/                       # ALM / MCP quick-start examples
+├── packaging/                      # release packaging (npm shim, quickstart scripts)
 ├── tests/                          # pytest suite
 └── dba_pipeline/
     ├── core/                       # retrieval core: Jump Axis, Purpose, Peak Finding

@@ -7,7 +7,8 @@
 # 用法（在仓库根执行）：
 #   1) cp .env.example .env   # 填入真实 API Key（面板账号首次启动自动生成，见下）
 #   2) docker compose --env-file .env -f deploy/docker-compose.yml up -d --build
-#   3) 3D 面板（外部访问，带登录页）：http://<主机IP>:8765   默认账号 ariadne / ariadne
+#   3) 3D 面板（带登录页）：宿主端口默认只绑 127.0.0.1，本机开 http://127.0.0.1:8765；
+#      在服务器上时用 SSH 隧道访问：ssh -L 8765:127.0.0.1:8765 <user>@<host> 后开同一地址。
 #      MCP（仅内部容器用）：同一网络内 http://ariadne-mcp:8766/sse
 #
 # 说明：
@@ -19,8 +20,10 @@
 #     true  → 镜像内安装本地 embedding（torch + sentence-transformers，镜像较大），
 #              使用 sentence-transformers，首次运行会下载模型。
 #   - ARIADNE_YAML 指向运行时图谱文件（默认 /app/data/memory_graph.yaml）。
-#   - 网络与鉴权：ariadne-mcp 不发布宿主端口，仅供同一网络内容器访问（无需防火墙）；
-#     ariadne-viz 对外 8765，始终启用鉴权：账号密码存在 /app/data/auth.json（即宿主机 ./data/auth.json），
+#   - 网络与鉴权：面板/MCP 是 HTTP 明文 + 密码/Basic 鉴权，直接暴露公网会被嗅探凭据，
+#     故两个服务的宿主端口默认只绑 127.0.0.1（ARIADNE_BIND_HOST 可调），远程一律走
+#     SSH 隧道；容器间互访走内部网络，不受绑定地址影响。
+#     访问始终启用鉴权：账号密码存在 /app/data/auth.json（即宿主机 ./data/auth.json），
 #     首次启动用默认账号 ariadne / ariadne 登录并立即改密（服务端会强制）；
 #     忘记密码时可设 ARIADNE_VIZ_USER / ARIADNE_VIZ_PASS 从环境变量走重置后门。
 #   - 挂载 ./data 持久化图谱 YAML；挂载 HF 缓存加速本地模型加载（仅本地 embedding 时用）。
@@ -36,13 +39,14 @@ services:
     container_name: ariadne-mcp
     restart: unless-stopped
     # MCP 默认仅供同一 compose 网络内的容器访问（内部调用 http://ariadne-mcp:8766/sse）。
-    # 需要从外部（宿主机 IDE 或别的机器）连接时，看下面两种写法：
-    #   - 只从宿主机本机连 → 绑回环，不经过公网、无需开防火墙/安全组
-    #   - 要从别的机器连   → 绑 0.0.0.0（当前写法），并放行云安全组/系统防火墙
+    # 宿主端口绑定地址由 ARIADNE_BIND_HOST 决定，**默认只绑回环**：远程连接用 SSH 隧道
+    # （ssh -L 8766:127.0.0.1:8766 <user>@<host>），不暴露公网、无需放行安全组。
+    # 确需公网直连（且前面有 TLS 终止代理）时在 .env 设 ARIADNE_BIND_HOST=0.0.0.0。
     ports:
-      - "${ARIADNE_PORT:-8766}:8766"
-      # 仅宿主机本机访问时改用这一行（更安全，不暴露到公网）：
-      # - "127.0.0.1:${ARIADNE_PORT:-8766}:8766"
+      # 两侧必须是同一个变量：容器内监听端口也由 ${ARIADNE_PORT} 决定
+      # （见 deploy/Dockerfile 的 CMD）。若容器侧写死 8766，改端口后映射会指向空端口，
+      # 表现为「容器 Up 但外部打不通」。
+      - "${ARIADNE_BIND_HOST:-127.0.0.1}:${ARIADNE_PORT:-8766}:${ARIADNE_PORT:-8766}"
     # 注入 .env 中全部变量为容器环境变量
     env_file:
       - ../.env
@@ -57,6 +61,22 @@ services:
       # 方式二：挂载单个外部文件并指定路径，如 -e ARIADNE_YAML=/data/graph.yaml
       # - /host/path/my_memory.yaml:/data/graph.yaml
       - hf-cache:/root/.cache/huggingface
+    # SSE 是长连接，docker stop 默认 10s 后 SIGKILL；给足时间让 uvicorn 优雅退出
+    # （run_sse 里已设 timeout_graceful_shutdown=8），退出前会 flush 调度器缓冲。
+    stop_grace_period: 20s
+    healthcheck:
+      # 只探端口存活：/sse 需要鉴权，401 也说明进程在服务。用 python 避免额外装 curl。
+      test: ["CMD-SHELL", "python -c \"import os,socket;socket.create_connection(('127.0.0.1',int(os.environ.get('ARIADNE_PORT','8766'))),3)\""]
+      interval: 30s
+      timeout: 5s
+      start_period: 90s
+      retries: 3
+    logging:
+      # MCP 会长期驻留；默认 json-file 无上限，必须显式轮转。
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
 
   # 3D 可视化面板（ariadne-api）：浏览/编辑图谱本身不需要 LLM，
   # 但面板的「调用测试」会在面板进程内跑真实链路，所以同样需要模型配置（见下方 env_file）。
@@ -65,7 +85,10 @@ services:
     container_name: ariadne-viz
     restart: unless-stopped
     ports:
-      - "${ARIADNE_VIZ_PORT:-8765}:8765"
+      # 与 MCP 同理：映射两侧都用 ${ARIADNE_VIZ_PORT}，与 command 里的 --port 保持一致；
+      # 绑定地址同样由 ARIADNE_BIND_HOST 控制（默认回环；远程走 SSH 隧道
+      # ssh -L 8765:127.0.0.1:8765 <user>@<host>，浏览器开 http://127.0.0.1:8765）
+      - "${ARIADNE_BIND_HOST:-127.0.0.1}:${ARIADNE_VIZ_PORT:-8765}:${ARIADNE_VIZ_PORT:-8765}"
     command: ariadne-api --yaml "${ARIADNE_YAML:-/app/data/memory_graph.yaml}" --host 0.0.0.0 --port "${ARIADNE_VIZ_PORT:-8765}"
     # 面板的「调用测试」要在面板进程内跑真实链路（意图识别 → PAR → StoryRank），
     # 需要与 MCP 相同的模型配置，故同样注入 .env。
@@ -84,6 +107,18 @@ services:
       ARIADNE_MCP_URL: "http://ariadne-mcp:${ARIADNE_PORT:-8766}/sse"
     volumes:
       - ../data:/app/data
+    healthcheck:
+      # 面板端口由 command 的 --port 决定，这里用同一变量探活
+      test: ["CMD-SHELL", "python -c \"import os,socket;socket.create_connection(('127.0.0.1',int(os.environ.get('ARIADNE_VIZ_PORT','8765'))),3)\""]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
 
 volumes:
   hf-cache:

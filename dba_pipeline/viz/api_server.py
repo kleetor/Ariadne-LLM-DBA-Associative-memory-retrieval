@@ -858,7 +858,7 @@ def create_app(api: MemoryGraphAPI, config: VizConfig,
         logging.getLogger("viz").info("登录成功: user=%r from %s", store.user, source)
         response = JSONResponse({"ok": True, "user": store.user, "must_change": must_change})
         response.headers["Set-Cookie"] = webauth.session_cookie(
-            signer.issue(store.user, must_change=must_change))
+            signer.issue(store.user, must_change=must_change, epoch=store.session_epoch))
         return response
 
     async def password_change(request: Request) -> JSONResponse:
@@ -893,7 +893,7 @@ def create_app(api: MemoryGraphAPI, config: VizConfig,
             "密码已修改: user=%r from %s", store.user, webauth.client_key(request.scope))
         response = JSONResponse({"ok": True, "user": store.user})
         response.headers["Set-Cookie"] = webauth.session_cookie(
-            signer.issue(store.user, must_change=False))
+            signer.issue(store.user, must_change=False, epoch=store.session_epoch))
         return response
 
     async def logout(request: Request) -> JSONResponse:

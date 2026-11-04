@@ -29,6 +29,7 @@ import sys
 import tempfile
 import threading
 import time
+import uuid
 import yaml
 from contextlib import contextmanager
 from pathlib import Path
@@ -1859,13 +1860,30 @@ def create_mcp_server(dba: DBAServer) -> "Server":
             elif name == "dba_review_sources":
                 result = await run_in_threadpool(dba.review_sources, **arguments)
             else:
-                result = {"error": f"Unknown tool: {name}"}
-        except Exception as e:
+                return CallToolResult(
+                    content=[TextContent(
+                        type="text",
+                        text=json.dumps({"error": f"Unknown tool: {name}"}, ensure_ascii=False),
+                    )],
+                    isError=True,
+                )
+        except Exception:
+            # 与 ALM 侧同口径：原始异常可能带文件路径、上游响应片段甚至记忆正文，
+            # 只回一个可对账的 error_id，明细留在服务端日志。
+            error_id = uuid.uuid4().hex[:8]
+            logging.getLogger("mcp").exception(
+                "工具调用失败 tool=%s error_id=%s", name, error_id
+            )
             oplog.log_operation("llm", op=name, request=_oplog_request(name, arguments),
-                                result=_oplog_result(name, {"status": "error", "error": str(e)}),
+                                result=_oplog_result(name, {"status": "error", "error_id": error_id}),
                                 actor=actor, tool=name, path=log_path)
             return CallToolResult(
-                content=[TextContent(type="text", text=json.dumps({"error": str(e)}, ensure_ascii=False, indent=2))]
+                content=[TextContent(
+                    type="text",
+                    text=json.dumps({"error": f"内部错误（error_id={error_id}）"},
+                                    ensure_ascii=False, indent=2),
+                )],
+                isError=True,
             )
 
         oplog.log_operation("llm", op=name, request=_oplog_request(name, arguments),
@@ -1934,8 +1952,11 @@ async def run_sse(server: "Server", host: str, port: int, store: "webauth.AuthSt
 
     # limit_concurrency：SSE 连接是长连接（每个客户端至少一条），不设上限等于
     # 任何一个能连上端口的进程都能把文件描述符/内存耗尽。256 对正常使用远远够用。
+    # timeout_graceful_shutdown：SSE 连接不会自己结束，默认（None）会一直等下去，
+    # 最终被 docker stop 的 10s 超时 SIGKILL，导致 finally 里的调度器 flush 来不及执行。
+    # 给 8s 上限，配合 compose 的 stop_grace_period=20s，保证缓冲里的对话能落库。
     config = uvicorn.Config(starlette_app, host=host, port=port, log_level="info",
-                            limit_concurrency=256)
+                            limit_concurrency=256, timeout_graceful_shutdown=8)
     http_server = uvicorn.Server(config)
     await http_server.serve()
 
@@ -2051,7 +2072,7 @@ def main():
                              "默认与图谱同目录 retrieval_params.yaml")
     parser.add_argument("--sse", action="store_true", help="使用 SSE 网络模式（默认 stdio）")
     parser.add_argument("--host", default="127.0.0.1", help="SSE 绑定地址")
-    parser.add_argument("--port", type=int, default=8765, help="SSE 端口")
+    parser.add_argument("--port", type=int, default=8766, help="SSE 端口（默认 8766，避开面板的 8765）")
 
     # ---- 可选 DBA 管线参数（优先级：命令行 > 环境变量）----
     parser.add_argument("--llm-model", default=os.environ.get("OPENAI_MODEL"),

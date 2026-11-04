@@ -734,6 +734,12 @@ class ALMConfig:
     # 置 ALM_TRACE_IO=1 开启（仅用于自测与冒烟排障）。
     trace_io: bool = False
 
+    # 单个请求体的字节上限（/add 与 /search 共用）。
+    # 公网入口通常有 nginx 的 client_max_body_size 兜底，但容器自身也要有防线：
+    # 未设上限时 `await request.json()` 会把超大 body 整个读进内存。
+    # 默认 8MB，足以覆盖「把整份文档当 query 送进来」的既有用法。
+    max_body_bytes: int = 8 * 1024 * 1024
+
     # 留痕**单条**的字符上限（`trace_io=1` 时生效）。0 = 不截断。
     #
     # 为什么必须有界：运行实测 `trace_io=1` 时**单个日志文件 84 MB**、约 60 秒写满
@@ -829,4 +835,5 @@ class ALMConfig:
             edge_wide=_env_bool("ALM_EDGE_WIDE", True),
             trace_io=_env_bool("ALM_TRACE_IO", False),
             trace_max_chars=_env_int("ALM_TRACE_MAX_CHARS", 4000),
+            max_body_bytes=_env_int("ALM_MAX_BODY_BYTES", 8 * 1024 * 1024, minimum=1024),
         )

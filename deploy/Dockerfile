@@ -51,6 +51,13 @@ VOLUME ["/root/.cache/huggingface"]
 
 EXPOSE 8766
 
+# 健康检查：MCP（默认 8766）与面板（默认 8765）共用本镜像，故依次探两个端口。
+# 只做 TCP 连接，避免为容器额外安装 curl/wget；/sse 需要鉴权，HTTP 探活反而更绕。
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+  CMD for p in "${ARIADNE_PORT:-8766}" "${ARIADNE_VIZ_PORT:-8765}"; do \
+        python -c "import socket;socket.create_connection(('127.0.0.1',$p),2)" && exit 0; \
+      done; exit 1
+
 # --yaml 路径与端口可由环境变量覆盖，便于运行时从外部挂载不同的图谱 YAML，无需重建镜像：
 #   docker run -v /host/data:/data -e ARIADNE_YAML=/data/my_memory.yaml ...
 #   docker run -p 9000:8766 -e ARIADNE_PORT=9000 ...

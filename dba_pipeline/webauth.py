@@ -160,6 +160,7 @@ def _read_record(path: str) -> dict:
             "iterations": int(raw["iterations"]),
             "key_id": str(raw.get("key_id", "")),
             "must_change": bool(raw.get("must_change", False)),
+            "session_epoch": int(raw.get("session_epoch", 0)),
         }
     except (KeyError, TypeError, ValueError) as e:
         raise ValueError(f"字段非法: {e}") from e
@@ -177,7 +178,8 @@ class AuthStore:
     """
 
     def __init__(self, path: str, user: str, salt: str, password_hash: str,
-                 iterations: int, key_id: str, must_change: bool):
+                 iterations: int, key_id: str, must_change: bool,
+                 session_epoch: int = 0):
         self.path = path
         self.user = user
         self.salt = salt
@@ -185,6 +187,8 @@ class AuthStore:
         self.iterations = iterations
         self.key_id = key_id
         self.must_change = must_change
+        # 凭据版本：改密/改名时 +1，用于让此前签发的会话 Cookie 立即失效
+        self.session_epoch = session_epoch
         self._mtime = 0
         # 保护凭据字段的成组读写：refresh 逐字段覆盖时，并发校验可能读到
         # "新盐 + 旧 hash" 的组合，把正确密码误判为失败
@@ -219,7 +223,8 @@ class AuthStore:
             return store
         store = cls(path=path, user=record["user"], salt=record["salt"],
                     password_hash=record["hash"], iterations=record["iterations"],
-                    key_id=record["key_id"], must_change=record["must_change"])
+                    key_id=record["key_id"], must_change=record["must_change"],
+                    session_epoch=record["session_epoch"])
         store._mtime = _mtime_of(path)
         return store
 
@@ -249,6 +254,7 @@ class AuthStore:
             self.iterations = record["iterations"]
             self.key_id = record["key_id"]
             self.must_change = record["must_change"]
+            self.session_epoch = record["session_epoch"]
             self._mtime = mtime
 
     # ---- 校验 / 写入 ----
@@ -296,6 +302,8 @@ class AuthStore:
             self.password_hash = _derive(password, salt, self.iterations, pepper)
             self.key_id = _pepper_id(pepper)
             self.must_change = False
+            # 改密/改名后旧会话立即失效（Cookie 里带着签发时的版本号）
+            self.session_epoch += 1
         self.save()
 
     def save(self) -> None:
@@ -307,6 +315,7 @@ class AuthStore:
             "iterations": self.iterations,
             "key_id": self.key_id,
             "must_change": self.must_change,
+            "session_epoch": self.session_epoch,
             "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         }
         directory = os.path.dirname(self.path) or "."
@@ -356,6 +365,8 @@ class Session:
 
     user: str
     must_change: bool = False
+    # 签发时的凭据版本；与 AuthStore.session_epoch 不一致即视为已失效
+    epoch: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -406,8 +417,8 @@ class SessionSigner:
     def _sign(self, payload: str) -> str:
         return hmac.new(self.secret, payload.encode("utf-8"), hashlib.sha256).hexdigest()
 
-    def issue(self, user: str, must_change: bool = False) -> str:
-        payload = f"{user}|{int(time.time()) + self.ttl}|{1 if must_change else 0}"
+    def issue(self, user: str, must_change: bool = False, epoch: int = 0) -> str:
+        payload = f"{user}|{int(time.time()) + self.ttl}|{1 if must_change else 0}|{epoch}"
         raw = f"{payload}|{self._sign(payload)}"
         return base64.urlsafe_b64encode(raw.encode("utf-8")).decode("ascii")
 
@@ -417,15 +428,16 @@ class SessionSigner:
             return None
         try:
             raw = base64.urlsafe_b64decode(token.encode("ascii")).decode("utf-8")
-            user, expires, flag, signature = raw.rsplit("|", 3)
+            user, expires, flag, epoch, signature = raw.rsplit("|", 4)
             deadline = int(expires)
+            epoch_value = int(epoch)
         except Exception:
             return None
-        if not hmac.compare_digest(signature, self._sign(f"{user}|{deadline}|{flag}")):
+        if not hmac.compare_digest(signature, self._sign(f"{user}|{deadline}|{flag}|{epoch}")):
             return None
         if deadline < time.time():
             return None
-        return Session(user=user, must_change=flag == "1")
+        return Session(user=user, must_change=flag == "1", epoch=epoch_value)
 
 
 # ---------------------------------------------------------------------------
@@ -595,7 +607,10 @@ def resolve_session(scope, store: AuthStore,
         if cookie:
             session = signer.verify(_cookie_value(cookie, SESSION_COOKIE))
             if session is not None:
-                return session
+                # 凭据版本不一致 = 期间改过密码/用户名，旧 Cookie 立即作废
+                store.refresh()
+                if session.epoch == store.session_epoch:
+                    return session
 
     authorization = headers.get("authorization", "")
     if _basic_ok(authorization, store):

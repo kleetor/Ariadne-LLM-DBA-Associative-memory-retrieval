@@ -51,6 +51,73 @@ def _error(status: int, reason: str) -> JSONResponse:
     return JSONResponse({"detail": {"reason": reason}}, status_code=status)
 
 
+class _BodyLimitMiddleware:
+    """限制请求体大小，避免超大 JSON 在解析前占满内存。
+
+    在进入应用前把 body 读到内存并计数：超过上限直接 413；否则把读到的 body
+    回放给下游。ALM 只有 /add、/search 两个 JSON 接口，缓冲上限内（默认 8MB）
+    与 `await request.json()` 的内存占用同量级，换来的是对 chunked 请求同样有效。
+    """
+
+    def __init__(self, app, max_bytes: int):
+        self.app = app
+        self.max_bytes = max_bytes
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+
+        # Content-Length 已知且超限：不必读 body，直接拒绝
+        for key, value in scope.get("headers", []):
+            if key.lower() == b"content-length":
+                try:
+                    if int(value) > self.max_bytes:
+                        return await self._reject(send)
+                except ValueError:
+                    pass
+                break
+
+        # 读取并缓冲（chunked 请求没有 Content-Length，只能边读边数）
+        body = bytearray()
+        while True:
+            message = await receive()
+            if message["type"] == "http.disconnect":
+                return
+            if message["type"] != "http.request":
+                break
+            body.extend(message.get("body", b""))
+            if len(body) > self.max_bytes:
+                return await self._reject(send)
+            if not message.get("more_body", False):
+                break
+
+        replayed = False
+
+        async def replay_receive():
+            nonlocal replayed
+            if not replayed:
+                replayed = True
+                return {"type": "http.request", "body": bytes(body), "more_body": False}
+            return {"type": "http.disconnect"}
+
+        await self.app(scope, replay_receive, send)
+
+    async def _reject(self, send) -> None:
+        body = json.dumps(
+            {"detail": {"reason": f"请求体超过 {self.max_bytes} 字节上限"}},
+            ensure_ascii=False,
+        ).encode("utf-8")
+        await send({
+            "type": "http.response.start",
+            "status": 413,
+            "headers": [
+                (b"content-type", b"application/json; charset=utf-8"),
+                (b"content-length", str(len(body)).encode("ascii")),
+            ],
+        })
+        await send({"type": "http.response.body", "body": body})
+
+
 # 回环地址：这些情况下不鉴权是安全的（仅本机可达）
 _LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
 
@@ -130,7 +197,7 @@ def _mask(user_id: str) -> str:
     return f"{user_id[:4]}***{user_id[-4:]}"
 
 
-def create_app(engine: ALMEngine, config: ALMConfig) -> Starlette:
+def create_app(engine: ALMEngine, config: ALMConfig) -> Any:
     """构建 Starlette 应用"""
 
     async def health(request: Request) -> JSONResponse:
@@ -211,7 +278,7 @@ def create_app(engine: ALMEngine, config: ALMConfig) -> Starlette:
         logger.exception("未捕获异常: %s", exc)
         return _error(500, "内部错误")
 
-    return Starlette(
+    app = Starlette(
         routes=[
             Route("/health", health, methods=["GET"]),
             Route("/add", add, methods=["POST"]),
@@ -219,6 +286,8 @@ def create_app(engine: ALMEngine, config: ALMConfig) -> Starlette:
         ],
         exception_handlers={Exception: on_error},
     )
+    # 放在最外层：鉴权与 JSON 解析之前就挡掉超大请求体
+    return _BodyLimitMiddleware(app, config.max_body_bytes)
 
 
 def _configure_logging(level: str) -> None:

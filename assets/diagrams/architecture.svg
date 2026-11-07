@@ -1,0 +1,234 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1680" height="1120" viewBox="0 0 1680 1120">
+  <rect width="1680" height="1120" fill="#FAF9F5"/>
+  <g font-family="Microsoft YaHei, PingFang SC, Noto Sans SC, sans-serif">
+
+    <!-- ================= 图例 ================= -->
+    <g font-size="11.5" fill="#8A857C">
+      <line x1="1380" y1="58" x2="1416" y2="58" stroke="#B3ACA0" stroke-width="1.6"/>
+      <text x="1424" y="62">主链路</text>
+      <line x1="1490" y1="58" x2="1526" y2="58" stroke="#B3ACA0" stroke-width="1.6" stroke-dasharray="5 4"/>
+      <text x="1534" y="62">旁路 / 只读</text>
+    </g>
+
+    <!-- ================= ① 写入链路 ================= -->
+    <text x="40" y="52" font-size="16" fill="#B9784E" letter-spacing="1">① 写入链路</text>
+    <text x="150" y="52" font-size="10" fill="#C9A48A" letter-spacing="3">WRITE</text>
+
+    <!-- 入口 -->
+    <rect x="40" y="100" width="210" height="58" rx="9" fill="#FFFFFF" stroke="#D9D3C7"/>
+    <text x="60" y="124" font-size="14" fill="#2A2A2A">MCP 工具</text>
+    <text x="60" y="142" font-size="11" fill="#8A857C">add_conversation</text>
+
+    <rect x="40" y="214" width="210" height="58" rx="9" fill="#FFFFFF" stroke="#D9D3C7"/>
+    <text x="60" y="238" font-size="14" fill="#2A2A2A">ALM /add</text>
+    <text x="60" y="256" font-size="11" fill="#8A857C">按 user_id 隔离空间</text>
+
+    <rect x="40" y="310" width="210" height="58" rx="9" fill="#FFFFFF" stroke="#D9D3C7"/>
+    <text x="60" y="334" font-size="14" fill="#2A2A2A">3D 面板 CRUD</text>
+    <text x="60" y="352" font-size="11" fill="#8A857C">增删改节点 / 边</text>
+
+    <!-- 主写入链 -->
+    <g fill="#FFFFFF" stroke="#D9D3C7">
+      <rect x="300" y="100" width="200" height="84" rx="9"/>
+      <rect x="540" y="100" width="130" height="84" rx="9"/>
+      <rect x="710" y="100" width="170" height="84" rx="9"/>
+      <rect x="920" y="100" width="160" height="84" rx="9"/>
+      <rect x="1120" y="100" width="210" height="84" rx="9"/>
+      <rect x="1370" y="100" width="270" height="84" rx="9"/>
+    </g>
+    <g font-size="14" fill="#2A2A2A">
+      <text x="320" y="128">维护调度器</text><text x="320" y="150" font-size="11" fill="#8A857C">空闲 90s · 累积 6 条</text>
+      <text x="556" y="128">triage</text><text x="556" y="150" font-size="11" fill="#8A857C">短文本才判</text>
+      <text x="726" y="128">节点抽取（LLM）</text><text x="726" y="150" font-size="11" fill="#8A857C">分类节点 + 类型</text>
+      <text x="936" y="128">边连接（LLM）</text><text x="936" y="150" font-size="11" fill="#8A857C">8 种关系类型</text>
+      <text x="1136" y="128">GraphBuilder</text><text x="1136" y="150" font-size="11" fill="#8A857C">去重 · 废弃 · 孤立检测</text>
+      <text x="1386" y="128">写入图谱与向量</text><text x="1386" y="150" font-size="11" fill="#8A857C">add_memories · 原子写 YAML</text>
+    </g>
+    <g stroke="#B3ACA0" stroke-width="1.6" fill="none">
+      <path d="M250 129 L296 129" marker-end="url(#arrow)"/>
+      <path d="M500 142 L536 142" marker-end="url(#arrow)"/>
+      <path d="M670 142 L706 142" marker-end="url(#arrow)"/>
+      <path d="M880 142 L916 142" marker-end="url(#arrow)"/>
+      <path d="M1080 142 L1116 142" marker-end="url(#arrow)"/>
+      <path d="M1330 142 L1366 142" marker-end="url(#arrow)"/>
+    </g>
+    <text x="300" y="196" font-size="11" fill="#A9A296">入队即返回；落盘发生在后台 worker（跨进程文件锁内）</text>
+
+    <!-- ALM 平行链路 -->
+    <rect x="300" y="214" width="700" height="92" rx="10" fill="#FDFCF8" stroke="#D9D3C7" stroke-dasharray="6 4"/>
+    <text x="318" y="236" font-size="11.5" fill="#8A857C">ALM 平行链路 · 独立进程 · 每个 user_id 一份空间 · 无跨进程锁</text>
+    <g fill="#FFFFFF" stroke="#D9D3C7">
+      <rect x="318" y="246" width="170" height="44" rx="7"/>
+      <rect x="516" y="246" width="180" height="44" rx="7"/>
+      <rect x="726" y="246" width="254" height="44" rx="7"/>
+    </g>
+    <g font-size="13" fill="#2A2A2A">
+      <text x="332" y="273">MemorySpace</text>
+      <text x="530" y="273">DBA 类（同一套）</text>
+      <text x="740" y="273">空间 YAML + FAISS</text>
+    </g>
+    <g font-size="10.5" fill="#8A857C">
+      <text x="530" y="286">无 scheduler · 无 write_guard</text>
+      <text x="740" y="286">按 user 分目录</text>
+    </g>
+    <g stroke="#B3ACA0" stroke-width="1.6" fill="none">
+      <path d="M250 253 L314 262" marker-end="url(#arrow)"/>
+      <path d="M488 268 L512 268" marker-end="url(#arrow)"/>
+      <path d="M696 268 L722 268" marker-end="url(#arrow)"/>
+    </g>
+
+    <!-- 面板直写 -->
+    <path d="M250 339 L330 339 L330 452" stroke="#B3ACA0" stroke-width="1.6" stroke-dasharray="6 4" fill="none" marker-end="url(#arrow)"/>
+    <text x="342" y="392" font-size="11" fill="#A9A296">直写 YAML，不经 DBA（同文件锁）</text>
+
+    <!-- ================= ② 存储与状态 ================= -->
+    <text x="40" y="444" font-size="16" fill="#6B6559" letter-spacing="1">② 存储与状态</text>
+    <text x="178" y="444" font-size="10" fill="#B0A99C" letter-spacing="3">STATE</text>
+
+    <rect x="40" y="456" width="1600" height="214" rx="14" fill="#FFFFFF" stroke="#E6E1D6"/>
+
+    <g fill="#FFFFFF" stroke="#D9D3C7">
+      <rect x="70" y="486" width="330" height="76" rx="9"/>
+      <rect x="430" y="486" width="300" height="76" rx="9"/>
+      <rect x="760" y="486" width="280" height="76" rx="9"/>
+      <rect x="1070" y="486" width="270" height="76" rx="9"/>
+      <rect x="1370" y="486" width="250" height="76" rx="9"/>
+    </g>
+    <g font-size="14" fill="#2A2A2A">
+      <text x="86" y="512">MemoryGraph（networkx）</text>
+      <text x="446" y="512">VectorStore（FAISS）</text>
+      <text x="776" y="512">KeywordIndex（倒排）</text>
+      <text x="1086" y="512">图谱 YAML 与指针文件</text>
+      <text x="1386" y="512">sources/ 原文批次</text>
+    </g>
+    <g font-size="11" fill="#8A857C">
+      <text x="86" y="534">节点 · 边 · 跳转权重 · PERSISTED 字段</text>
+      <text x="86" y="550">内存图，与 MCP / 面板 / 检索共享同一实例</text>
+      <text x="446" y="534">内容向量缓存 + 查询 / 目的向量</text>
+      <text x="446" y="550">MCP 默认不持久化，可 checkpoint 落盘</text>
+      <text x="776" y="534">ASCII 词元 + 中文 bigram</text>
+      <text x="776" y="550">title / tags 加权，无向量依赖</text>
+      <text x="1086" y="534">active_graph.json 指针 · 原子写</text>
+      <text x="1086" y="550">&lt;yaml&gt;.lock 跨进程互斥</text>
+      <text x="1386" y="534">脱敏 · 30 天 TTL · 可选</text>
+      <text x="1386" y="550">供溯源巡检核对</text>
+    </g>
+
+    <g fill="#FBFAF6" stroke="#E0DACE">
+      <rect x="70" y="578" width="250" height="44" rx="7"/>
+      <rect x="340" y="578" width="250" height="44" rx="7"/>
+      <rect x="610" y="578" width="290" height="44" rx="7"/>
+      <rect x="920" y="578" width="300" height="44" rx="7"/>
+    </g>
+    <g font-size="12" fill="#6B6559">
+      <text x="86" y="605">operations.log（JSONL 审计）</text>
+      <text x="356" y="605">reviews/ · snapshots/（巡检与快照）</text>
+      <text x="626" y="605">检索参数（热加载，面板可调）</text>
+      <text x="936" y="605">离线 HTML 导出（只读 YAML）</text>
+    </g>
+    <text x="70" y="644" font-size="11" fill="#A9A296">写路径：同目录临时文件 + os.replace；跨进程锁串行化 MCP 维护与面板 CRUD。</text>
+    <text x="70" y="660" font-size="11" fill="#A9A296">进程内 _lock 保护图结构读写，_runtime_lock 隔离「切图」与「检索」。</text>
+
+    <!-- 写入 → 存储 -->
+    <path d="M1505 184 L1505 452" stroke="#B3ACA0" stroke-width="1.6" fill="none" marker-end="url(#arrow)"/>
+    <text x="1512" y="330" font-size="11" fill="#A9A296">持久化</text>
+
+    <!-- ================= ③ 读取链路 ================= -->
+    <text x="40" y="700" font-size="16" fill="#3E7C77" letter-spacing="1">③ 读取链路</text>
+    <text x="150" y="700" font-size="10" fill="#8FB3AF" letter-spacing="3">READ</text>
+
+    <rect x="40" y="736" width="210" height="64" rx="9" fill="#FFFFFF" stroke="#D9D3C7"/>
+    <text x="60" y="762" font-size="14" fill="#2A2A2A">查询入口</text>
+    <text x="60" y="782" font-size="11" fill="#8A857C">MCP · 面板 · ALM /search</text>
+
+    <rect x="40" y="918" width="210" height="64" rx="9" fill="#FFFFFF" stroke="#D9D3C7"/>
+    <text x="60" y="944" font-size="14" fill="#2A2A2A">知识查询</text>
+    <text x="60" y="964" font-size="11" fill="#8A857C">dba_query_knowledge</text>
+
+    <g fill="#FFFFFF" stroke="#D9D3C7">
+      <rect x="300" y="726" width="180" height="84" rx="9"/>
+      <rect x="520" y="726" width="170" height="84" rx="9"/>
+      <rect x="730" y="726" width="160" height="84" rx="9"/>
+      <rect x="930" y="726" width="170" height="84" rx="9"/>
+      <rect x="1140" y="726" width="170" height="84" rx="9"/>
+      <rect x="1350" y="726" width="290" height="84" rx="9"/>
+    </g>
+    <g font-size="14" fill="#2A2A2A">
+      <text x="316" y="754">种子召回</text>
+      <text x="536" y="754">跳转轴</text>
+      <text x="746" y="754">目的回归</text>
+      <text x="946" y="754">寻峰终止</text>
+      <text x="1156" y="754">StoryRank</text>
+      <text x="1366" y="754">故事片段</text>
+    </g>
+    <g font-size="11" fill="#8A857C">
+      <text x="316" y="776">向量 Top-K + 目的向量</text>
+      <text x="536" y="776">6 角色 × 8 边类型权重</text>
+      <text x="746" y="776">每跳按目的过滤</text>
+      <text x="946" y="776">斜率转负回峰值带</text>
+      <text x="1156" y="776">LLM 叙事整理</text>
+      <text x="1366" y="776">stories · story_used</text>
+    </g>
+    <g font-size="10.5" fill="#B0A99C">
+      <text x="316" y="794">VectorStore.search</text>
+      <text x="536" y="794">expand_with_trace</text>
+      <text x="746" y="794">PurposeModel</text>
+      <text x="946" y="794">PeakFinder</text>
+      <text x="1156" y="794">inference.story_rank</text>
+      <text x="1366" y="794">返回调用方</text>
+    </g>
+
+    <g stroke="#B3ACA0" stroke-width="1.6" fill="none">
+      <path d="M250 768 L296 768" marker-end="url(#arrow)"/>
+      <path d="M480 768 L516 768" marker-end="url(#arrow)"/>
+      <path d="M690 768 L726 768" marker-end="url(#arrow)"/>
+      <path d="M890 768 L926 768" marker-end="url(#arrow)"/>
+      <path d="M1100 768 L1136 768" marker-end="url(#arrow)"/>
+      <path d="M1310 768 L1346 768" marker-end="url(#arrow)"/>
+    </g>
+
+    <!-- 知识支路 -->
+    <g fill="#FFFFFF" stroke="#D9D3C7" stroke-dasharray="6 4">
+      <rect x="300" y="900" width="200" height="84" rx="9"/>
+      <rect x="540" y="900" width="180" height="84" rx="9"/>
+      <rect x="760" y="900" width="220" height="84" rx="9"/>
+    </g>
+    <g font-size="14" fill="#2A2A2A">
+      <text x="316" y="928">关键词倒排检索</text>
+      <text x="556" y="928">Rerank（可选）</text>
+      <text x="776" y="928">笔记命中</text>
+    </g>
+    <g font-size="11" fill="#8A857C">
+      <text x="316" y="950">ASCII + 中文 bigram</text>
+      <text x="556" y="950">HTTP cross-encoder</text>
+      <text x="776" y="950">字面精筛，不走向量</text>
+    </g>
+    <g font-size="10.5" fill="#B0A99C">
+      <text x="316" y="968">KeywordIndex.search</text>
+      <text x="556" y="968">失败回退关键词序</text>
+      <text x="776" y="968">返回笔记列表</text>
+    </g>
+    <g stroke="#B3ACA0" stroke-width="1.6" fill="none">
+      <path d="M250 950 L296 950" marker-end="url(#arrow)"/>
+      <path d="M500 942 L536 942" marker-end="url(#arrow)"/>
+      <path d="M720 942 L756 942" marker-end="url(#arrow)"/>
+    </g>
+    <text x="300" y="1014" font-size="11" fill="#A9A296">笔记（metadata.channel=note）同时进向量库，可作 PAR 种子；不参与边连接。</text>
+
+    <!-- 存储 → 读取 -->
+    <path d="M400 676 L400 722" stroke="#B3ACA0" stroke-width="1.6" fill="none" marker-end="url(#arrow)"/>
+    <text x="408" y="704" font-size="11" fill="#A9A296">向量读取</text>
+    <path d="M650 676 L650 722" stroke="#B3ACA0" stroke-width="1.6" stroke-dasharray="6 4" fill="none" marker-end="url(#arrow)"/>
+    <text x="658" y="704" font-size="11" fill="#A9A296">图结构扩展</text>
+    <path d="M270 676 L270 942 L296 942" stroke="#B3ACA0" stroke-width="1.6" stroke-dasharray="6 4" fill="none" marker-end="url(#arrow)"/>
+
+    <!-- ================= 底部说明 ================= -->
+    <text x="40" y="1064" font-size="11.5" fill="#8A857C">LLM 调用点：triage · 节点抽取 · 边连接 · 目的推断 · StoryRank　｜　Embedding：节点 / 查询 / 目的 / 去重　｜　人工干预：面板 CRUD 与 dba_intervene 同走文件锁</text>
+
+    <defs>
+      <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+        <path d="M0 0 L10 5 L0 10 z" fill="#B3ACA0"/>
+      </marker>
+    </defs>
+  </g>
+</svg>

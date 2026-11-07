@@ -17,12 +17,12 @@ The documents under `docs/` are organized by topic and can be handed straight to
 `data/` contains an empty `sample` dataset (the default landing spot on first start) and a pre-populated `memory`
 dataset for quickly experiencing the system.
 
-Future direction: further research on the retrieval algorithm — in different usage scenarios, the base weight table and other collaborating parts may be tuned via parameters to achieve different retrieval behaviors (e.g. opening up taxonomic weights could enable a knowledge-base-style query mode).
+The retrieval weight table is tunable: different usage scenarios can adjust the base weights and related parameters to change retrieval behaviour (see [docs/architecture.en.md](docs/architecture.en.md)).
 
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue)](https://www.python.org/)
 [![MCP](https://img.shields.io/badge/MCP-Model_Context_Protocol-orange)](https://modelcontextprotocol.io/)
 [![License](https://img.shields.io/badge/License-AGPLv3-blue)](LICENSE)
-![Version](https://img.shields.io/badge/Version-0.1.4-lightgrey)
+![Version](https://img.shields.io/badge/Version-0.1.5-lightgrey)
 
 > *"A thread through the labyrinth of memory."*
 
@@ -34,28 +34,37 @@ Future direction: further research on the retrieval algorithm — in different u
 
 ## Goals & Rationale
 
-> Memory is not a single storehouse, but a duet of "facts" and "experiences."
+> Memory is not a searchable drive, but the thing that makes a person who they are.
 
-Ariadne's long-term goal is to answer one question: **how should an Agent manage and retrieve memory and knowledge in a way that is as scientific and efficient as a human's?**
+Ariadne does not aim to be a better knowledge base. It aims to **give an Agent a memory of its own**: one that remembers who said what to it, how that felt, and who the other person is turning out to be.
 
-Cognitive science distinguishes two types of human long-term memory (Tulving):
+### Why we narrowed the scope to "one person"
 
-- **Semantic Memory** — decontextualized, stable knowledge: facts, concepts, and rules about the world ("The Earth revolves around the Sun", "the user is a backend engineer"). It is like a **knowledge base**, emphasizing accuracy, consistency, and verifiability.
-- **Episodic Memory** — personal experiences as time-space-emotion fragments ("last Tuesday I worked overtime until midnight and my neck ached"). It emphasizes **context, causality, sequence, and emotional color**, and tolerates approximation and association.
+We started from Tulving's split between semantic and episodic memory, framing memory systems against knowledge bases: stable facts demand accuracy and consistency, while personal experiences allow context, causality and emotion. That layering holds up in engineering, but after building the ALM pipeline and several iterations of the MCP server we reached a plainer conclusion:
 
-The human brain processes these two kinds of memory with different mechanisms and lets them **collaborate**: semantic memory provides background knowledge to make sense of new experiences, while new experiences gradually sediment into semantic knowledge. Ariadne argues that an LLM Agent's long-term memory should follow the same principle of separation and collaboration:
+**How well a memory system works depends heavily on how well it matches the source data.** Enterprises, teams and individuals differ sharply in corpus density, factual stability and privacy boundaries. The same extraction and retrieval strategy produces very different results — and very different integration costs — across the three, and trying to cover all of them tends to leave each one shallow.
 
-- **Separation** — the knowledge base (semantic) and the experience store (episodic) should be stored in layers and retrieved on demand, avoiding cross-contamination between "stable facts" and "personal experiences": knowledge demands accuracy and consistency, while experiences are allowed to evolve over time.
-- **Collaboration** — semantic knowledge provides explanatory background for episodic recall; specific experiences in turn validate, correct, and consolidate semantic facts; the two convert into each other through graph relations.
+So Ariadne narrows its goal to one thing: **personal conversation and emotional companionship for a single user.**
 
-How this thinking lands in Ariadne today and where it is headed:
+### What PAR really is: an LLM-like weighting and prediction system
 
-| Stage | Semantic Memory (Knowledge Base) | Episodic Memory (Experience Store) |
-| --- | --- | --- |
-| **Today** | A directed, typed graph: nodes + edges carry stable facts, maintained by DBA (extraction / correction / deduplication / deprecation) for consistency | Personal experience nodes in the graph, organized by StoryRank into story fragments preserving causality / sequence / emotion |
-| **Future** | An explicit "knowledge layer": independent storage and consistency checking of decontextualized facts | An explicit "experience layer": spatiotemporal-emotional retrieval unitized by experience |
+Ariadne's retrieval algorithm (PAR) and the engineering around it are, in essence, an **LLM-like weighting and prediction system**:
 
-The ultimate goal is to let an Agent **recall an experience like a person remembering, and consult a fact like looking something up in a database** — that is the meaning of Ariadne as a thread through the labyrinth of memory.
+- The LLM first turns raw dialogue into **typed nodes** — categorized facts and experiences — and links them with typed relations;
+- Node types × relation types form a **weight table** that adds a second dimension to vector recall. What it carries is the causal, situational and interpersonal structure the LLM has compressed from pretraining — priors that the embedding space itself does not encode;
+- Guided by the query vector, retrieval does more than "recall nodes": it **predicts further relation-based recall** on top of what has already been retrieved, following causal and temporal chains to bring out what should come to mind next.
+
+The payoff is twofold: the LLM can **model and understand a specific person quickly**, and the user can treat it as a **reliable companion** rather than an assistant that needs to be reintroduced every time.
+
+### Engineering stance: give the memory back to the Agent
+
+Ariadne holds one principle in its implementation: **memory belongs to no user and no session — it belongs to the Agent.**
+
+The common pattern treats memory as a profile maintained *for* a user and filters retrieval by user_id. Ariadne lets the Agent own and maintain the graph itself: what it records is "the conversations I have lived through", not "data about a user". We see this as the more decisive step toward anthropomorphism — only when memory is *mine* can recall have a stance, continuity and character.
+
+### Where this is heading
+
+Ariadne hopes Agents will come to understand complex human emotion: through long-term companionship, to grasp a person's character, flaws and spirit, and to offer guidance and care where it is needed. That is the long road from "remembering facts" to "understanding a person".
 
 ---
 
@@ -105,19 +114,13 @@ The core thesis is that the value of memory lies not in storing more, but in bei
 
 ## Architecture
 
-```
-                        ┌──────────────────────────────────────────┐
-                        │              Ariadne Core Pipeline        │
-                        └──────────────────────────────────────────┘
+<p align="center">
+  <a href="https://raw.githubusercontent.com/kleetor/Ariadne-LLM-DBA-Associative-memory-retrieval/main/assets/diagrams/architecture.en.png">
+    <img src="https://raw.githubusercontent.com/kleetor/Ariadne-LLM-DBA-Associative-memory-retrieval/main/assets/diagrams/architecture.en.png" width="100%" alt="Ariadne architecture: write path, storage and state, read path">
+  </a>
+</p>
 
-Conversation ──► DBA Maintenance ──► MemoryGraph + VectorStore ──► PAR Retrieval ──► StoryRank ──► Reply
-    │                │                        │
-    │      MaintenanceScheduler               ├──► API Server (HTTP REST + 3D panel)
-    │      (batched async)                    ├──► MCP Server (11 tools, stdio / SSE)
-    │                                         ├──► ALM sync HTTP (/add /search, spaces by user_id)
-    │                                         └──► Offline HTML
-    └──► Human intervention (CRUD panel + MCP dba_intervene)
-```
+Writes queue the conversation and let a background worker run batch maintenance (triage → extraction → edge linking → dedupe/deprecation); reads run the full chain "vector seeds → directed expansion → purpose regression → peak termination → StoryRank". MCP and the panel share one YAML file and cross-process lock, while ALM keeps a separate space per `user_id`. Notes enter both the vector store and the keyword index, but only act as retrieval seeds and never take part in edge linking.
 
 | Layer | Responsibility | Key modules |
 |-------|----------------|-------------|

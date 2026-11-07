@@ -115,8 +115,8 @@ Ariadne 将 LLM 对话中的事实抽取、纠错、去重、废弃等数据库�
 ## 架构
 
 <p align="center">
-  <a href="https://raw.githubusercontent.com/kleetor/Ariadne-LLM-DBA-Associative-memory-retrieval/main/assets/diagrams/architecture.png">
-    <img src="https://raw.githubusercontent.com/kleetor/Ariadne-LLM-DBA-Associative-memory-retrieval/main/assets/diagrams/architecture.png" width="100%" alt="Ariadne 架构：写入链路、存储与状态、读取链路">
+  <a href="https://cdn.jsdelivr.net/gh/kleetor/Ariadne-LLM-DBA-Associative-memory-retrieval@main/assets/diagrams/architecture.png">
+    <img src="https://cdn.jsdelivr.net/gh/kleetor/Ariadne-LLM-DBA-Associative-memory-retrieval@main/assets/diagrams/architecture.png" width="100%" alt="Ariadne 架构：写入链路、存储与状态、读取链路">
   </a>
 </p>
 

@@ -115,8 +115,8 @@ The core thesis is that the value of memory lies not in storing more, but in bei
 ## Architecture
 
 <p align="center">
-  <a href="https://raw.githubusercontent.com/kleetor/Ariadne-LLM-DBA-Associative-memory-retrieval/main/assets/diagrams/architecture.en.png">
-    <img src="https://raw.githubusercontent.com/kleetor/Ariadne-LLM-DBA-Associative-memory-retrieval/main/assets/diagrams/architecture.en.png" width="100%" alt="Ariadne architecture: write path, storage and state, read path">
+  <a href="https://cdn.jsdelivr.net/gh/kleetor/Ariadne-LLM-DBA-Associative-memory-retrieval@main/assets/diagrams/architecture.en.png">
+    <img src="https://cdn.jsdelivr.net/gh/kleetor/Ariadne-LLM-DBA-Associative-memory-retrieval@main/assets/diagrams/architecture.en.png" width="100%" alt="Ariadne architecture: write path, storage and state, read path">
   </a>
 </p>
 

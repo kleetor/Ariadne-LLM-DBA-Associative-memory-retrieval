@@ -5,15 +5,22 @@
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-11-07
+
 ### Added
 
 - `ARIADNE_BIND_HOST`：面板与 MCP 的宿主端口绑定地址，默认 `127.0.0.1`（仅回环）。
 - 容器健康检查：compose 级 MCP / 面板探活与镜像级 `HEALTHCHECK`；`stop_grace_period: 20s`。
 - `ALM_MAX_BODY_BYTES`：`/add`、`/search` 的请求体上限，默认 8 MB，超限返回 413。
 - `Server/connect.py -L`：SSH 本地端口转发，便于访问只绑回环的面板 / MCP。
+- 源层说话人：`source_store` 从对话标注 `[昵称]（QQ 号）原话` 解析并逐轮落盘 `speaker` / `speaker_id`（`extract_speaker_info`），供溯源巡检按人核对；正文照旧脱敏，`speaker_id` 作为结构字段保留。
+- 中英双语架构图（`assets/diagrams/architecture{,.en}.{svg,png}`），替换 README 中原有的纯文本架构图。
 
 ### Changed
 
+- README 的目标叙事从「知识库与记忆系统的对照」收窄为「拟人化的个人记忆」，明确面向单用户聊天与情感陪伴。
+- MCP `dba_add_conversation` 的工具描述补充流水格式约定（每行 `[昵称]（QQ 号）原话`），禁止追加旁白或时间说明。
+- npm 包 `ariadne-memory` 的包页说明改为项目简介 + GitHub 链接，不再只是「thin launcher」。
 - 面板与 MCP 的宿主端口默认不再暴露公网（明文 HTTP + 密码 / Basic 鉴权），远程访问改走 SSH 隧道或前置 TLS 代理。
 - MCP SSE 默认端口改为 `8766`（与面板 `8765` 错开），并在退出时保留 8 秒宽限以 flush 调度器缓冲。
 - MCP / 面板容器日志启用轮转（20 MB × 5），避免长期驻留撑满磁盘。
@@ -24,6 +31,8 @@
 - MCP 工具调用失败返回 `isError: true`，正文只含 `error_id`，堆栈仅进服务端日志。
 - 修改密码后此前签发的会话 Cookie 立即失效（`session_epoch`），旧 3 段格式 Cookie 自动作废。
 - ALM 增加容器内请求体上限，不再依赖前置 nginx 的 `client_max_body_size`。
+- 笔记节点（`channel=note`）不再参与边连接：连边 prompt 增加禁令，`GraphBuilder._create_edge` 补代码层护栏，`_find_duplicate` 跳过笔记，避免被合并进 person / thing。
+- 节点不再写入 `speaker` / `speaker_id`：说话人是原文层属性（谁说了这句话），节点级没有唯一说话人。
 
 ## [0.1.4] - 2026-10-31
 

@@ -68,6 +68,9 @@ def _format_round(ts_ms: Optional[int], conversation: str) -> str:
     调度器在入队时就知道每轮的到达时刻，批量合并时不该把它丢掉：时间前缀进入
     抽取输入，LLM 才能区分"这一轮 vs 那一轮"（与 ALM 侧 `[role@ts] content`
     的做法同类；方括号内是元信息，不会被写进节点内容）。
+
+    说话人不在这一层注入：它属于原文层属性（谁说了这句话），由 source_store
+    从对话文本的 `[昵称]` 标注中提取，不参与节点归属。
     """
     if not ts_ms:
         return conversation
@@ -193,8 +196,8 @@ class MaintenanceScheduler:
         """恢复调度器运行时状态（兼容旧格式：纯文本列表，无到达时间）"""
         buffer_: List[Tuple[Optional[int], str]] = []
         for item in state.get("_buffer", []):
-            if isinstance(item, (list, tuple)) and len(item) == 2:
-                ts, text = item
+            if isinstance(item, (list, tuple)) and len(item) >= 2:
+                ts, text = item[0], item[1]
                 buffer_.append((int(ts) if ts else None, str(text)))
             else:
                 buffer_.append((None, str(item)))

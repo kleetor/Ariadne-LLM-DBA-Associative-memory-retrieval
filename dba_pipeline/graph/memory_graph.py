@@ -242,7 +242,7 @@ class MemoryGraph:
     # evidence：原文支撑片段（opt-in，见 MemoryDBA.enable_evidence）
     # source_ref：该节点最近一次内容/证据来自哪个批次（opt-in，见 enable_source_store）
     # metadata：节点附加信息（此前未登记，落盘即静默丢失）
-    PERSISTED_NODE_FIELDS = ("speaker", "timestamp", "evidence", "source_ref", "metadata")
+    PERSISTED_NODE_FIELDS = ("timestamp", "evidence", "source_ref", "metadata")
 
     @staticmethod
     def _node_type_value(ndata: dict) -> str:

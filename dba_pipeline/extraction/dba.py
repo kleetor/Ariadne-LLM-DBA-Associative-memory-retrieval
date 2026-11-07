@@ -197,6 +197,7 @@ create(连边) | delete(删错误/过时的边)
 5. 保留时间维度：长期习惯与单次事件按语义连（CAUSAL/SEQUENCE）
 6. 边审计：删除已过时/被新事实覆盖的边；本轮未提到但可能仍成立的保留
 7. `reason` 等自然语言字段使用**源对话的语言**（边本体只有类型与节点 id，不受语言影响）
+8. **(note) 节点绝对禁止连边**：上下文里标了 `(note)` 的节点是笔记/seed-only 背景条目，为关键词检索与 PAR 召回提供种子；**任何 edge_op（无论 create 还是 delete）都不得以 (note) 节点作为 from 或 to**，包括 note ↔ 记忆层节点、note ↔ note 两种情况。笔记内容本身已经是事实，不需要被连接进因果/社交/时序网络
 
 > 下面的 few-shot 示例是中文写的，**只用于示意连边策略，不代表输出语言**。
 
@@ -918,7 +919,10 @@ class MemoryDBA:
                 continue
             type_val = node["node_type"].value if hasattr(node["node_type"], "value") else str(node["node_type"])
             content = node["content"][:100]
-            node_lines.append(f"  [{mid}] {type_val}: {content}")
+            # 笔记节点标注 (note)，让 LLM 知道它们是 seed-only 的背景条目，不应连边
+            meta = node.get("metadata") or {}
+            channel_tag = "(note)" if meta.get("channel") == "note" else ""
+            node_lines.append(f"  [{mid}] {type_val}{channel_tag}: {content}")
             shown_ids.add(mid)
 
         # 收集这些节点之间的边

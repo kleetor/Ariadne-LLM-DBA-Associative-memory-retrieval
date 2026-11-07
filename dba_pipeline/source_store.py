@@ -20,7 +20,7 @@ import re
 import time
 import uuid
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 SOURCE_STORE_ENV = "ARIADNE_SOURCE_STORE"
 DEFAULT_TTL_DAYS = 30
@@ -31,6 +31,13 @@ _LONG_DIGITS_RE = re.compile(r"(?<!\d)\d{8,}(?!\d)")
 _AT_ID_RE = re.compile(r"@\d{4,}")
 # 批次 ID 白名单：只允许字母数字与 . _ -，且不得为 ..（配合下面的显式排除防路径穿越）
 _BATCH_ID_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+
+# 对话文本的说话人标注：`[昵称] 原话`
+_SPEAKER_PREFIX_RE = re.compile(r"^\s*\[([^\[\]\n]{1,40})\]\s*")
+# 标注里的 QQ 号：`（QQ 3512593260，群「…」成员）`——全角/半角括号都认
+_INLINE_QQ_RE = re.compile(r"[（(]\s*QQ\s*[:：]?\s*(\d{5,12})[^）)]*[）)]", re.IGNORECASE)
+# 形如时间的前缀（`[2026-11-04 14:56:52]` / `[14:56]`）不是说话人
+_TIMESTAMP_LIKE_RE = re.compile(r"\d{1,2}:\d{2}|^\d{4}[-/.]\d{1,2}[-/.]\d{1,2}")
 
 
 def _valid_batch_id(batch_id: str) -> bool:
@@ -68,13 +75,82 @@ def new_batch_id() -> str:
     return time.strftime("b%Y%m%d-%H%M%S") + f"-{uuid.uuid4().hex[:4]}"
 
 
+def _parse_speaker_line(line: str) -> Tuple[Optional[str], Optional[str]]:
+    """解析单行标注，返回 (昵称, QQ号)；不是说话人标注时返回 (None, None)。
+
+    可识别：
+        [零] （QQ 3512593260，群「ai、零、Shark」成员）666
+        [零（QQ 3512593260）] 666
+        [Shark] 你的记忆目前是空的
+    """
+    m = _SPEAKER_PREFIX_RE.match(line)
+    if not m:
+        return None, None
+    label = m.group(1).strip()
+    rest = line[m.end():]
+
+    qq = None
+    # QQ 写在方括号内：`[零（QQ 123）]`
+    inner = _INLINE_QQ_RE.search(label)
+    if inner:
+        qq = inner.group(1)
+        label = (label[:inner.start()] + label[inner.end():]).strip()
+    else:
+        # QQ 写在紧随其后的圆括号里：`[零] （QQ 123…）原话`
+        outer = _INLINE_QQ_RE.match(rest)
+        if outer:
+            qq = outer.group(1)
+
+    if not label or _TIMESTAMP_LIKE_RE.search(label):
+        return None, None
+    return label, qq
+
+
+def extract_speaker_info(text: str) -> Tuple[Optional[str], Optional[str]]:
+    """从一轮对话的标注里解析 (说话人昵称, 稳定 ID)。
+
+    说话人是**原文层属性**（谁说了这句话），不写进节点：一个节点可能涉及多个
+    主体（如「Shark 和零下周末去漫展」），节点级 speaker 没有意义。
+
+    只在这一轮所有非空行的解析结果**一致**时返回对应值；多人混排、缺标注、
+    或标注其实是时间戳（`[14:56]`）时返回 None——宁可不记，也不要记错归属。
+    昵称与 ID 各自独立判定：多人混排但 ID 相同（同一人换了昵称）仍能拿到 ID。
+    """
+    if not text:
+        return None, None
+    speakers: List[str] = []
+    ids: List[str] = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        speaker, qq = _parse_speaker_line(line)
+        if speaker is None:
+            return None, None
+        speakers.append(speaker)
+        if qq:
+            ids.append(qq)
+    if not speakers:
+        return None, None
+    speaker = speakers[0] if len(set(speakers)) == 1 else None
+    unique_ids = set(ids)
+    speaker_id = unique_ids.pop() if len(unique_ids) == 1 else None
+    return speaker, speaker_id
+
+
 def save_batch(source_dir, batch_id: str, rounds: List[Dict],
                redact: bool = True, ttl_days: Optional[int] = DEFAULT_TTL_DAYS) -> Optional[Path]:
     """落盘一批原文。
 
     Args:
         source_dir: 批次目录（由 `default_source_dir(yaml_path)` 得到）
-        rounds: [{"ts": Unix毫秒或None, "text": 原文}]，按轮次保留到达时间
+        rounds: [{"ts": Unix毫秒或None, "text": 原文}]，按轮次保留到达时间；
+            speaker / speaker_id 由文本标注自动解析（`[昵称]（QQ 号）原话`），
+            也可显式给出同名字段覆盖。
+
+    注意：`text` 默认脱敏（QQ 号会被掩码），但 `speaker_id` 是**结构化字段**、
+    按原样落盘——它存在的意义就是稳定标识，掩码后就没有价值了。批次目录与
+    图谱同处一份存储，TTL 到期一起清理。
     """
     if not batch_id or not rounds:
         return None
@@ -83,17 +159,21 @@ def save_batch(source_dir, batch_id: str, rounds: List[Dict],
         raise ValueError(f"非法批次 ID: {batch_id!r}")
     target_dir = Path(source_dir)
     target_dir.mkdir(parents=True, exist_ok=True)
+    stored_rounds = []
+    for r in rounds:
+        raw_text = r.get("text") or ""
+        speaker, speaker_id = extract_speaker_info(raw_text)
+        stored_rounds.append({
+            "ts": r.get("ts"),
+            "speaker": r.get("speaker") or speaker,
+            "speaker_id": r.get("speaker_id") or speaker_id,
+            "text": redact_identifiers(raw_text) if redact else raw_text,
+        })
     payload = {
         "batch_id": batch_id,
         "created_at": int(time.time() * 1000),
         "redacted": bool(redact),
-        "rounds": [
-            {
-                "ts": r.get("ts"),
-                "text": redact_identifiers(r.get("text") or "") if redact else (r.get("text") or ""),
-            }
-            for r in rounds
-        ],
+        "rounds": stored_rounds,
     }
     out_path = target_dir / f"{batch_id}.json"
     tmp_path = out_path.with_suffix(".json.tmp")
@@ -163,7 +243,11 @@ def purge_expired(source_dir, ttl_days: int = DEFAULT_TTL_DAYS) -> int:
 
 
 def render_batch_text(batch: Dict) -> str:
-    """把一批原文渲染成带轮次时间的文本（供巡检 prompt 使用）"""
+    """把一批原文渲染成带轮次时间与说话人的文本（供巡检 prompt 使用）
+
+    说话人必须渲染出来：巡检要判断的正是"这条节点是不是这个人说的、有没有被
+    安到别人头上"，只给原文的话 LLM 只能从正文里的自称去猜。
+    """
     if not batch:
         return ""
     lines = []
@@ -174,5 +258,10 @@ def render_batch_text(batch: Dict) -> str:
             stamp = "时间未知"
         else:
             stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts / 1000)) if ts else "时间未知"
-        lines.append(f"[{stamp}] {r.get('text') or ''}")
+        text = r.get("text") or ""
+        speaker = r.get("speaker")
+        # 正文通常已自带 `[昵称]` 标注，此时不再重复前缀
+        if speaker and not text.lstrip().startswith(f"[{speaker}]"):
+            stamp = f"{stamp} [{speaker}]"
+        lines.append(f"[{stamp}] {text}")
     return "\n".join(lines)

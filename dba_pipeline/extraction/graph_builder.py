@@ -447,6 +447,14 @@ class GraphBuilder:
         else:
             raise ValueError(f"未知边操作: {action}")
 
+    def _is_note_node(self, node_id: str) -> bool:
+        """安全判断节点是否为笔记（channel=note）"""
+        node = self.graph.get_node(node_id)
+        if node is None:
+            return False
+        meta = node.get("metadata") or {}
+        return meta.get("channel") == "note"
+
     def _create_edge(self, op: Dict, txn: _WriteTransaction):
         """创建边（带校验 + 去重 + 事务追踪）"""
         from_id = op.get("from")
@@ -460,6 +468,19 @@ class GraphBuilder:
             raise ValueError(f"from 节点 {from_id} 不存在")
         if self.graph.get_node(to_id) is None:
             raise ValueError(f"to 节点 {to_id} 不存在")
+
+        # 代码层兜底：笔记节点（channel=note）禁止任何方向的入/出边。
+        # 笔记是 seed-only 的知识层条目，为关键词检索与 PAR 召回提供种子；
+        # 让 LLM 把 note 与 person/thing 连起来会污染记忆层的网络结构，
+        # 且导致同一事实同时以 note 和 person/thing 两种存在被重复召回。
+        # LLM prompt 已加禁令，此处再跑一遍程序护栏。
+        if self._is_note_node(from_id) or self._is_note_node(to_id):
+            logger.warning(
+                f"禁止对笔记节点连边（代码层护栏）: "
+                f"{from_id} --[{rel_type_str}]--> {to_id}，已跳过"
+            )
+            self.stats["ops_skipped"] += 1
+            return
 
         # 校验 rel_type
         rel_type = self._parse_rel_type(rel_type_str)
@@ -540,6 +561,9 @@ class GraphBuilder:
 
         - 无向量能力（store 为 None）时回退到精确字符串匹配，避免静默失效
         - 有向量能力时用 FAISS 初筛 top-k 候选，再用缓存向量算精确余弦相似度
+        - 笔记节点（channel=note）不参与去重：note 与 person/thing 可能内容相似
+          但角色不同——把"Shark 是 Ariadne 的用户"这条 note 合并到 person 节点会丢失
+          "这是一条笔记"的语义定位，检索时也会错误地走 PAR 链路。
         """
         if self.graph.node_count == 0:
             return None
@@ -549,7 +573,8 @@ class GraphBuilder:
             for nid in self.graph.graph.nodes():
                 node = self.graph.get_node(nid)
                 if (node and not node.get("deprecated") and not node.get("forgotten")
-                        and node.get("content") == content):
+                        and node.get("content") == content
+                        and not self._is_note_node(nid)):
                     logger.info(
                         f"节点精确去重: '{content[:40]}...' → 已有节点 {nid}"
                     )
@@ -565,6 +590,9 @@ class GraphBuilder:
             node = self.graph.get_node(mid)
             # 已遗忘/废弃节点不参与去重：否则命中的新事实既不新建也不更新，被静默吞掉
             if node is None or node.get("deprecated") or node.get("forgotten"):
+                continue
+            # 笔记节点跳过：note 与 person/thing 角色不同，不能合并
+            if self._is_note_node(mid):
                 continue
             cand_vec = self.vector_store._content_vectors.get(mid)
             if cand_vec is None:

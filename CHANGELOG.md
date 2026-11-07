@@ -5,6 +5,12 @@
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-11-07
+
+### Fixed
+
+- README 架构图改用 jsDelivr 镜像（`cdn.jsdelivr.net`）：`raw.githubusercontent.com` 在部分网络下无法解析，GitHub 与 PyPI 项目页都会显示裂图。
+
 ## [0.1.5] - 2026-11-07
 
 ### Added

@@ -19,7 +19,7 @@ python start_all.py         # 面板 127.0.0.1:8765 + MCP SSE 127.0.0.1:8766
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue)](https://www.python.org/)
 [![MCP](https://img.shields.io/badge/MCP-Model_Context_Protocol-orange)](https://modelcontextprotocol.io/)
 [![License](https://img.shields.io/badge/License-AGPLv3-blue)](LICENSE)
-![Version](https://img.shields.io/badge/Version-0.1.5-lightgrey)
+![Version](https://img.shields.io/badge/Version-0.1.6-lightgrey)
 
 > *"A thread through the labyrinth of memory."*
 >

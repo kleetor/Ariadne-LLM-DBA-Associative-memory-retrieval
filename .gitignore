@@ -127,3 +127,10 @@ engine*
 !/docs/paper/latex/
 !/docs/paper/figs/
 /docs/paper/PAR-overleaf.zip
+# LaTeX 构建中间物与导出 PDF（源码与图已入库，可随时重编译）
+/docs/paper/latex/*.aux
+/docs/paper/latex/*.bbl
+/docs/paper/latex/*.blg
+/docs/paper/latex/*.out
+/docs/paper/latex/main.pdf
+/docs/paper/figs/*.png

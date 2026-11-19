@@ -355,7 +355,7 @@ PAR 检索产出的是由「节点 + 关系」构成的**因果链路**，而非
 
 入口为 `retrieve_with_story`（库内方法），产物含 `stories`（叙事文本）、`story_used`（正文实际覆盖的节点数，**后端计算**）、`story_degraded`（是否为降级拼接）。
 
-> 详见 [0828PAR检索理论文档.md](docs/theory/0828PAR检索理论文档.md)
+> 详见 [1118PAR检索理论文档.md](docs/theory/1118PAR检索理论文档.md)
 
 ## MCP 服务
 
@@ -394,7 +394,7 @@ MCP Server 将记忆图谱暴露为 11 个工具，支持 stdio 与 SSE 两种�
 ## 参考与论文
 
 - [0828前置数据管理与后处理.md](docs/theory/0828前置数据管理与后处理.md)（前置数据管理 / LLM DBA 理论部分）
-- [0828PAR检索理论文档.md](docs/theory/0828PAR检索理论文档.md)（目的驱动联想记忆检索模型 / 检索理论部分）
+- [1118PAR检索理论文档.md](docs/theory/1118PAR检索理论文档.md)（PAR 原理与实现 / 开发者向）
 - [0908e2e实验文档.md](docs/theory/0908e2e实验文档.md)（端到端实验记录）
 
 ## 许可证

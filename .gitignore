@@ -122,6 +122,9 @@ engine*
 # 本地演示服务（仅本机运行，不入库）
 /ariadne_service/
 
+# 本地历史快照（旧仓库拷贝、旧 Plan、打包物与 __pycache__，不入库）
+/.repro/
+
 # 论文源码随预印本 artifact 开源；本地打包物、历史 PDF 与中文草稿不入库。
 /docs/paper/*
 !/docs/paper/latex/

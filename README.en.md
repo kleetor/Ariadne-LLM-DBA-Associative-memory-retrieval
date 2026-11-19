@@ -333,7 +333,7 @@ PAR retrieval produces a **causal chain** of "nodes + relations" rather than a f
 
 The entry point is `retrieve_with_story` (a library method); its output includes `stories` (narrative text), `story_used` (number of nodes the narrative actually covers, **computed backend-side**), and `story_degraded` (whether it fell back to concatenation).
 
-> See also the theory paper: [0828PAR检索理论文档.md](docs/theory/0828PAR检索理论文档.md) *(in Chinese)*.
+> See also the theory paper: [1118PAR检索理论文档.md](docs/theory/1118PAR检索理论文档.md) *(in Chinese)*.
 
 ## MCP Server
 
@@ -374,7 +374,7 @@ See [docs/architecture.en.md](docs/architecture.en.md) for the full tree and mod
 ## References
 
 - [0828前置数据管理与后处理.md](docs/theory/0828前置数据管理与后处理.md) *(data management / LLM DBA theory, in Chinese)*
-- [0828PAR检索理论文档.md](docs/theory/0828PAR检索理论文档.md) *(purpose-driven associative retrieval theory, in Chinese)*
+- [1118PAR检索理论文档.md](docs/theory/1118PAR检索理论文档.md) *(PAR: how it works, what it achieves, where it breaks — developer-oriented)*
 - [0908e2e实验文档.md](docs/theory/0908e2e实验文档.md) *(end-to-end experiments, in Chinese)*
 
 ## License

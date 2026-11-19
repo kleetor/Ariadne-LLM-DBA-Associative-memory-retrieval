@@ -82,6 +82,9 @@ python -m eval.stats_report --judge <judge1.json> <judge2.json> ... --out <stats
 `outputs/e1`、`outputs/e3` 里的原始 judge 输出保留了逐题打分与 `label_map`（匿名映射），可用于
 复核匿名化协议（逐题固定种子打乱，judge 只看“系统A/B/C”）。
 
+E6-lite（人类问卷试评）已搁置：`e6_lite_build.py` 与 `e6_lite_analyze.py` 只保留脚本，没有对应
+结果，也不在论文证据链中。
+
 ## 5. 复现时的口径注意
 
 - **默认目的过滤阈值 0.30 在主图上不删任何候选**（0/163），等价于未开启；有效工作点在

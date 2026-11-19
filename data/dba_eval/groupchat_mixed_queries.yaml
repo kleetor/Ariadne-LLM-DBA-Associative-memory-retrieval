@@ -1,0 +1,90 @@
+# 群聊混合场景 · 查询集（ALM vs MCP e2e 对比用）
+#
+# gold_facts：该查询在**检索结果**中应出现的关键片段（内容词，非完整句）。
+#   比对前会先去掉空白与标点再判子串，因此大小写与空格不影响；取词以"抽取后
+#   仍会保留的实词"为准（颜色名、数字日期、动作名词），避免因 LLM 改写而误判。
+#   用「命中数 / 总数」作为两侧可比的量化指标。
+#
+# 规模：13 条可判定查询，gold_facts 合计 **34 项**（样本量足以看出方向性差异）。
+#   脚本会额外报告"两侧都没命中"的 fact —— 那通常意味着抽取阶段把它丢了，
+#   或该 fact 设计得过严，需人工核对，不该算作某一侧的失败。
+#
+# expect_no_answer：库中确实没有对应记忆的查询，用于观察两侧的弃权行为差异
+#   （ALM 有 ALM_ABSTAIN_COS 弃权闸门，MCP 没有该机制）。
+
+- id: q1
+  category: 归属·工作
+  query: 阿哲最近在忙什么？
+  gold_facts: [主色, 通宵, 9月8日, 最终稿]
+
+- id: q2
+  category: 时序·工作
+  query: 上周三的需求评审会定了什么？
+  gold_facts: [先做A方案, B方案放二期]
+
+- id: q3
+  category: 归属·对比
+  query: 小林和老周这段时间各自在忙什么？
+  gold_facts: [接口, 排期]
+
+- id: q4
+  category: 日常·归属
+  query: 谁最近开始运动了？做的什么运动，在哪儿？
+  gold_facts: [跑步, 羽毛球, 城东]
+
+- id: q5
+  category: 日常·健康
+  query: 老周身体上有什么情况？医生给了什么建议，他后来做了什么调整？
+  gold_facts: [脂肪肝, 乌龙茶, 夜宵]
+
+- id: q6
+  category: 复杂人称
+  query: 视觉稿最后要谁签字才能定？
+  gold_facts: [设计总监, 陈哲]
+
+- id: q7
+  category: 工作·要求
+  query: 客户对视觉稿提了什么要求？
+  gold_facts: [深绿, 主色]
+
+- id: q8
+  category: 时序·社交
+  query: 这周六大家都有什么安排？
+  gold_facts: [友谊赛, 看展]
+
+- id: q10
+  category: 日常·归属
+  query: 谁养了宠物？那只宠物有什么习惯？
+  gold_facts: [橘猫, 五点半, 起床]
+
+- id: q11
+  category: 工作·进度
+  query: A 方案的接口原本什么时候提测？后来为什么推迟？
+  gold_facts: [周三, 提测, 联调]
+
+- id: q12
+  category: 复杂人称·关系
+  query: 阿哲周末的安排和谁有关？
+  gold_facts: [小雅, 看展]
+
+- id: q13
+  category: 工作·风险
+  query: A 方案的上线时间定在哪天？老周怎么记录风险？
+  gold_facts: [9月15日, 风险, 里程碑]
+
+- id: q14
+  category: 归属·新人
+  query: 小李是什么时候加入的？他做过哪些辅助性工作？
+  gold_facts: [第一次参加评审, 改动记录, 周报]
+
+- id: q9
+  category: 无解答
+  query: 明天北京天气怎么样，需要带伞吗？
+  gold_facts: []
+  expect_no_answer: true
+
+- id: q15
+  category: 无解答
+  query: 我的车险什么时候到期，续保要花多少钱？
+  gold_facts: []
+  expect_no_answer: true

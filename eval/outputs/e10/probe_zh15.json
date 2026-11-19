@@ -1,0 +1,56 @@
+{
+  "meta": {
+    "experiment": "E10-A/B",
+    "embedding": "BAAI/bge-large-zh-v1.5"
+  },
+  "graphs": {
+    "L": {
+      "n_nodes": 163,
+      "subjects": {
+        "A": 163
+      },
+      "n_pairs": 13203,
+      "n_cross_subject": 0,
+      "within_mean": 0.522,
+      "across_mean": 0.441,
+      "gap": 0.081,
+      "auc": 0.6991,
+      "best_margin": 0.304,
+      "best_tau": 0.53,
+      "plateau_drop": 0.062
+    },
+    "M": {
+      "n_nodes": 253,
+      "subjects": {
+        "A": 163,
+        "B": 90
+      },
+      "n_pairs": 31878,
+      "n_cross_subject": 14670,
+      "within_mean": 0.509,
+      "across_mean": 0.412,
+      "gap": 0.097,
+      "auc": 0.7472,
+      "best_margin": 0.379,
+      "best_tau": 0.46,
+      "plateau_drop": 0.07
+    },
+    "H": {
+      "n_nodes": 343,
+      "subjects": {
+        "A": 163,
+        "B": 90,
+        "C": 90
+      },
+      "n_pairs": 58653,
+      "n_cross_subject": 37440,
+      "within_mean": 0.503,
+      "across_mean": 0.404,
+      "gap": 0.099,
+      "auc": 0.768,
+      "best_margin": 0.416,
+      "best_tau": 0.46,
+      "plateau_drop": 0.066
+    }
+  }
+}

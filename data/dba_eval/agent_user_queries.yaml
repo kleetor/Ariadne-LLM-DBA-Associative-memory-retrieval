@@ -1,0 +1,49 @@
+# Agent·用户 混合记忆 + 时序 · StoryRank 查询集
+#
+# 每条 query 覆盖一个能力切面：时序（真实经历还原）/ 自身记忆（助手做过的事）/
+# 混合记忆（用户+助手共同卷入）。purposes 为主题标签，gold_expected 为语义期望（非严格对齐）。
+#
+# 注意：gold_expected 用 gold 图谱 id（uw/aw/tw 等），用于后续可选的命中核对；
+# StoryRank 测试以“故事产出质量”为主。
+
+- id: q1
+  query: 用户这周为了项目上线，从头到尾经历了哪些事？
+  purposes:
+    - 了解经历
+    - 还原时间线
+  gold_expected: [uw2, uw3, uw4, uw5, uw6, uw7, tw1, tw3, tw4, tw5]
+
+- id: q2
+  query: 助手最近帮用户做过哪些具体的事？
+  purposes:
+    - 了解帮助
+    - 还原经历
+  gold_expected: [aw1, aw2, aw3, aw4, aw5, aw8, al2, al4, am1, am2]
+
+- id: q3
+  query: 用户最近在作息和运动上做了哪些调整？
+  purposes:
+    - 了解近况
+    - 还原经历
+  gold_expected: [ud1, ud2, ud3, ud5, ud8, td1, td3, td4]
+
+- id: q4
+  query: 用户学数据分析这件事，助手是怎么帮他的？
+  purposes:
+    - 了解帮助
+    - 还原经历
+  gold_expected: [ul1, ul2, ul3, al1, al2, al3, al4, al5, tl1]
+
+- id: q5
+  query: 用户这个周末和朋友有什么安排？
+  purposes:
+    - 了解近况
+    - 还原经历
+  gold_expected: [us1, us2, us6, us8, as1, as2, ts3, ts4]
+
+- id: q6
+  query: 用户和助手最近都聊了些什么？
+  purposes:
+    - 了解近况
+    - 还原经历
+  gold_expected: [um1, um2, am1, am5, ud6, us7]

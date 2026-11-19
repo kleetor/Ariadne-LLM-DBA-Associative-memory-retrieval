@@ -1,0 +1,149 @@
+# E5 · 意图变化实验数据集（10 条略歧义句 × 3 意图）
+#
+# 设计前提（v2，2026-11-17 修正）：
+#   **同一句话**在不同目的下应被理解成不同的事，且图里同时存在能支撑至少两种理解的记忆。
+#   因此每条 scenario 只有**一个 text**（字面不指定意图），配 3 组 purposes。
+#
+# 为什么必须这样（v1 的错误）：
+#   v1 把三条 query 的**措辞**就写成了三种意图（"想想那几年" / "帮我安排" / "有没有适合的课"），
+#   那测的是"换一句话会不会换结果"——纯向量只要换文本就会变，两臂差异被抹平。
+#   实测 v1 的 Jaccard 方向完全反了（PAR 0.358 > vector 0.224），正是因为变量搞错了。
+#
+# 三臂设计：
+#   par             : 文本 + 目的（目的种子 / 目的过滤 / 目的加权）
+#   vector_purpose  : 文本与 purposes 拼接后嵌入（**公平对照**：向量也能"看到"目的）
+#   vector_text     : 仅文本（对目的完全不可见 → 同句 Jaccard 恒为 1，作内部校验/下界）
+#   主表只放 par vs vector_purpose；vector_text 不进主表。
+#
+# gold 是**语义期望**（该意图下最该被召回的节点组），用于算 facet recall，
+# 不要求严格对齐；它只表达"这个意图下谈这些内容才算切题"。
+scenarios:
+  - scenario: a01_工作强度
+    text: 这周真的挺累的。
+    intents:
+      - intent: vent
+        purposes: ["倾诉连续加班的疲惫", "表达对临时需求的不满", "寻求理解与支持"]
+        gold: [uw9, uw8, uw2, uw14]
+      - intent: plan
+        purposes: ["规划下周工作排期", "安排任务优先级", "预留临时需求的缓冲"]
+        gold: [aw1, aw2, uw3, uw7, tw7]
+      - intent: recommend
+        purposes: ["推荐适合高强度工作的减压方式", "比较不同方式的可行性", "获取短期内能执行的选择"]
+        gold: [uw11, aw9, aw8]
+
+  - scenario: a02_作息
+    text: 最近睡得越来越晚。
+    intents:
+      - intent: vent
+        purposes: ["倾诉作息紊乱的疲惫", "表达对健康的担忧", "寻求安慰与陪伴"]
+        gold: [ud7, ud6, ud9]
+      - intent: plan
+        purposes: ["规划作息调整步骤", "安排每日睡眠与运动时间", "设定可坚持的节奏"]
+        gold: [ad6, ad3, ad1]
+      - intent: recommend
+        purposes: ["推荐有助于早睡的运动或饮食", "比较不同方案的强度", "获取能长期执行的选择"]
+        gold: [ud1, ud5, ad2, ad4]
+
+  - scenario: a03_成长回顾
+    text: 想想以前那几年，变化挺大的。
+    intents:
+      - intent: vent
+        purposes: ["倾诉对过去几年的感慨", "表达对某段时光的怀念", "寻求共鸣"]
+        gold: [uh13, uc16, uc6]
+      - intent: plan
+        purposes: ["梳理高中到大专再到工作的关键节点", "按时间顺序排列成长阶段", "标出每个阶段的转折点"]
+        gold: [ah3, ah6, ac3]
+      - intent: recommend
+        purposes: ["推荐适合现在阶段的发展方向", "比较几条成长路径的可行性", "获取下一步建议"]
+        gold: [ul1, ul6, al7]
+
+  - scenario: a04_社交安排
+    text: 周六有点安排。
+    intents:
+      - intent: vent
+        purposes: ["倾诉社交前的紧张", "表达对自己状态的担心", "寻求理解"]
+        gold: [us7, us9, um6]
+      - intent: plan
+        purposes: ["规划周六的活动流程", "安排时间与地点", "列出需要提前准备的事项"]
+        gold: [as2, as1, us1, ts3]
+      - intent: recommend
+        purposes: ["推荐适合聚会的场所", "比较不同地点的特点", "获取符合人数与预算的选项"]
+        gold: [as1, am2, us1]
+
+  - scenario: a05_学习进度
+    text: 最近在学新东西。
+    intents:
+      - intent: vent
+        purposes: ["倾诉学习进度的焦虑", "表达想放弃的念头", "寻求鼓励"]
+        gold: [ul8, al8, uc10]
+      - intent: plan
+        purposes: ["规划本周学习任务拆分", "安排每日完成量", "设置检查与补救节点"]
+        gold: [al4, ul4, ul7]
+      - intent: recommend
+        purposes: ["推荐匹配当前进度的课程", "比较不同学习方向的优先级", "获取下一步学习建议"]
+        gold: [al3, al7, al2, al5]
+
+  - scenario: a06_职业想法
+    text: 工作上有点想法。
+    intents:
+      - intent: vent
+        purposes: ["倾诉对当前工作的不满", "表达想改变的意愿", "寻求共情"]
+        gold: [uw8, uw11, uw9]
+      - intent: plan
+        purposes: ["规划换团队的准备事项", "安排信息收集与面试节奏", "列出需要确认的条件"]
+        gold: [aw8, uw11, aw1]
+      - intent: recommend
+        purposes: ["推荐有双休的团队或岗位", "比较不同选择的优劣", "获取在招岗位信息"]
+        gold: [aw8, uw11, am4]
+
+  - scenario: a07_身体状态
+    text: 今天状态不太好。
+    intents:
+      - intent: vent
+        purposes: ["倾诉身体不适的难受", "表达低落的状态", "寻求关心"]
+        gold: [um1, um2, am1, am5]
+      - intent: plan
+        purposes: ["规划本周待办的调整", "安排因不适推迟的事项", "设定恢复后的补做计划"]
+        gold: [ad6, ad3, td4]
+      - intent: recommend
+        purposes: ["推荐居家恢复的舒适方式", "比较不同做法的效果", "获取能立刻做的选择"]
+        gold: [am1, am2, um2, ud5]
+
+  - scenario: a08_老朋友
+    text: 跟老朋友好久没见了。
+    intents:
+      - intent: vent
+        purposes: ["倾诉对老友的怀念", "表达想见面的心情", "寻求共鸣"]
+        gold: [us9, us5, us2]
+      - intent: plan
+        purposes: ["规划与老友见面的安排", "确定时间与地点", "列出要准备的事项"]
+        gold: [as2, us6, us1, ts4]
+      - intent: recommend
+        purposes: ["推荐适合叙旧的场所", "比较不同场所的氛围", "获取符合预算的选项"]
+        gold: [as1, as2, am2]
+
+  - scenario: a09_未来焦虑
+    text: 最近总在想以后的事。
+    intents:
+      - intent: vent
+        purposes: ["倾诉对未来的焦虑", "表达当下的迷茫", "寻求安慰"]
+        gold: [uc6, ul8, um6]
+      - intent: plan
+        purposes: ["规划未来一年的目标", "拆解成阶段任务", "设置阶段检查点"]
+        gold: [am4, al7, tl5]
+      - intent: recommend
+        purposes: ["推荐适合的发展方向", "比较不同路径的优劣", "获取可参考的建议"]
+        gold: [ul6, al7, ul1, uc10]
+
+  - scenario: a10_拖延
+    text: 有些事一直拖着没做。
+    intents:
+      - intent: vent
+        purposes: ["倾诉拖延带来的自责", "表达积压的压力", "寻求理解"]
+        gold: [ul8, ud2, uw9]
+      - intent: plan
+        purposes: ["规划待办清单", "排序优先级", "设定每项的截止时间"]
+        gold: [aw1, al4, ul7]
+      - intent: recommend
+        purposes: ["推荐克服拖延的方法", "比较不同方法的适用性", "获取能立刻开始的选择"]
+        gold: [al8, aw3, al6]

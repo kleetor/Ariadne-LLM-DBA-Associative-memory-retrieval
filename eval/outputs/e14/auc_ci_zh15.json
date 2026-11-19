@@ -1,0 +1,60 @@
+{
+  "meta": {
+    "experiment": "E14",
+    "embedding": "BAAI/bge-m3",
+    "cache_suffix": "zh15",
+    "n_boot_pair": 10000,
+    "n_boot_node": 2000,
+    "seed": 20261119,
+    "note": "pair bootstrap 偏窄；node bootstrap 保留共享节点带来的相关，作主区间。"
+  },
+  "graphs": {
+    "L": {
+      "n_nodes": 163,
+      "n_within": 1991,
+      "n_across": 11212,
+      "auc": 0.6991,
+      "pair_ci95": [
+        0.6857,
+        0.7122
+      ],
+      "node_ci95": [
+        0.6732,
+        0.7499
+      ]
+    },
+    "M": {
+      "n_nodes": 253,
+      "n_within": 2621,
+      "n_across": 29257,
+      "auc": 0.7472,
+      "pair_ci95": [
+        0.7365,
+        0.7577
+      ],
+      "node_ci95": [
+        0.7287,
+        0.7873
+      ]
+    },
+    "H": {
+      "n_nodes": 343,
+      "n_within": 3251,
+      "n_across": 55402,
+      "auc": 0.768,
+      "pair_ci95": [
+        0.7589,
+        0.7772
+      ],
+      "node_ci95": [
+        0.7517,
+        0.8055
+      ]
+    }
+  },
+  "node_ci_overlap": {
+    "L-M": true,
+    "L-H": false,
+    "M-H": true
+  }
+}

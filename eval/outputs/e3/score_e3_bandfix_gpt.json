@@ -1,0 +1,78 @@
+{
+  "meta": {
+    "judge_model": "gpt-5.6-luna",
+    "method": "joint_1pass",
+    "rubric": [
+      "记忆丰富度",
+      "易理解性",
+      "用户建模度"
+    ],
+    "abstain_excluded": true
+  },
+  "summary": {
+    "par_story": {
+      "n": 70,
+      "total": 4.58,
+      "记忆丰富度": 4.53,
+      "易理解性": 4.79,
+      "用户建模度": 4.43
+    },
+    "par_raw": {
+      "n": 70,
+      "total": 4.15,
+      "记忆丰富度": 4.77,
+      "易理解性": 3.4,
+      "用户建模度": 4.27
+    },
+    "vector_raw": {
+      "n": 70,
+      "total": 2.72,
+      "记忆丰富度": 3.1,
+      "易理解性": 2.57,
+      "用户建模度": 2.49
+    }
+  },
+  "by_category": {
+    "single_fact": {
+      "par_story": 4.86,
+      "par_raw": 4.14,
+      "vector_raw": 2.59
+    },
+    "preference": {
+      "par_story": 4.04,
+      "par_raw": 4.0,
+      "vector_raw": 2.62
+    },
+    "multi_hop": {
+      "par_story": 4.89,
+      "par_raw": 4.0,
+      "vector_raw": 2.85
+    },
+    "knowledge_update": {
+      "par_story": 4.44,
+      "par_raw": 4.39,
+      "vector_raw": 3.22
+    },
+    "temporal": {
+      "par_story": 4.7,
+      "par_raw": 4.2,
+      "vector_raw": 2.77
+    },
+    "cross_scene": {
+      "par_story": 4.09,
+      "par_raw": 3.86,
+      "vector_raw": 2.71
+    },
+    "assistant_behavior": {
+      "par_story": 4.71,
+      "par_raw": 4.42,
+      "vector_raw": 2.58
+    },
+    "mixed_memory": {
+      "par_story": 4.54,
+      "par_raw": 4.21,
+      "vector_raw": 2.58
+    }
+  },
+  "abstention": []
+}

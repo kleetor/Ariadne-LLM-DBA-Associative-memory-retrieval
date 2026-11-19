@@ -1,0 +1,78 @@
+{
+  "meta": {
+    "judge_model": "qwen3.8-flash",
+    "method": "joint_1pass",
+    "rubric": [
+      "记忆丰富度",
+      "易理解性",
+      "用户建模度"
+    ],
+    "abstain_excluded": true
+  },
+  "summary": {
+    "full": {
+      "n": 70,
+      "total": 3.91,
+      "记忆丰富度": 3.87,
+      "易理解性": 4.21,
+      "用户建模度": 3.64
+    },
+    "no_purpose": {
+      "n": 70,
+      "total": 3.85,
+      "记忆丰富度": 3.54,
+      "易理解性": 4.3,
+      "用户建模度": 3.71
+    },
+    "random_purpose": {
+      "n": 70,
+      "total": 3.96,
+      "记忆丰富度": 4.09,
+      "易理解性": 3.94,
+      "用户建模度": 3.86
+    }
+  },
+  "by_category": {
+    "single_fact": {
+      "full": 4.17,
+      "no_purpose": 3.52,
+      "random_purpose": 4.21
+    },
+    "preference": {
+      "full": 3.92,
+      "no_purpose": 3.62,
+      "random_purpose": 3.88
+    },
+    "multi_hop": {
+      "full": 3.85,
+      "no_purpose": 3.67,
+      "random_purpose": 4.0
+    },
+    "knowledge_update": {
+      "full": 3.44,
+      "no_purpose": 4.61,
+      "random_purpose": 4.06
+    },
+    "temporal": {
+      "full": 4.17,
+      "no_purpose": 3.97,
+      "random_purpose": 3.53
+    },
+    "cross_scene": {
+      "full": 3.29,
+      "no_purpose": 4.24,
+      "random_purpose": 3.76
+    },
+    "assistant_behavior": {
+      "full": 4.46,
+      "no_purpose": 3.62,
+      "random_purpose": 4.0
+    },
+    "mixed_memory": {
+      "full": 3.54,
+      "no_purpose": 4.04,
+      "random_purpose": 4.17
+    }
+  },
+  "abstention": []
+}

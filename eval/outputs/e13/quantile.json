@@ -1,0 +1,311 @@
+{
+  "meta": {
+    "experiment": "E13",
+    "embedding": "BAAI/bge-m3",
+    "cache_suffix": "",
+    "pauc_fpr": 0.1,
+    "random_pauc": 0.005000000000000001,
+    "p_grid": [
+      0.1,
+      0.15,
+      0.2,
+      0.3,
+      0.5
+    ],
+    "note": "分位阈值取全图节点对余弦分布；mix = 保留对中无关对占比，越低越干净。跨图极差 < 5pp 才算可移植。查询级结果是 cos(query,node) 门控的离线近似，不是 PAR 逐跳目的过滤。"
+  },
+  "graphs": {
+    "L": {
+      "n_nodes": 163,
+      "n_within": 1991,
+      "n_across": 11212,
+      "auc": 0.7167,
+      "pauc_raw": 0.01869,
+      "pauc_norm": 3.74,
+      "tpr_at_fpr05": 0.203,
+      "tpr_at_fpr10": 0.332,
+      "quantile": [
+        {
+          "p": 0.1,
+          "tau": 0.6411,
+          "keep_within": 0.2622,
+          "keep_across": 0.0713,
+          "mix": 0.2137,
+          "blocked_across": 0.9287
+        },
+        {
+          "p": 0.15,
+          "tau": 0.6147,
+          "keep_within": 0.3566,
+          "keep_across": 0.1134,
+          "mix": 0.2412,
+          "blocked_across": 0.8866
+        },
+        {
+          "p": 0.2,
+          "tau": 0.5957,
+          "keep_within": 0.4455,
+          "keep_across": 0.1564,
+          "mix": 0.2599,
+          "blocked_across": 0.8436
+        },
+        {
+          "p": 0.3,
+          "tau": 0.5659,
+          "keep_within": 0.5736,
+          "keep_across": 0.2516,
+          "mix": 0.3049,
+          "blocked_across": 0.7484
+        },
+        {
+          "p": 0.5,
+          "tau": 0.5192,
+          "keep_within": 0.7629,
+          "keep_across": 0.4534,
+          "mix": 0.3727,
+          "blocked_across": 0.5466
+        }
+      ]
+    },
+    "M": {
+      "n_nodes": 253,
+      "n_within": 2621,
+      "n_across": 29257,
+      "auc": 0.7441,
+      "pauc_raw": 0.025,
+      "pauc_norm": 5.0,
+      "tpr_at_fpr05": 0.272,
+      "tpr_at_fpr10": 0.41,
+      "quantile": [
+        {
+          "p": 0.1,
+          "tau": 0.6041,
+          "keep_within": 0.3514,
+          "keep_across": 0.0775,
+          "mix": 0.1807,
+          "blocked_across": 0.9225
+        },
+        {
+          "p": 0.15,
+          "tau": 0.5828,
+          "keep_within": 0.4483,
+          "keep_across": 0.1233,
+          "mix": 0.2157,
+          "blocked_across": 0.8767
+        },
+        {
+          "p": 0.2,
+          "tau": 0.5662,
+          "keep_within": 0.5246,
+          "keep_across": 0.1709,
+          "mix": 0.2458,
+          "blocked_across": 0.8291
+        },
+        {
+          "p": 0.3,
+          "tau": 0.5414,
+          "keep_within": 0.6425,
+          "keep_across": 0.2693,
+          "mix": 0.2954,
+          "blocked_across": 0.7307
+        },
+        {
+          "p": 0.5,
+          "tau": 0.5033,
+          "keep_within": 0.7974,
+          "keep_across": 0.4734,
+          "mix": 0.3725,
+          "blocked_across": 0.5266
+        }
+      ]
+    },
+    "H": {
+      "n_nodes": 343,
+      "n_within": 3251,
+      "n_across": 55402,
+      "auc": 0.7667,
+      "pauc_raw": 0.02775,
+      "pauc_norm": 5.55,
+      "tpr_at_fpr05": 0.302,
+      "tpr_at_fpr10": 0.428,
+      "quantile": [
+        {
+          "p": 0.1,
+          "tau": 0.5852,
+          "keep_within": 0.391,
+          "keep_across": 0.0829,
+          "mix": 0.175,
+          "blocked_across": 0.9171
+        },
+        {
+          "p": 0.15,
+          "tau": 0.565,
+          "keep_within": 0.49,
+          "keep_across": 0.13,
+          "mix": 0.2097,
+          "blocked_across": 0.87
+        },
+        {
+          "p": 0.2,
+          "tau": 0.5504,
+          "keep_within": 0.5663,
+          "keep_across": 0.1785,
+          "mix": 0.2397,
+          "blocked_across": 0.8215
+        },
+        {
+          "p": 0.3,
+          "tau": 0.527,
+          "keep_within": 0.681,
+          "keep_across": 0.2776,
+          "mix": 0.2896,
+          "blocked_across": 0.7224
+        },
+        {
+          "p": 0.5,
+          "tau": 0.4917,
+          "keep_within": 0.8308,
+          "keep_across": 0.4806,
+          "mix": 0.3665,
+          "blocked_across": 0.5194
+        }
+      ]
+    }
+  },
+  "stability": {
+    "0.1": {
+      "mix_range_pp": 3.87,
+      "keep_across_range_pp": 1.16
+    },
+    "0.15": {
+      "mix_range_pp": 3.15,
+      "keep_across_range_pp": 1.66
+    },
+    "0.2": {
+      "mix_range_pp": 2.02,
+      "keep_across_range_pp": 2.21
+    },
+    "0.3": {
+      "mix_range_pp": 1.53,
+      "keep_across_range_pp": 2.6
+    },
+    "0.5": {
+      "mix_range_pp": 0.62,
+      "keep_across_range_pp": 2.72
+    }
+  },
+  "query_level": {
+    "L": {
+      "n_queries": 70,
+      "quantile": [
+        {
+          "p": 0.1,
+          "mean_output": 3.8,
+          "gold_recall": 0.677
+        },
+        {
+          "p": 0.15,
+          "mean_output": 6.5,
+          "gold_recall": 0.748
+        },
+        {
+          "p": 0.2,
+          "mean_output": 9.6,
+          "gold_recall": 0.813
+        },
+        {
+          "p": 0.3,
+          "mean_output": 17.9,
+          "gold_recall": 0.861
+        },
+        {
+          "p": 0.5,
+          "mean_output": 44.7,
+          "gold_recall": 0.941
+        }
+      ]
+    },
+    "M": {
+      "n_queries": 70,
+      "quantile": [
+        {
+          "p": 0.1,
+          "mean_output": 8.9,
+          "gold_recall": 0.784
+        },
+        {
+          "p": 0.15,
+          "mean_output": 14.8,
+          "gold_recall": 0.842
+        },
+        {
+          "p": 0.2,
+          "mean_output": 21.9,
+          "gold_recall": 0.861
+        },
+        {
+          "p": 0.3,
+          "mean_output": 38.7,
+          "gold_recall": 0.908
+        },
+        {
+          "p": 0.5,
+          "mean_output": 80.1,
+          "gold_recall": 0.959
+        }
+      ]
+    },
+    "H": {
+      "n_queries": 70,
+      "quantile": [
+        {
+          "p": 0.1,
+          "mean_output": 15.4,
+          "gold_recall": 0.839
+        },
+        {
+          "p": 0.15,
+          "mean_output": 25.6,
+          "gold_recall": 0.861
+        },
+        {
+          "p": 0.2,
+          "mean_output": 36.7,
+          "gold_recall": 0.892
+        },
+        {
+          "p": 0.3,
+          "mean_output": 61.8,
+          "gold_recall": 0.935
+        },
+        {
+          "p": 0.5,
+          "mean_output": 120.6,
+          "gold_recall": 0.969
+        }
+      ]
+    }
+  },
+  "query_stability": {
+    "0.1": {
+      "gold_recall_range_pp": 16.2,
+      "mean_output_range": 11.6
+    },
+    "0.15": {
+      "gold_recall_range_pp": 11.3,
+      "mean_output_range": 19.1
+    },
+    "0.2": {
+      "gold_recall_range_pp": 7.9,
+      "mean_output_range": 27.1
+    },
+    "0.3": {
+      "gold_recall_range_pp": 7.4,
+      "mean_output_range": 43.9
+    },
+    "0.5": {
+      "gold_recall_range_pp": 2.8,
+      "mean_output_range": 75.9
+    }
+  }
+}

@@ -1,0 +1,244 @@
+{
+  "meta": {
+    "experiment": "0828-audit stress R@all",
+    "date": "2026-11-19 21:19:10",
+    "stress": "memory/data/formal/stress.yaml",
+    "n_queries": 3,
+    "embedding": "BAAI/bge-m3",
+    "llm": "deepseek-v4-flash",
+    "note": "旧脚本 run_p0_retrieval_e2e 使用 src.* 旧接口，无法直接运行；本脚本用当前 dba_pipeline 重跑同一 stress 对话。原分母口径把 DBA 召回映射回 GT 后与原始 expected 求交，避免分母缩小；旧口径同时保留，供与历史 100% 对照。"
+  },
+  "gt": {
+    "nodes": 13,
+    "edges": 15,
+    "r_all": 1.0,
+    "hit": 15,
+    "expected": 15,
+    "per_query": {
+      "最近压力太大了": {
+        "expected": [
+          "s0",
+          "s1",
+          "s2",
+          "s4",
+          "s7"
+        ],
+        "retrieved": [
+          "s0",
+          "s1",
+          "s10",
+          "s11",
+          "s12",
+          "s2",
+          "s4",
+          "s7",
+          "s8",
+          "s9"
+        ],
+        "n_expected": 5,
+        "hit": 5,
+        "recall": 1.0
+      },
+      "工作太累了": {
+        "expected": [
+          "s0",
+          "s1",
+          "s11",
+          "s12",
+          "s2"
+        ],
+        "retrieved": [
+          "s0",
+          "s1",
+          "s10",
+          "s11",
+          "s12",
+          "s2",
+          "s3",
+          "s4",
+          "s7",
+          "s8",
+          "s9"
+        ],
+        "n_expected": 5,
+        "hit": 5,
+        "recall": 1.0
+      },
+      "心情不太好": {
+        "expected": [
+          "s0",
+          "s10",
+          "s2",
+          "s7",
+          "s8"
+        ],
+        "retrieved": [
+          "s0",
+          "s1",
+          "s10",
+          "s11",
+          "s12",
+          "s2",
+          "s3",
+          "s4",
+          "s7",
+          "s8",
+          "s9"
+        ],
+        "n_expected": 5,
+        "hit": 5,
+        "recall": 1.0
+      }
+    }
+  },
+  "dba": {
+    "nodes": 9,
+    "edges": 21,
+    "created": 9,
+    "errors": 0,
+    "r_all_original_denominator": 0.8,
+    "r_all_original_hit": 12,
+    "r_all_original_expected": 15,
+    "per_query_original": {
+      "最近压力太大了": {
+        "expected": [
+          "s0",
+          "s1",
+          "s2",
+          "s4",
+          "s7"
+        ],
+        "retrieved_gt": [
+          "s0",
+          "s1",
+          "s12",
+          "s2",
+          "s3",
+          "s4",
+          "s7",
+          "s9"
+        ],
+        "n_expected": 5,
+        "hit": 5,
+        "recall": 1.0
+      },
+      "工作太累了": {
+        "expected": [
+          "s0",
+          "s1",
+          "s11",
+          "s12",
+          "s2"
+        ],
+        "retrieved_gt": [
+          "s0",
+          "s1",
+          "s12",
+          "s2",
+          "s3",
+          "s4",
+          "s7",
+          "s9"
+        ],
+        "n_expected": 5,
+        "hit": 4,
+        "recall": 0.8
+      },
+      "心情不太好": {
+        "expected": [
+          "s0",
+          "s10",
+          "s2",
+          "s7",
+          "s8"
+        ],
+        "retrieved_gt": [
+          "s0",
+          "s1",
+          "s12",
+          "s2",
+          "s3",
+          "s4",
+          "s7",
+          "s9"
+        ],
+        "n_expected": 5,
+        "hit": 3,
+        "recall": 0.6
+      }
+    },
+    "r_all_remapped": 1.0,
+    "per_query_remapped": {
+      "最近压力太大了": {
+        "expected": [
+          "n1",
+          "n2",
+          "n4",
+          "n6",
+          "n7"
+        ],
+        "retrieved": [
+          "n1",
+          "n2",
+          "n3",
+          "n4",
+          "n5",
+          "n6",
+          "n7",
+          "n8",
+          "n9"
+        ],
+        "n_expected": 5,
+        "hit": 5,
+        "recall": 1.0
+      },
+      "工作太累了": {
+        "expected": [
+          "n1",
+          "n2",
+          "n4",
+          "n9"
+        ],
+        "retrieved": [
+          "n1",
+          "n2",
+          "n3",
+          "n4",
+          "n5",
+          "n6",
+          "n7",
+          "n8",
+          "n9"
+        ],
+        "n_expected": 4,
+        "hit": 4,
+        "recall": 1.0
+      },
+      "心情不太好": {
+        "expected": [
+          "n1",
+          "n4",
+          "n6",
+          "n7"
+        ],
+        "retrieved": [
+          "n1",
+          "n2",
+          "n3",
+          "n4",
+          "n5",
+          "n6",
+          "n7",
+          "n8",
+          "n9"
+        ],
+        "n_expected": 4,
+        "hit": 4,
+        "recall": 1.0
+      }
+    },
+    "mapping_gt_to_dba": 10,
+    "mapping_dba_to_gt": 8,
+    "mapping_coverage": 0.7692
+  }
+}

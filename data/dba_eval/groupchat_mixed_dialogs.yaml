@@ -1,0 +1,136 @@
+# 群聊混合场景数据集（时序 + 复杂人称 + 日常 + 工作）
+#
+# 用途：ALM 与 MCP 双链路 e2e 对比（见 eval/test_alm_vs_mcp_e2e.py）。
+#
+# 设计要点：
+#   1. 复杂人称 —— 4 位说话人用昵称，且**互为第三方**被提及；阿哲的全名是陈哲、
+#      老周的全名是周明（同一人两种称法）；小林 / 小李 字形相近，用于观察归属是否串。
+#   2. 时序 —— 显式周次（上周三 / 这周二）、绝对日期（9 月 8 日 / 9 月 15 日）
+#      与跨期词（上个月 / 去年）混排，另含模糊词（前几天 / 最近 / 那天）。
+#   3. 日常 + 工作 —— 两条线各自独立成事，且都产出「谁做了什么」的可判定事实。
+#
+# ALM 契约映射约定（role 只允许 user / assistant，群聊里全是真人，故此处是人为映射）：
+#   小林 → user（主当事人），其余说话人 → assistant。昵称始终保留在正文里
+#   （形如「[阿哲] …」），因此归属信息不因 role 映射而丢失。
+#   注意这正对应计划 §7.4 记录的「dyadic 数据的 role 映射」待确认项——
+#   本数据集下 ALM 侧会出现「助手在赶客户的稿子」这类称法，评测时一并观察。
+
+name: groupchat_mixed
+scenes:
+  - 工作开发
+  - 日常起居/健康
+  - 社交/约定
+
+dialogs:
+  - id: g1
+    scene: 工作开发
+    temporal: true
+    turns:
+      - speaker: 老周
+        role: assistant
+        text: 上周三的需求评审会定了：先做 A 方案，B 方案放二期。
+      - speaker: 小林
+        role: user
+        text: 收到，那我这周二先把 A 方案的接口搭起来。
+      - speaker: 阿哲
+        role: assistant
+        text: 我这边视觉稿还得等客户确认主色，他们上周五又改了一版。
+      - speaker: 小李
+        role: assistant
+        text: 我第一次参加评审，想问下排期表现在在哪看？
+      - speaker: 老周
+        role: assistant
+        text: 我上个月发的周报里就有，回头我再单独发你一份。
+      - speaker: 小林
+        role: user
+        text: 小李你直接找我要就行，我前两天刚整理过。
+      - speaker: 阿哲
+        role: assistant
+        text: 客户说 9 月 8 日之前必须给最终稿，我这两天得通宵赶出来。
+      - speaker: 老周
+        role: assistant
+        text: 辛苦，那 A 方案的上线时间先按 9 月 15 日排，风险我记一下。
+
+  - id: g2
+    scene: 日常起居/健康
+    temporal: true
+    turns:
+      - speaker: 小林
+        role: user
+        text: 我最近开始跑步了，每天早上六点半绕湖跑五公里。
+      - speaker: 阿哲
+        role: assistant
+        text: 佩服，我这周连着三天通宵，作息已经彻底乱了。
+      - speaker: 老周
+        role: assistant
+        text: 我上个月体检查出脂肪肝，医生让我少吃夜宵。
+      - speaker: 小李
+        role: assistant
+        text: 我周末一般去打羽毛球，就在城东那个球馆。
+      - speaker: 小林
+        role: user
+        text: 那下次叫上我，我正好想找人一起练。
+      - speaker: 阿哲
+        role: assistant
+        text: 我周末不行，得陪女朋友小雅去看展。
+      - speaker: 老周
+        role: assistant
+        text: 说到作息，我去年把咖啡戒了，现在改喝乌龙茶。
+      - speaker: 小李
+        role: assistant
+        text: 我养了只橘猫，每天五点半准时叫我起床，比闹钟还准。
+
+  - id: g3
+    scene: 工作开发
+    temporal: true
+    turns:
+      - speaker: 阿哲
+        role: assistant
+        text: 客户上周五突然说要把主色换成深绿，我那天通宵重做了一版稿子。
+      - speaker: 老周
+        role: assistant
+        text: 那视觉稿的排期得往后挪两天，我重新排一下。
+      - speaker: 小林
+        role: user
+        text: 接口这边不受影响，我按原计划周三提测。
+      - speaker: 小李
+        role: assistant
+        text: 我帮阿哲把改动记录整理进周报了吧？
+      - speaker: 阿哲
+        role: assistant
+        text: 谢了，不过最终稿还得等陈哲那边的设计总监签字。
+      - speaker: 老周
+        role: assistant
+        text: 周明这边会同步给客户，你放心改。
+      - speaker: 小林
+        role: user
+        text: 那我把提测往后压一天，等视觉稿定了再联调。
+
+  - id: g4
+    scene: 社交/约定
+    temporal: true
+    turns:
+      - speaker: 小李
+        role: assistant
+        text: 这周六下午我们球馆有场友谊赛，谁有空来凑一队？
+      - speaker: 小林
+        role: user
+        text: 我可以，正好试试这几个月跑步练的体能。
+      - speaker: 老周
+        role: assistant
+        text: 我周六得陪家里人去体检复查，下次一定。
+      - speaker: 阿哲
+        role: assistant
+        text: 我可能去不了，那天要陪小雅去看展，票早就买了。
+      - speaker: 小李
+        role: assistant
+        text: 行，那我先报两个人，还差一个位置。
+      - speaker: 小林
+        role: user
+        text: 我问问隔壁组的老吴，他也在城东打球。
+      - speaker: 老周
+        role: assistant
+        text: 对了，上周三说的 A 方案，我昨天已经建好里程碑了。
+      - speaker: 阿哲
+        role: assistant
+        text: 那我这周把深绿配色完整版发群里，你们先过一遍。

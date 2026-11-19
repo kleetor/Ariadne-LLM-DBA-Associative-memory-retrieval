@@ -1,0 +1,1293 @@
+{
+  "meta": {
+    "experiment": "E7",
+    "reps": 3,
+    "queries": 70,
+    "embedding": "BAAI/bge-m3",
+    "note": "检索层只含 embedding/FAISS 抖动（purpose 注入，排除推断随机性）；生成层为 StoryRank LLM sampling 抖动，用字符相似度粗看。"
+  },
+  "retrieval": {
+    "par": {
+      "jaccard_mean": 0.7643,
+      "jaccard_p05": 0.425,
+      "identical_all_reps": 8,
+      "n": 70,
+      "size_range_mean": 7.5
+    },
+    "vector_purpose": {
+      "jaccard_mean": 0.8712,
+      "jaccard_p05": 0.6098,
+      "identical_all_reps": 8,
+      "n": 70,
+      "size_range_mean": 7.5
+    }
+  },
+  "per_query": {
+    "q01": {
+      "par": {
+        "jaccard_min": 0.3158,
+        "jaccard_mean": 0.5079,
+        "size_range": [
+          24,
+          51
+        ]
+      },
+      "vector_purpose": {
+        "jaccard_min": 0.4706,
+        "jaccard_mean": 0.6373,
+        "size_range": [
+          24,
+          51
+        ]
+      }
+    },
+    "q02": {
+      "par": {
+        "jaccard_min": 0.4314,
+        "jaccard_mean": 0.523,
+        "size_range": [
+          24,
+          49
+        ]
+      },
+      "vector_purpose": {
+        "jaccard_min": 0.4898,
+        "jaccard_mean": 0.6444,
+        "size_range": [
+          24,
+          49
+        ]
+      }
+    },
+    "q03": {
+      "par": {
+        "jaccard_min": 0.3036,
+        "jaccard_mean": 0.3954,
+        "size_range": [
+          22,
+          51
+        ]
+      },
+      "vector_purpose": {
+        "jaccard_min": 0.4314,
+        "jaccard_mean": 0.5821,
+        "size_range": [
+          22,
+          51
+        ]
+      }
+    },
+    "q04": {
+      "par": {
+        "jaccard_min": 0.6491,
+        "jaccard_mean": 0.7537,
+        "size_range": [
+          40,
+          54
+        ]
+      },
+      "vector_purpose": {
+        "jaccard_min": 0.7407,
+        "jaccard_mean": 0.8207,
+        "size_range": [
+          40,
+          54
+        ]
+      }
+    },
+    "q05": {
+      "par": {
+        "jaccard_min": 1.0,
+        "jaccard_mean": 1.0,
+        "size_range": [
+          8,
+          8
+        ]
+      },
+      "vector_purpose": {
+        "jaccard_min": 1.0,
+        "jaccard_mean": 1.0,
+        "size_range": [
+          8,
+          8
+        ]
+      }
+    },
+    "q06": {
+      "par": {
+        "jaccard_min": 0.413,
+        "jaccard_mean": 0.5455,
+        "size_range": [
+          25,
+          41
+        ]
+      },
+      "vector_purpose": {
+        "jaccard_min": 0.6098,
+        "jaccard_mean": 0.7368,
+        "size_range": [
+          25,
+          41
+        ]
+      }
+    },
+    "q07": {
+      "par": {
+        "jaccard_min": 0.4146,
+        "jaccard_mean": 0.5521,
+        "size_range": [
+          23,
+          35
+        ]
+      },
+      "vector_purpose": {
+        "jaccard_min": 0.6571,
+        "jaccard_mean": 0.7603,
+        "size_range": [
+          23,
+          35
+        ]
+      }
+    },
+    "q08": {
+      "par": {
+        "jaccard_min": 0.9444,
+        "jaccard_mean": 0.963,
+        "size_range": [
+          17,
+          18
+        ]
+      },
+      "vector_purpose": {
+        "jaccard_min": 0.9444,
+        "jaccard_mean": 0.963,
+        "size_range": [
+          17,
+          18
+        ]
+      }
+    },
+    "q09": {
+      "par": {
+        "jaccard_min": 0.9362,
+        "jaccard_mean": 0.9568,
+        "size_range": [
+          44,
+          46
+        ]
+      },
+      "vector_purpose": {
+        "jaccard_min": 0.9565,
+        "jaccard_mean": 0.9709,
+        "size_range": [
+          44,
+          46
+        ]
+      }
+    },
+    "q10": {
+      "par": {
+        "jaccard_min": 0.7115,
+        "jaccard_mean": 0.7596,
+        "size_range": [
+          41,
+          48
+        ]
+      },
+      "vector_purpose": {
+        "jaccard_min": 0.8542,
+        "jaccard_mean": 0.9028,
+        "size_range": [
+          41,
+          48
+        ]
+      }
+    },
+    "q11": {
+      "par": {
+        "jaccard_min": 1.0,
+        "jaccard_mean": 1.0,
+        "size_range": [
+          13,
+          13
+        ]
+      },
+      "vector_purpose": {
+        "jaccard_min": 1.0,
+        "jaccard_mean": 1.0,
+        "size_range": [
+          13,
+          13
+        ]
+      }
+    },
+    "q12": {
+      "par": {
+        "jaccard_min": 0.4565,
+        "jaccard_mean": 0.6067,
+        "size_range": [
+          23,
+          44
+        ]
+      },
+      "vector_purpose": {
+        "jaccard_min": 0.5227,
+        "jaccard_mean": 0.6627,
+        "size_range": [
+          23,
+          44
+        ]
+      }
+    },
+    "q13": {
+      "par": {
+        "jaccard_min": 0.6744,
+        "jaccard_mean": 0.7137,
+        "size_range": [
+          34,
+          42
+        ]
+      },
+      "vector_purpose": {
+        "jaccard_min": 0.8095,
+        "jaccard_mean": 0.8697,
+        "size_range": [
+          34,
+          42
+        ]
+      }
+    },
+    "q14": {
+      "par": {
+        "jaccard_min": 0.6765,
+        "jaccard_mean": 0.7794,
+        "size_range": [
+          24,
+          33
+        ]
+      },
+      "vector_purpose": {
+        "jaccard_min": 0.7273,
+        "jaccard_mean": 0.8157,
+        "size_range": [
+          24,
+          33
+        ]
+      }
+    },
+    "q15": {
+      "par": {
+        "jaccard_min": 0.5556,
+        "jaccard_mean": 0.6983,
+        "size_range": [
+          41,
+          43
+        ]
+      },
+      "vector_purpose": {
+        "jaccard_min": 0.9535,
+        "jaccard_mean": 0.969,
+        "size_range": [
+          41,
+          43
+        ]
+      }
+    },
+    "q16": {
+      "par": {
+        "jaccard_min": 0.6346,
+        "jaccard_mean": 0.7472,
+        "size_range": [
+          40,
+          45
+        ]
+      },
+      "vector_purpose": {
+        "jaccard_min": 0.8889,
+        "jaccard_mean": 0.9249,
+        "size_range": [
+          40,
+          45
+        ]
+      }
+    },
+    "q17": {
+      "par": {
+        "jaccard_min": 0.45,
+        "jaccard_mean": 0.5424,
+        "size_range": [
+          25,
+          48
+        ]
+      },
+      "vector_purpose": {
+        "jaccard_min": 0.5208,
+        "jaccard_mean": 0.6553,
+        "size_range": [
+          25,
+          48
+        ]
+      }
+    },
+    "q18": {
+      "par": {
+        "jaccard_min": 0.5306,
+        "jaccard_mean": 0.5977,
+        "size_range": [
+          31,
+          45
+        ]
+      },
+      "vector_purpose": {
+        "jaccard_min": 0.6889,
+        "jaccard_mean": 0.7904,
+        "size_range": [
+          31,
+          45
+        ]
+      }
+    },
+    "q19": {
+      "par": {
+        "jaccard_min": 0.6774,
+        "jaccard_mean": 0.7591,
+        "size_range": [
+          23,
+          29
+        ]
+      },
+      "vector_purpose": {
+        "jaccard_min": 0.7931,
+        "jaccard_mean": 0.86,
+        "size_range": [
+          23,
+          29
+        ]
+      }
+    },
+    "q20": {
+      "par": {
+        "jaccard_min": 0.5278,
+        "jaccard_mean": 0.6685,
+        "size_range": [
+          21,
+          34
+        ]
+      },
+      "vector_purpose": {
+        "jaccard_min": 0.6176,
+        "jaccard_mean": 0.7333,
+        "size_range": [
+          21,
+          34
+        ]
+      }
+    },
+    "q21": {
+      "par": {
+        "jaccard_min": 0.4909,
+        "jaccard_mean": 0.6081,
+        "size_range": [
+          32,
+          50
+        ]
+      },
+      "vector_purpose": {
+        "jaccard_min": 0.64,
+        "jaccard_mean": 0.7577,
+        "size_range": [
+          32,
+          50
+        ]
+      }
+    },
+    "q22": {
+      "par": {
+        "jaccard_min": 0.3462,
+        "jaccard_mean": 0.5507,
+        "size_range": [
+          33,
+          37
+        ]
+      },
+      "vector_purpose": {
+        "jaccard_min": 0.8919,
+        "jaccard_mean": 0.9269,
+        "size_range": [
+          33,
+          37
+        ]
+      }
+    },
+    "q23": {
+      "par": {
+        "jaccard_min": 0.907,
+        "jaccard_mean": 0.938,
+        "size_range": [
+          39,
+          43
+        ]
+      },
+      "vector_purpose": {
+        "jaccard_min": 0.907,
+        "jaccard_mean": 0.9228,
+        "size_range": [
+          39,
+          43
+        ]
+      }
+    },
+    "q24": {
+      "par": {
+        "jaccard_min": 0.9706,
+        "jaccard_mean": 0.9804,
+        "size_range": [
+          33,
+          34
+        ]
+      },
+      "vector_purpose": {
+        "jaccard_min": 0.9706,
+        "jaccard_mean": 0.9804,
+        "size_range": [
+          33,
+          34
+        ]
+      }
+    },
+    "q25": {
+      "par": {
+        "jaccard_min": 0.5556,
+        "jaccard_mean": 0.7037,
+        "size_range": [
+          23,
+          33
+        ]
+      },
+      "vector_purpose": {
+        "jaccard_min": 0.697,
+        "jaccard_mean": 0.798,
+        "size_range": [
+          23,
+          33
+        ]
+      }
+    },
+    "q26": {
+      "par": {
+        "jaccard_min": 1.0,
+        "jaccard_mean": 1.0,
+        "size_range": [
+          7,
+          7
+        ]
+      },
+      "vector_purpose": {
+        "jaccard_min": 1.0,
+        "jaccard_mean": 1.0,
+        "size_range": [
+          7,
+          7
+        ]
+      }
+    },
+    "q31": {
+      "par": {
+        "jaccard_min": 0.587,
+        "jaccard_mean": 0.6716,
+        "size_range": [
+          32,
+          41
+        ]
+      },
+      "vector_purpose": {
+        "jaccard_min": 0.7805,
+        "jaccard_mean": 0.8491,
+        "size_range": [
+          32,
+          41
+        ]
+      }
+    },
+    "q32": {
+      "par": {
+        "jaccard_min": 0.52,
+        "jaccard_mean": 0.6397,
+        "size_range": [
+          31,
+          45
+        ]
+      },
+      "vector_purpose": {
+        "jaccard_min": 0.6889,
+        "jaccard_mean": 0.7833,
+        "size_range": [
+          31,
+          45
+        ]
+      }
+    },
+    "q33": {
+      "par": {
+        "jaccard_min": 0.4884,
+        "jaccard_mean": 0.6343,
+        "size_range": [
+          30,
+          34
+        ]
+      },
+      "vector_purpose": {
+        "jaccard_min": 0.8824,
+        "jaccard_mean": 0.9203,
+        "size_range": [
+          30,
+          34
+        ]
+      }
+    },
+    "q34": {
+      "par": {
+        "jaccard_min": 0.8571,
+        "jaccard_mean": 0.9038,
+        "size_range": [
+          36,
+          42
+        ]
+      },
+      "vector_purpose": {
+        "jaccard_min": 0.8571,
+        "jaccard_mean": 0.9038,
+        "size_range": [
+          36,
+          42
+        ]
+      }
+    },
+    "q35": {
+      "par": {
+        "jaccard_min": 0.7708,
+        "jaccard_mean": 0.8019,
+        "size_range": [
+          40,
+          45
+        ]
+      },
+      "vector_purpose": {
+        "jaccard_min": 0.8889,
+        "jaccard_mean": 0.9249,
+        "size_range": [
+          40,
+          45
+        ]
+      }
+    },
+    "q36": {
+      "par": {
+        "jaccard_min": 0.3585,
+        "jaccard_mean": 0.5301,
+        "size_range": [
+          34,
+          44
+        ]
+      },
+      "vector_purpose": {
+        "jaccard_min": 0.7727,
+        "jaccard_mean": 0.8437,
+        "size_range": [
+          34,
+          44
+        ]
+      }
+    },
+    "q37": {
+      "par": {
+        "jaccard_min": 0.8,
+        "jaccard_mean": 0.8459,
+        "size_range": [
+          32,
+          40
+        ]
+      },
+      "vector_purpose": {
+        "jaccard_min": 0.8,
+        "jaccard_mean": 0.863,
+        "size_range": [
+          32,
+          40
+        ]
+      }
+    },
+    "q38": {
+      "par": {
+        "jaccard_min": 0.7273,
+        "jaccard_mean": 0.8003,
+        "size_range": [
+          37,
+          40
+        ]
+      },
+      "vector_purpose": {
+        "jaccard_min": 0.925,
+        "jaccard_mean": 0.9496,
+        "size_range": [
+          37,
+          40
+        ]
+      }
+    },
+    "q39": {
+      "par": {
+        "jaccard_min": 0.4474,
+        "jaccard_mean": 0.6048,
+        "size_range": [
+          18,
+          37
+        ]
+      },
+      "vector_purpose": {
+        "jaccard_min": 0.4865,
+        "jaccard_mean": 0.6489,
+        "size_range": [
+          18,
+          37
+        ]
+      }
+    },
+    "q40": {
+      "par": {
+        "jaccard_min": 0.4474,
+        "jaccard_mean": 0.5762,
+        "size_range": [
+          23,
+          32
+        ]
+      },
+      "vector_purpose": {
+        "jaccard_min": 0.7188,
+        "jaccard_mean": 0.809,
+        "size_range": [
+          23,
+          32
+        ]
+      }
+    },
+    "q41": {
+      "par": {
+        "jaccard_min": 0.3721,
+        "jaccard_mean": 0.549,
+        "size_range": [
+          21,
+          35
+        ]
+      },
+      "vector_purpose": {
+        "jaccard_min": 0.6,
+        "jaccard_mean": 0.7202,
+        "size_range": [
+          21,
+          35
+        ]
+      }
+    },
+    "q42": {
+      "par": {
+        "jaccard_min": 0.439,
+        "jaccard_mean": 0.5711,
+        "size_range": [
+          22,
+          32
+        ]
+      },
+      "vector_purpose": {
+        "jaccard_min": 0.6875,
+        "jaccard_mean": 0.782,
+        "size_range": [
+          22,
+          32
+        ]
+      }
+    },
+    "q43": {
+      "par": {
+        "jaccard_min": 0.8696,
+        "jaccard_mean": 0.913,
+        "size_range": [
+          20,
+          23
+        ]
+      },
+      "vector_purpose": {
+        "jaccard_min": 0.8696,
+        "jaccard_mean": 0.913,
+        "size_range": [
+          20,
+          23
+        ]
+      }
+    },
+    "q44": {
+      "par": {
+        "jaccard_min": 0.6207,
+        "jaccard_mean": 0.7471,
+        "size_range": [
+          20,
+          27
+        ]
+      },
+      "vector_purpose": {
+        "jaccard_min": 0.7407,
+        "jaccard_mean": 0.8272,
+        "size_range": [
+          20,
+          27
+        ]
+      }
+    },
+    "q45": {
+      "par": {
+        "jaccard_min": 0.775,
+        "jaccard_mean": 0.85,
+        "size_range": [
+          34,
+          37
+        ]
+      },
+      "vector_purpose": {
+        "jaccard_min": 0.9189,
+        "jaccard_mean": 0.9459,
+        "size_range": [
+          34,
+          37
+        ]
+      }
+    },
+    "q46": {
+      "par": {
+        "jaccard_min": 0.5556,
+        "jaccard_mean": 0.7037,
+        "size_range": [
+          27,
+          43
+        ]
+      },
+      "vector_purpose": {
+        "jaccard_min": 0.6279,
+        "jaccard_mean": 0.7519,
+        "size_range": [
+          27,
+          43
+        ]
+      }
+    },
+    "q47": {
+      "par": {
+        "jaccard_min": 0.6333,
+        "jaccard_mean": 0.754,
+        "size_range": [
+          24,
+          29
+        ]
+      },
+      "vector_purpose": {
+        "jaccard_min": 0.8276,
+        "jaccard_mean": 0.8832,
+        "size_range": [
+          24,
+          29
+        ]
+      }
+    },
+    "q48": {
+      "par": {
+        "jaccard_min": 0.6667,
+        "jaccard_mean": 0.7718,
+        "size_range": [
+          32,
+          35
+        ]
+      },
+      "vector_purpose": {
+        "jaccard_min": 0.9143,
+        "jaccard_mean": 0.9423,
+        "size_range": [
+          32,
+          35
+        ]
+      }
+    },
+    "q49": {
+      "par": {
+        "jaccard_min": 0.7174,
+        "jaccard_mean": 0.8116,
+        "size_range": [
+          39,
+          40
+        ]
+      },
+      "vector_purpose": {
+        "jaccard_min": 0.975,
+        "jaccard_mean": 0.9833,
+        "size_range": [
+          39,
+          40
+        ]
+      }
+    },
+    "q50": {
+      "par": {
+        "jaccard_min": 0.5625,
+        "jaccard_mean": 0.6985,
+        "size_range": [
+          35,
+          38
+        ]
+      },
+      "vector_purpose": {
+        "jaccard_min": 0.9211,
+        "jaccard_mean": 0.9469,
+        "size_range": [
+          35,
+          38
+        ]
+      }
+    },
+    "q51": {
+      "par": {
+        "jaccard_min": 0.7826,
+        "jaccard_mean": 0.8551,
+        "size_range": [
+          19,
+          22
+        ]
+      },
+      "vector_purpose": {
+        "jaccard_min": 0.8636,
+        "jaccard_mean": 0.9091,
+        "size_range": [
+          19,
+          22
+        ]
+      }
+    },
+    "q52": {
+      "par": {
+        "jaccard_min": 0.8947,
+        "jaccard_mean": 0.9298,
+        "size_range": [
+          17,
+          19
+        ]
+      },
+      "vector_purpose": {
+        "jaccard_min": 0.8947,
+        "jaccard_mean": 0.9298,
+        "size_range": [
+          17,
+          19
+        ]
+      }
+    },
+    "q53": {
+      "par": {
+        "jaccard_min": 0.6087,
+        "jaccard_mean": 0.7391,
+        "size_range": [
+          35,
+          39
+        ]
+      },
+      "vector_purpose": {
+        "jaccard_min": 0.8974,
+        "jaccard_mean": 0.9316,
+        "size_range": [
+          35,
+          39
+        ]
+      }
+    },
+    "q54": {
+      "par": {
+        "jaccard_min": 0.587,
+        "jaccard_mean": 0.7214,
+        "size_range": [
+          36,
+          40
+        ]
+      },
+      "vector_purpose": {
+        "jaccard_min": 0.9,
+        "jaccard_mean": 0.9327,
+        "size_range": [
+          36,
+          40
+        ]
+      }
+    },
+    "q55": {
+      "par": {
+        "jaccard_min": 0.525,
+        "jaccard_mean": 0.6833,
+        "size_range": [
+          26,
+          35
+        ]
+      },
+      "vector_purpose": {
+        "jaccard_min": 0.7429,
+        "jaccard_mean": 0.8286,
+        "size_range": [
+          26,
+          35
+        ]
+      }
+    },
+    "q56": {
+      "par": {
+        "jaccard_min": 0.6809,
+        "jaccard_mean": 0.7872,
+        "size_range": [
+          39,
+          40
+        ]
+      },
+      "vector_purpose": {
+        "jaccard_min": 0.975,
+        "jaccard_mean": 0.9833,
+        "size_range": [
+          39,
+          40
+        ]
+      }
+    },
+    "q57": {
+      "par": {
+        "jaccard_min": 0.7105,
+        "jaccard_mean": 0.8044,
+        "size_range": [
+          30,
+          36
+        ]
+      },
+      "vector_purpose": {
+        "jaccard_min": 0.8333,
+        "jaccard_mean": 0.8876,
+        "size_range": [
+          30,
+          36
+        ]
+      }
+    },
+    "q58": {
+      "par": {
+        "jaccard_min": 0.8,
+        "jaccard_mean": 0.8667,
+        "size_range": [
+          35,
+          37
+        ]
+      },
+      "vector_purpose": {
+        "jaccard_min": 0.9459,
+        "jaccard_mean": 0.964,
+        "size_range": [
+          35,
+          37
+        ]
+      }
+    },
+    "q59": {
+      "par": {
+        "jaccard_min": 0.5652,
+        "jaccard_mean": 0.6922,
+        "size_range": [
+          30,
+          42
+        ]
+      },
+      "vector_purpose": {
+        "jaccard_min": 0.7143,
+        "jaccard_mean": 0.8095,
+        "size_range": [
+          30,
+          42
+        ]
+      }
+    },
+    "q60": {
+      "par": {
+        "jaccard_min": 0.8537,
+        "jaccard_mean": 0.9024,
+        "size_range": [
+          36,
+          40
+        ]
+      },
+      "vector_purpose": {
+        "jaccard_min": 0.9,
+        "jaccard_mean": 0.9333,
+        "size_range": [
+          36,
+          40
+        ]
+      }
+    },
+    "q61": {
+      "par": {
+        "jaccard_min": 0.3333,
+        "jaccard_mean": 0.5477,
+        "size_range": [
+          34,
+          50
+        ]
+      },
+      "vector_purpose": {
+        "jaccard_min": 0.68,
+        "jaccard_mean": 0.7782,
+        "size_range": [
+          34,
+          50
+        ]
+      }
+    },
+    "q62": {
+      "par": {
+        "jaccard_min": 1.0,
+        "jaccard_mean": 1.0,
+        "size_range": [
+          18,
+          18
+        ]
+      },
+      "vector_purpose": {
+        "jaccard_min": 1.0,
+        "jaccard_mean": 1.0,
+        "size_range": [
+          18,
+          18
+        ]
+      }
+    },
+    "q63": {
+      "par": {
+        "jaccard_min": 0.475,
+        "jaccard_mean": 0.5975,
+        "size_range": [
+          28,
+          39
+        ]
+      },
+      "vector_purpose": {
+        "jaccard_min": 0.7179,
+        "jaccard_mean": 0.8053,
+        "size_range": [
+          28,
+          39
+        ]
+      }
+    },
+    "q64": {
+      "par": {
+        "jaccard_min": 0.6486,
+        "jaccard_mean": 0.7658,
+        "size_range": [
+          25,
+          36
+        ]
+      },
+      "vector_purpose": {
+        "jaccard_min": 0.6944,
+        "jaccard_mean": 0.7783,
+        "size_range": [
+          25,
+          36
+        ]
+      }
+    },
+    "q65": {
+      "par": {
+        "jaccard_min": 0.9474,
+        "jaccard_mean": 0.9649,
+        "size_range": [
+          36,
+          38
+        ]
+      },
+      "vector_purpose": {
+        "jaccard_min": 0.9474,
+        "jaccard_mean": 0.9649,
+        "size_range": [
+          36,
+          38
+        ]
+      }
+    },
+    "q66": {
+      "par": {
+        "jaccard_min": 1.0,
+        "jaccard_mean": 1.0,
+        "size_range": [
+          29,
+          29
+        ]
+      },
+      "vector_purpose": {
+        "jaccard_min": 1.0,
+        "jaccard_mean": 1.0,
+        "size_range": [
+          29,
+          29
+        ]
+      }
+    },
+    "q67": {
+      "par": {
+        "jaccard_min": 1.0,
+        "jaccard_mean": 1.0,
+        "size_range": [
+          31,
+          31
+        ]
+      },
+      "vector_purpose": {
+        "jaccard_min": 0.9375,
+        "jaccard_mean": 0.9583,
+        "size_range": [
+          31,
+          31
+        ]
+      }
+    },
+    "q68": {
+      "par": {
+        "jaccard_min": 1.0,
+        "jaccard_mean": 1.0,
+        "size_range": [
+          29,
+          29
+        ]
+      },
+      "vector_purpose": {
+        "jaccard_min": 1.0,
+        "jaccard_mean": 1.0,
+        "size_range": [
+          29,
+          29
+        ]
+      }
+    },
+    "q69": {
+      "par": {
+        "jaccard_min": 0.9535,
+        "jaccard_mean": 0.969,
+        "size_range": [
+          41,
+          43
+        ]
+      },
+      "vector_purpose": {
+        "jaccard_min": 0.9535,
+        "jaccard_mean": 0.969,
+        "size_range": [
+          41,
+          43
+        ]
+      }
+    },
+    "q70": {
+      "par": {
+        "jaccard_min": 0.6486,
+        "jaccard_mean": 0.7658,
+        "size_range": [
+          26,
+          35
+        ]
+      },
+      "vector_purpose": {
+        "jaccard_min": 0.7429,
+        "jaccard_mean": 0.8286,
+        "size_range": [
+          26,
+          35
+        ]
+      }
+    },
+    "q71": {
+      "par": {
+        "jaccard_min": 0.9688,
+        "jaccard_mean": 0.9792,
+        "size_range": [
+          31,
+          32
+        ]
+      },
+      "vector_purpose": {
+        "jaccard_min": 0.9688,
+        "jaccard_mean": 0.9792,
+        "size_range": [
+          31,
+          32
+        ]
+      }
+    },
+    "q72": {
+      "par": {
+        "jaccard_min": 1.0,
+        "jaccard_mean": 1.0,
+        "size_range": [
+          8,
+          8
+        ]
+      },
+      "vector_purpose": {
+        "jaccard_min": 1.0,
+        "jaccard_mean": 1.0,
+        "size_range": [
+          8,
+          8
+        ]
+      }
+    },
+    "q73": {
+      "par": {
+        "jaccard_min": 0.7941,
+        "jaccard_mean": 0.8235,
+        "size_range": [
+          29,
+          32
+        ]
+      },
+      "vector_purpose": {
+        "jaccard_min": 0.9062,
+        "jaccard_mean": 0.9375,
+        "size_range": [
+          29,
+          32
+        ]
+      }
+    },
+    "q74": {
+      "par": {
+        "jaccard_min": 0.8125,
+        "jaccard_mean": 0.875,
+        "size_range": [
+          29,
+          29
+        ]
+      },
+      "vector_purpose": {
+        "jaccard_min": 1.0,
+        "jaccard_mean": 1.0,
+        "size_range": [
+          29,
+          29
+        ]
+      }
+    }
+  },
+  "generation": {
+    "n": 6,
+    "reps": 3,
+    "char_similarity_mean": 0.8367,
+    "char_similarity_min": 0.6688
+  }
+}

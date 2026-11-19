@@ -1,0 +1,1188 @@
+{
+  "experiment": "E12a",
+  "source": "C:\\Users\\makot\\Desktop\\Ariadne\\data\\dba_eval\\comprehensive_gold.yaml",
+  "seed": 20261119,
+  "ratio": 0.3,
+  "orig": {
+    "nodes": 163,
+    "edges": 252,
+    "edge_types": {
+      "attribute": 2,
+      "causal": 41,
+      "scenario": 98,
+      "sequence": 44,
+      "social": 6,
+      "temporal": 61
+    }
+  },
+  "del30": {
+    "yaml": "data\\dba_eval\\e12a_del30.yaml",
+    "edges": 176,
+    "edge_types": {
+      "attribute": 2,
+      "causal": 31,
+      "scenario": 69,
+      "sequence": 31,
+      "social": 4,
+      "temporal": 39
+    },
+    "removed": [
+      {
+        "from": "uh1",
+        "to": "th1",
+        "type": "temporal"
+      },
+      {
+        "from": "uw3",
+        "to": "uw8",
+        "type": "causal"
+      },
+      {
+        "from": "uh2",
+        "to": "th2",
+        "type": "temporal"
+      },
+      {
+        "from": "uw9",
+        "to": "aw9",
+        "type": "causal"
+      },
+      {
+        "from": "uh4",
+        "to": "th1",
+        "type": "temporal"
+      },
+      {
+        "from": "uw3",
+        "to": "aw1",
+        "type": "scenario"
+      },
+      {
+        "from": "ah2",
+        "to": "th3",
+        "type": "temporal"
+      },
+      {
+        "from": "uw4",
+        "to": "aw3",
+        "type": "scenario"
+      },
+      {
+        "from": "ah1",
+        "to": "th2",
+        "type": "temporal"
+      },
+      {
+        "from": "uh11",
+        "to": "th5",
+        "type": "temporal"
+      },
+      {
+        "from": "uh12",
+        "to": "th6",
+        "type": "temporal"
+      },
+      {
+        "from": "aw5",
+        "to": "uw7",
+        "type": "scenario"
+      },
+      {
+        "from": "uh14",
+        "to": "th6",
+        "type": "temporal"
+      },
+      {
+        "from": "aw8",
+        "to": "uw11",
+        "type": "scenario"
+      },
+      {
+        "from": "uw10",
+        "to": "aw7",
+        "type": "scenario"
+      },
+      {
+        "from": "uh16",
+        "to": "th7",
+        "type": "temporal"
+      },
+      {
+        "from": "aw9",
+        "to": "uw12",
+        "type": "scenario"
+      },
+      {
+        "from": "uh2",
+        "to": "uh3",
+        "type": "sequence"
+      },
+      {
+        "from": "uh3",
+        "to": "uh7",
+        "type": "sequence"
+      },
+      {
+        "from": "ah1",
+        "to": "ah2",
+        "type": "sequence"
+      },
+      {
+        "from": "uw12",
+        "to": "uw13",
+        "type": "social"
+      },
+      {
+        "from": "uw14",
+        "to": "uw2",
+        "type": "causal"
+      },
+      {
+        "from": "ud3",
+        "to": "ud5",
+        "type": "sequence"
+      },
+      {
+        "from": "uh7",
+        "to": "uh8",
+        "type": "causal"
+      },
+      {
+        "from": "ad1",
+        "to": "ud1",
+        "type": "scenario"
+      },
+      {
+        "from": "ud5",
+        "to": "ad2",
+        "type": "scenario"
+      },
+      {
+        "from": "uh6",
+        "to": "uh5",
+        "type": "scenario"
+      },
+      {
+        "from": "ad4",
+        "to": "ud8",
+        "type": "scenario"
+      },
+      {
+        "from": "uh2",
+        "to": "ah1",
+        "type": "scenario"
+      },
+      {
+        "from": "ah1",
+        "to": "uh2",
+        "type": "scenario"
+      },
+      {
+        "from": "ad3",
+        "to": "ud1",
+        "type": "scenario"
+      },
+      {
+        "from": "us1",
+        "to": "ts3",
+        "type": "temporal"
+      },
+      {
+        "from": "uh2",
+        "to": "uh17",
+        "type": "scenario"
+      },
+      {
+        "from": "us8",
+        "to": "ts5",
+        "type": "temporal"
+      },
+      {
+        "from": "ah5",
+        "to": "uh10",
+        "type": "scenario"
+      },
+      {
+        "from": "uh1",
+        "to": "uh9",
+        "type": "scenario"
+      },
+      {
+        "from": "us5",
+        "to": "us6",
+        "type": "causal"
+      },
+      {
+        "from": "uc1",
+        "to": "tc1",
+        "type": "temporal"
+      },
+      {
+        "from": "uc3",
+        "to": "tc2",
+        "type": "temporal"
+      },
+      {
+        "from": "us7",
+        "to": "as2",
+        "type": "causal"
+      },
+      {
+        "from": "uh10",
+        "to": "ah5",
+        "type": "scenario"
+      },
+      {
+        "from": "uc11",
+        "to": "tc1",
+        "type": "temporal"
+      },
+      {
+        "from": "us8",
+        "to": "us2",
+        "type": "scenario"
+      },
+      {
+        "from": "uc13",
+        "to": "tc5",
+        "type": "temporal"
+      },
+      {
+        "from": "as4",
+        "to": "us2",
+        "type": "scenario"
+      },
+      {
+        "from": "uc17",
+        "to": "tc7",
+        "type": "temporal"
+      },
+      {
+        "from": "ac4",
+        "to": "tc1",
+        "type": "temporal"
+      },
+      {
+        "from": "us8",
+        "to": "us9",
+        "type": "social"
+      },
+      {
+        "from": "uc2",
+        "to": "uc3",
+        "type": "sequence"
+      },
+      {
+        "from": "uc3",
+        "to": "uc4",
+        "type": "sequence"
+      },
+      {
+        "from": "ul4",
+        "to": "tl2",
+        "type": "temporal"
+      },
+      {
+        "from": "uc1",
+        "to": "uc11",
+        "type": "sequence"
+      },
+      {
+        "from": "ul5",
+        "to": "tl3",
+        "type": "temporal"
+      },
+      {
+        "from": "uc15",
+        "to": "uc5",
+        "type": "sequence"
+      },
+      {
+        "from": "ul3",
+        "to": "ul4",
+        "type": "sequence"
+      },
+      {
+        "from": "ul8",
+        "to": "al8",
+        "type": "causal"
+      },
+      {
+        "from": "ul2",
+        "to": "al3",
+        "type": "causal"
+      },
+      {
+        "from": "uc10",
+        "to": "uc5",
+        "type": "causal"
+      },
+      {
+        "from": "uc11",
+        "to": "uc12",
+        "type": "causal"
+      },
+      {
+        "from": "al1",
+        "to": "ul1",
+        "type": "scenario"
+      },
+      {
+        "from": "ac2",
+        "to": "uc3",
+        "type": "scenario"
+      },
+      {
+        "from": "uc2",
+        "to": "uc7",
+        "type": "scenario"
+      },
+      {
+        "from": "um2",
+        "to": "am2",
+        "type": "scenario"
+      },
+      {
+        "from": "ac1",
+        "to": "uc10",
+        "type": "scenario"
+      },
+      {
+        "from": "um3",
+        "to": "am3",
+        "type": "scenario"
+      },
+      {
+        "from": "uc7",
+        "to": "uc14",
+        "type": "scenario"
+      },
+      {
+        "from": "um6",
+        "to": "am4",
+        "type": "scenario"
+      },
+      {
+        "from": "uc17",
+        "to": "ac5",
+        "type": "scenario"
+      },
+      {
+        "from": "ac5",
+        "to": "uc17",
+        "type": "scenario"
+      },
+      {
+        "from": "th2",
+        "to": "tc1",
+        "type": "sequence"
+      },
+      {
+        "from": "th4",
+        "to": "tc1",
+        "type": "sequence"
+      },
+      {
+        "from": "tc4",
+        "to": "tw6",
+        "type": "sequence"
+      },
+      {
+        "from": "uw6",
+        "to": "tw4",
+        "type": "temporal"
+      },
+      {
+        "from": "aw1",
+        "to": "tw7",
+        "type": "temporal"
+      },
+      {
+        "from": "uw11",
+        "to": "tw7",
+        "type": "temporal"
+      },
+      {
+        "from": "uw3",
+        "to": "uw4",
+        "type": "sequence"
+      }
+    ]
+  },
+  "rewire30": {
+    "yaml": "data\\dba_eval\\e12a_rewire30.yaml",
+    "edges": 252,
+    "edge_types": {
+      "attribute": 2,
+      "causal": 41,
+      "scenario": 98,
+      "sequence": 44,
+      "social": 6,
+      "temporal": 61
+    },
+    "removed": [
+      {
+        "from": "aw1",
+        "to": "aw2",
+        "type": "sequence"
+      },
+      {
+        "from": "uh7",
+        "to": "th4",
+        "type": "temporal"
+      },
+      {
+        "from": "uw9",
+        "to": "aw9",
+        "type": "causal"
+      },
+      {
+        "from": "uw6",
+        "to": "uw9",
+        "type": "causal"
+      },
+      {
+        "from": "uw4",
+        "to": "aw3",
+        "type": "scenario"
+      },
+      {
+        "from": "aw3",
+        "to": "uw4",
+        "type": "scenario"
+      },
+      {
+        "from": "uh10",
+        "to": "th5",
+        "type": "temporal"
+      },
+      {
+        "from": "uh13",
+        "to": "th8",
+        "type": "temporal"
+      },
+      {
+        "from": "uh14",
+        "to": "th6",
+        "type": "temporal"
+      },
+      {
+        "from": "uh17",
+        "to": "th2",
+        "type": "temporal"
+      },
+      {
+        "from": "uw12",
+        "to": "aw9",
+        "type": "scenario"
+      },
+      {
+        "from": "ah5",
+        "to": "th5",
+        "type": "temporal"
+      },
+      {
+        "from": "aw9",
+        "to": "uw12",
+        "type": "scenario"
+      },
+      {
+        "from": "uw2",
+        "to": "aw3",
+        "type": "scenario"
+      },
+      {
+        "from": "uw12",
+        "to": "uw1",
+        "type": "attribute"
+      },
+      {
+        "from": "uw12",
+        "to": "uw13",
+        "type": "social"
+      },
+      {
+        "from": "ud2",
+        "to": "td1",
+        "type": "temporal"
+      },
+      {
+        "from": "ud3",
+        "to": "td2",
+        "type": "temporal"
+      },
+      {
+        "from": "uh3",
+        "to": "uh7",
+        "type": "causal"
+      },
+      {
+        "from": "uh13",
+        "to": "ah4",
+        "type": "causal"
+      },
+      {
+        "from": "ud1",
+        "to": "ad1",
+        "type": "scenario"
+      },
+      {
+        "from": "uh6",
+        "to": "uh2",
+        "type": "causal"
+      },
+      {
+        "from": "ud5",
+        "to": "ad2",
+        "type": "scenario"
+      },
+      {
+        "from": "ud8",
+        "to": "ad4",
+        "type": "scenario"
+      },
+      {
+        "from": "uh2",
+        "to": "ah1",
+        "type": "scenario"
+      },
+      {
+        "from": "ud1",
+        "to": "ad3",
+        "type": "scenario"
+      },
+      {
+        "from": "us6",
+        "to": "ts4",
+        "type": "temporal"
+      },
+      {
+        "from": "us8",
+        "to": "ts5",
+        "type": "temporal"
+      },
+      {
+        "from": "us1",
+        "to": "us7",
+        "type": "sequence"
+      },
+      {
+        "from": "uc1",
+        "to": "tc1",
+        "type": "temporal"
+      },
+      {
+        "from": "uc2",
+        "to": "tc2",
+        "type": "temporal"
+      },
+      {
+        "from": "us4",
+        "to": "us3",
+        "type": "causal"
+      },
+      {
+        "from": "us1",
+        "to": "as1",
+        "type": "scenario"
+      },
+      {
+        "from": "uc5",
+        "to": "tc4",
+        "type": "temporal"
+      },
+      {
+        "from": "us3",
+        "to": "us4",
+        "type": "scenario"
+      },
+      {
+        "from": "uc13",
+        "to": "tc5",
+        "type": "temporal"
+      },
+      {
+        "from": "us2",
+        "to": "as4",
+        "type": "scenario"
+      },
+      {
+        "from": "uc15",
+        "to": "tc3",
+        "type": "temporal"
+      },
+      {
+        "from": "us8",
+        "to": "us9",
+        "type": "scenario"
+      },
+      {
+        "from": "us10",
+        "to": "us6",
+        "type": "scenario"
+      },
+      {
+        "from": "us6",
+        "to": "us10",
+        "type": "scenario"
+      },
+      {
+        "from": "ac4",
+        "to": "tc1",
+        "type": "temporal"
+      },
+      {
+        "from": "uc1",
+        "to": "uc2",
+        "type": "sequence"
+      },
+      {
+        "from": "uc4",
+        "to": "uc7",
+        "type": "sequence"
+      },
+      {
+        "from": "uc1",
+        "to": "uc11",
+        "type": "sequence"
+      },
+      {
+        "from": "ul7",
+        "to": "tl4",
+        "type": "temporal"
+      },
+      {
+        "from": "uc12",
+        "to": "uc13",
+        "type": "sequence"
+      },
+      {
+        "from": "uc11",
+        "to": "uc12",
+        "type": "sequence"
+      },
+      {
+        "from": "uc15",
+        "to": "uc5",
+        "type": "sequence"
+      },
+      {
+        "from": "al2",
+        "to": "al4",
+        "type": "sequence"
+      },
+      {
+        "from": "al1",
+        "to": "al2",
+        "type": "sequence"
+      },
+      {
+        "from": "uc6",
+        "to": "uc3",
+        "type": "causal"
+      },
+      {
+        "from": "ul3",
+        "to": "ul4",
+        "type": "sequence"
+      },
+      {
+        "from": "th3",
+        "to": "th4",
+        "type": "sequence"
+      },
+      {
+        "from": "al1",
+        "to": "ul1",
+        "type": "scenario"
+      },
+      {
+        "from": "ul1",
+        "to": "al3",
+        "type": "scenario"
+      },
+      {
+        "from": "ul6",
+        "to": "al7",
+        "type": "scenario"
+      },
+      {
+        "from": "al5",
+        "to": "ul1",
+        "type": "scenario"
+      },
+      {
+        "from": "ac2",
+        "to": "uc4",
+        "type": "scenario"
+      },
+      {
+        "from": "um1",
+        "to": "am1",
+        "type": "causal"
+      },
+      {
+        "from": "uc10",
+        "to": "ac1",
+        "type": "scenario"
+      },
+      {
+        "from": "am2",
+        "to": "um2",
+        "type": "scenario"
+      },
+      {
+        "from": "ac1",
+        "to": "uc10",
+        "type": "scenario"
+      },
+      {
+        "from": "uc14",
+        "to": "uc7",
+        "type": "scenario"
+      },
+      {
+        "from": "am3",
+        "to": "um4",
+        "type": "scenario"
+      },
+      {
+        "from": "uc15",
+        "to": "uc4",
+        "type": "scenario"
+      },
+      {
+        "from": "um6",
+        "to": "am4",
+        "type": "scenario"
+      },
+      {
+        "from": "uc12",
+        "to": "ac4",
+        "type": "scenario"
+      },
+      {
+        "from": "ac4",
+        "to": "uc12",
+        "type": "scenario"
+      },
+      {
+        "from": "th1",
+        "to": "th2",
+        "type": "sequence"
+      },
+      {
+        "from": "uw6",
+        "to": "tw4",
+        "type": "temporal"
+      },
+      {
+        "from": "aw1",
+        "to": "tw7",
+        "type": "temporal"
+      },
+      {
+        "from": "uw11",
+        "to": "tw7",
+        "type": "temporal"
+      },
+      {
+        "from": "uw3",
+        "to": "uw4",
+        "type": "sequence"
+      },
+      {
+        "from": "uw4",
+        "to": "uw5",
+        "type": "sequence"
+      },
+      {
+        "from": "uw6",
+        "to": "uw7",
+        "type": "sequence"
+      }
+    ],
+    "added": [
+      {
+        "from": "ts2",
+        "to": "uc4",
+        "type": "temporal"
+      },
+      {
+        "from": "uw2",
+        "to": "uw1",
+        "type": "scenario"
+      },
+      {
+        "from": "ts3",
+        "to": "us3",
+        "type": "temporal"
+      },
+      {
+        "from": "um6",
+        "to": "ud7",
+        "type": "temporal"
+      },
+      {
+        "from": "ac3",
+        "to": "us8",
+        "type": "causal"
+      },
+      {
+        "from": "uh15",
+        "to": "tc5",
+        "type": "scenario"
+      },
+      {
+        "from": "uw4",
+        "to": "uc10",
+        "type": "sequence"
+      },
+      {
+        "from": "al5",
+        "to": "uw11",
+        "type": "sequence"
+      },
+      {
+        "from": "tl2",
+        "to": "tl4",
+        "type": "sequence"
+      },
+      {
+        "from": "ac2",
+        "to": "am4",
+        "type": "temporal"
+      },
+      {
+        "from": "uw2",
+        "to": "as4",
+        "type": "attribute"
+      },
+      {
+        "from": "ac4",
+        "to": "ts1",
+        "type": "scenario"
+      },
+      {
+        "from": "am1",
+        "to": "uw1",
+        "type": "temporal"
+      },
+      {
+        "from": "aw6",
+        "to": "uw13",
+        "type": "scenario"
+      },
+      {
+        "from": "ud5",
+        "to": "uc9",
+        "type": "temporal"
+      },
+      {
+        "from": "al1",
+        "to": "uc1",
+        "type": "temporal"
+      },
+      {
+        "from": "as4",
+        "to": "am3",
+        "type": "temporal"
+      },
+      {
+        "from": "uh10",
+        "to": "tc6",
+        "type": "scenario"
+      },
+      {
+        "from": "us1",
+        "to": "us7",
+        "type": "causal"
+      },
+      {
+        "from": "uc2",
+        "to": "uc10",
+        "type": "sequence"
+      },
+      {
+        "from": "al7",
+        "to": "aw9",
+        "type": "sequence"
+      },
+      {
+        "from": "ac2",
+        "to": "tc7",
+        "type": "temporal"
+      },
+      {
+        "from": "ah2",
+        "to": "uw14",
+        "type": "scenario"
+      },
+      {
+        "from": "uw4",
+        "to": "uh6",
+        "type": "scenario"
+      },
+      {
+        "from": "us1",
+        "to": "ul2",
+        "type": "scenario"
+      },
+      {
+        "from": "us4",
+        "to": "as1",
+        "type": "sequence"
+      },
+      {
+        "from": "tl3",
+        "to": "ul6",
+        "type": "causal"
+      },
+      {
+        "from": "uc10",
+        "to": "uh16",
+        "type": "scenario"
+      },
+      {
+        "from": "uw13",
+        "to": "ud5",
+        "type": "causal"
+      },
+      {
+        "from": "tc5",
+        "to": "um6",
+        "type": "temporal"
+      },
+      {
+        "from": "ad2",
+        "to": "as4",
+        "type": "scenario"
+      },
+      {
+        "from": "ul4",
+        "to": "uh16",
+        "type": "temporal"
+      },
+      {
+        "from": "al1",
+        "to": "us6",
+        "type": "scenario"
+      },
+      {
+        "from": "aw2",
+        "to": "tw7",
+        "type": "sequence"
+      },
+      {
+        "from": "uh17",
+        "to": "uc16",
+        "type": "temporal"
+      },
+      {
+        "from": "uh5",
+        "to": "um4",
+        "type": "sequence"
+      },
+      {
+        "from": "uc7",
+        "to": "us6",
+        "type": "sequence"
+      },
+      {
+        "from": "aw8",
+        "to": "us2",
+        "type": "scenario"
+      },
+      {
+        "from": "ud5",
+        "to": "ud2",
+        "type": "scenario"
+      },
+      {
+        "from": "ts2",
+        "to": "uh6",
+        "type": "scenario"
+      },
+      {
+        "from": "am5",
+        "to": "ul2",
+        "type": "sequence"
+      },
+      {
+        "from": "um6",
+        "to": "um3",
+        "type": "scenario"
+      },
+      {
+        "from": "uc17",
+        "to": "aw8",
+        "type": "sequence"
+      },
+      {
+        "from": "al7",
+        "to": "tl4",
+        "type": "sequence"
+      },
+      {
+        "from": "uc9",
+        "to": "ts4",
+        "type": "scenario"
+      },
+      {
+        "from": "ts1",
+        "to": "uw6",
+        "type": "temporal"
+      },
+      {
+        "from": "uc3",
+        "to": "us3",
+        "type": "scenario"
+      },
+      {
+        "from": "us8",
+        "to": "ac6",
+        "type": "scenario"
+      },
+      {
+        "from": "uc16",
+        "to": "uc10",
+        "type": "scenario"
+      },
+      {
+        "from": "uc9",
+        "to": "uc15",
+        "type": "sequence"
+      },
+      {
+        "from": "um3",
+        "to": "td2",
+        "type": "temporal"
+      },
+      {
+        "from": "ud7",
+        "to": "al2",
+        "type": "causal"
+      },
+      {
+        "from": "ac2",
+        "to": "th5",
+        "type": "sequence"
+      },
+      {
+        "from": "aw5",
+        "to": "ud2",
+        "type": "scenario"
+      },
+      {
+        "from": "am2",
+        "to": "ts4",
+        "type": "temporal"
+      },
+      {
+        "from": "us3",
+        "to": "tl2",
+        "type": "scenario"
+      },
+      {
+        "from": "tw4",
+        "to": "um2",
+        "type": "temporal"
+      },
+      {
+        "from": "al2",
+        "to": "uw6",
+        "type": "social"
+      },
+      {
+        "from": "tc6",
+        "to": "tw6",
+        "type": "sequence"
+      },
+      {
+        "from": "um6",
+        "to": "tw1",
+        "type": "scenario"
+      },
+      {
+        "from": "as4",
+        "to": "ud6",
+        "type": "scenario"
+      },
+      {
+        "from": "um4",
+        "to": "uc14",
+        "type": "causal"
+      },
+      {
+        "from": "um5",
+        "to": "uh6",
+        "type": "causal"
+      },
+      {
+        "from": "ac2",
+        "to": "ah6",
+        "type": "scenario"
+      },
+      {
+        "from": "ad3",
+        "to": "al6",
+        "type": "temporal"
+      },
+      {
+        "from": "ah2",
+        "to": "ah4",
+        "type": "causal"
+      },
+      {
+        "from": "ud1",
+        "to": "tw5",
+        "type": "scenario"
+      },
+      {
+        "from": "uc17",
+        "to": "ul4",
+        "type": "sequence"
+      },
+      {
+        "from": "td4",
+        "to": "tc3",
+        "type": "temporal"
+      },
+      {
+        "from": "ul8",
+        "to": "uc4",
+        "type": "scenario"
+      },
+      {
+        "from": "ud1",
+        "to": "us4",
+        "type": "scenario"
+      },
+      {
+        "from": "ad1",
+        "to": "uc16",
+        "type": "temporal"
+      },
+      {
+        "from": "al3",
+        "to": "us2",
+        "type": "scenario"
+      },
+      {
+        "from": "tw3",
+        "to": "uh2",
+        "type": "temporal"
+      },
+      {
+        "from": "ad3",
+        "to": "um6",
+        "type": "scenario"
+      },
+      {
+        "from": "al3",
+        "to": "aw3",
+        "type": "scenario"
+      }
+    ]
+  }
+}

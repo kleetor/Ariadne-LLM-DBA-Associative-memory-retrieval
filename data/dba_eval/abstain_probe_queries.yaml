@@ -1,0 +1,135 @@
+# 弃权阈值专项探针集（标定 ALM_ABSTAIN_COS）
+#
+# 目的：在**余弦整体偏低**的查询上，看 0.52 是偏严还是偏松，并扫出整条 A/H 权衡曲线。
+#
+# 为什么能离线扫阈值：弃权只看 `best_cos`（候选与查询的最大余弦），**不调用任何 LLM**。
+#   因此脚本先在 `ALM_ABSTAIN_COS=0`（强制不弃权）下把每条查询跑一遍，记下该查询的
+#   best_cos 与"实际能命中哪些 gold_fact"，之后任意阈值的表现都能由这两项推出来。
+#
+# 两类样本：
+#   answer    —— 库里**有**答案，但措辞刻意与节点原文拉开距离（上位词 / 同义替换 /
+#                间接提问），用来压出低余弦。这类被弃权 = 直接丢 A 维度分。
+#   no_answer —— 库里**没有**对应记忆（换成完全无关话题）。这类不弃权 = 丢 H 维度分。
+#
+# 关键看点：两类样本的余弦若在区间上重叠，则**不存在能同时兼顾 A 与 H 的阈值**——
+#   这正是决定性证据：要么接受一个折中点，要么给判据加门控（如内容词交集）。
+
+- id: a01
+  type: answer
+  note: 上位词（锻炼 ← 跑步/羽毛球）
+  query: 群里有人在做锻炼吗，具体是什么项目？
+  gold_facts: [跑步, 羽毛球]
+
+- id: a02
+  type: answer
+  note: 上位词（小动物 ← 橘猫）
+  query: 有没有人提到过养小动物？
+  gold_facts: [橘猫]
+
+- id: a03
+  type: answer
+  note: 间接（新来的人 ← 小李 / 辅助工作 ← 改动记录）
+  query: 新来的人是谁，他帮忙做过什么？
+  gold_facts: [改动记录, 周报]
+
+- id: a04
+  type: answer
+  note: 上位词（身体指标出问题 ← 脂肪肝）
+  query: 谁的身体指标出过问题？
+  gold_facts: [脂肪肝]
+
+- id: a05
+  type: answer
+  note: 同义（饮食习惯 ← 戒咖啡 / 改喝乌龙茶）
+  query: 有人改变过自己的饮食习惯吗？
+  gold_facts: [咖啡, 乌龙茶]
+
+- id: a06
+  type: answer
+  note: 同义（甲方 ← 客户；改动 ← 换主色）
+  query: 甲方那边提了什么改动？
+  gold_facts: [主色, 深绿]
+
+- id: a07
+  type: answer
+  note: 同义（发布 ← 上线）
+  query: 这个项目什么时候能发布？
+  gold_facts: [9月15日]
+
+- id: a08
+  type: answer
+  note: 同义（拍板 ← 定了）
+  query: 评审最后拍板的是什么？
+  gold_facts: [先做A方案, B方案放二期]
+
+- id: a09
+  type: answer
+  note: 间接（接口的工作被什么影响 ← 视觉稿推迟）
+  query: 接口相关的工作被什么事影响了？
+  gold_facts: [视觉稿, 提测]
+
+- id: a10
+  type: answer
+  note: 同义（经过谁的同意 ← 签字）
+  query: 定稿需要经过谁的同意？
+  gold_facts: [设计总监, 陈哲]
+
+- id: a11
+  type: answer
+  note: 同义（休息日 ← 周六）
+  query: 这周休息日大家准备干嘛？
+  gold_facts: [友谊赛, 看展]
+
+- id: a12
+  type: answer
+  note: 间接（私人安排涉及谁 ← 女朋友小雅）
+  query: 阿哲的私人安排涉及谁？
+  gold_facts: [小雅]
+
+- id: n01
+  type: no_answer
+  note: 天气
+  query: 北京明天的空气质量指数是多少？
+  gold_facts: []
+
+- id: n02
+  type: no_answer
+  note: 保险
+  query: 我的车险还有多久到期？
+  gold_facts: []
+
+- id: n03
+  type: no_answer
+  note: 菜谱
+  query: 红烧肉怎么做才不腻？
+  gold_facts: []
+
+- id: n04
+  type: no_answer
+  note: 股票
+  query: 今天大盘收在多少点？
+  gold_facts: []
+
+- id: n05
+  type: no_answer
+  note: 签证
+  query: 去日本旅游需要办什么签证材料？
+  gold_facts: []
+
+- id: n06
+  type: no_answer
+  note: 技术但库中无此内容
+  query: asyncio 和线程池在 Python 里有什么区别？
+  gold_facts: []
+
+- id: n07
+  type: no_answer
+  note: 半相关边界样本（库里有"体检"，但没有血糖值）
+  query: 我去年体检的血糖值是多少？
+  gold_facts: []
+
+- id: n08
+  type: no_answer
+  note: 任务类
+  query: 帮我订一张下周去上海的机票。
+  gold_facts: []

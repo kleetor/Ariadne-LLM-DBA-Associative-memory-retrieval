@@ -1,0 +1,78 @@
+{
+  "meta": {
+    "judge_model": "qwen3.8-flash",
+    "method": "joint_1pass",
+    "rubric": [
+      "记忆丰富度",
+      "易理解性",
+      "用户建模度"
+    ],
+    "abstain_excluded": true
+  },
+  "summary": {
+    "par_story": {
+      "n": 70,
+      "total": 4.63,
+      "记忆丰富度": 4.47,
+      "易理解性": 4.99,
+      "用户建模度": 4.43
+    },
+    "par_raw": {
+      "n": 70,
+      "total": 4.12,
+      "记忆丰富度": 4.77,
+      "易理解性": 3.03,
+      "用户建模度": 4.54
+    },
+    "vector_raw": {
+      "n": 70,
+      "total": 2.84,
+      "记忆丰富度": 3.6,
+      "易理解性": 2.29,
+      "用户建模度": 2.63
+    }
+  },
+  "by_category": {
+    "single_fact": {
+      "par_story": 4.69,
+      "par_raw": 3.95,
+      "vector_raw": 2.9
+    },
+    "preference": {
+      "par_story": 4.41,
+      "par_raw": 4.13,
+      "vector_raw": 2.5
+    },
+    "multi_hop": {
+      "par_story": 4.63,
+      "par_raw": 3.93,
+      "vector_raw": 3.3
+    },
+    "knowledge_update": {
+      "par_story": 4.55,
+      "par_raw": 4.22,
+      "vector_raw": 2.83
+    },
+    "temporal": {
+      "par_story": 4.7,
+      "par_raw": 4.04,
+      "vector_raw": 2.96
+    },
+    "cross_scene": {
+      "par_story": 4.67,
+      "par_raw": 4.14,
+      "vector_raw": 2.81
+    },
+    "assistant_behavior": {
+      "par_story": 4.67,
+      "par_raw": 4.29,
+      "vector_raw": 2.67
+    },
+    "mixed_memory": {
+      "par_story": 4.62,
+      "par_raw": 4.42,
+      "vector_raw": 2.58
+    }
+  },
+  "abstention": []
+}

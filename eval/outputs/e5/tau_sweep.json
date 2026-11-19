@@ -1,0 +1,84 @@
+{
+  "meta": {
+    "experiment": "E5 tau sweep",
+    "queries": 30,
+    "taus": [
+      0.3,
+      0.4,
+      0.45,
+      0.5,
+      0.55,
+      0.6
+    ],
+    "embedding": "BAAI/bge-m3",
+    "note": "只检索不做叙事；通过率按扩展轮(hop>=1)的 in/out 汇总"
+  },
+  "rows": [
+    {
+      "tau": 0.3,
+      "mean_nodes": 23.53,
+      "nodes_min_max": [
+        6,
+        44
+      ],
+      "filter_pass_rate": 1.0,
+      "jaccard": 0.3458,
+      "recall": 0.5944
+    },
+    {
+      "tau": 0.4,
+      "mean_nodes": 21.3,
+      "nodes_min_max": [
+        6,
+        36
+      ],
+      "filter_pass_rate": 0.9568,
+      "jaccard": 0.3951,
+      "recall": 0.5861
+    },
+    {
+      "tau": 0.45,
+      "mean_nodes": 16.77,
+      "nodes_min_max": [
+        6,
+        34
+      ],
+      "filter_pass_rate": 0.8019,
+      "jaccard": 0.3503,
+      "recall": 0.5861
+    },
+    {
+      "tau": 0.5,
+      "mean_nodes": 10.93,
+      "nodes_min_max": [
+        6,
+        24
+      ],
+      "filter_pass_rate": 0.5312,
+      "jaccard": 0.3257,
+      "recall": 0.5711
+    },
+    {
+      "tau": 0.55,
+      "mean_nodes": 7.17,
+      "nodes_min_max": [
+        5,
+        14
+      ],
+      "filter_pass_rate": 0.2499,
+      "jaccard": 0.3618,
+      "recall": 0.5072
+    },
+    {
+      "tau": 0.6,
+      "mean_nodes": 5.5,
+      "nodes_min_max": [
+        5,
+        10
+      ],
+      "filter_pass_rate": 0.063,
+      "jaccard": 0.3667,
+      "recall": 0.4767
+    }
+  ]
+}

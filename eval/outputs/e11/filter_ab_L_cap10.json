@@ -1,0 +1,3103 @@
+{
+  "meta": {
+    "experiment": "E11-AB",
+    "yaml": "data/dba_eval/comprehensive_gold.yaml",
+    "cache": "comprehensive",
+    "embedding": "BAAI/bge-m3",
+    "weights": [
+      0.55,
+      0.35,
+      0.1
+    ],
+    "anchor": 0.0,
+    "seed_k": 5,
+    "taus": [
+      0.0,
+      0.3,
+      0.45,
+      0.55
+    ],
+    "note": "frame 不变，只改 purpose_filter_threshold；等规模 = τ=0 的前 k 个节点。gold_removed_rate = 被过滤集合里属于 gold 的比例；非 gold 删 = 被删的无关节点数。"
+  },
+  "summary": {
+    "0.0": {
+      "n_mean": 9.97,
+      "keep_rate": 1.0,
+      "filter_events": 689,
+      "recall_natural": 0.3189,
+      "recall_equal_size": 0.3189,
+      "contam_natural": 0.0,
+      "contam_equal_size": 0.0,
+      "tvd_pooled": 0.1537,
+      "tvd_equal_size": 0.1537,
+      "tvd_scenario": 0.293,
+      "tvd_scenario_equal_size": 0.293,
+      "jaccard_vs_trunc": 1.0,
+      "gold_removed_rate": 0.0,
+      "non_gold_removed_mean": 0.0
+    },
+    "0.3": {
+      "n_mean": 9.97,
+      "keep_rate": 0.9193,
+      "filter_events": 644,
+      "recall_natural": 0.3394,
+      "recall_equal_size": 0.3189,
+      "contam_natural": 0.0,
+      "contam_equal_size": 0.0,
+      "tvd_pooled": 0.1403,
+      "tvd_equal_size": 0.1537,
+      "tvd_scenario": 0.223,
+      "tvd_scenario_equal_size": 0.293,
+      "jaccard_vs_trunc": 0.776,
+      "gold_removed_rate": 0.0167,
+      "non_gold_removed_mean": 1.33
+    },
+    "0.45": {
+      "n_mean": 7.53,
+      "keep_rate": 0.2952,
+      "filter_events": 315,
+      "recall_natural": 0.5183,
+      "recall_equal_size": 0.2661,
+      "contam_natural": 0.0,
+      "contam_equal_size": 0.0,
+      "tvd_pooled": 0.4671,
+      "tvd_equal_size": 0.1214,
+      "tvd_scenario": 0.5222,
+      "tvd_scenario_equal_size": 0.2913,
+      "jaccard_vs_trunc": 0.2342,
+      "gold_removed_rate": 0.0622,
+      "non_gold_removed_mean": 6.47
+    },
+    "0.55": {
+      "n_mean": 5.43,
+      "keep_rate": 0.0583,
+      "filter_events": 223,
+      "recall_natural": 0.4183,
+      "recall_equal_size": 0.1633,
+      "contam_natural": 0.0,
+      "contam_equal_size": 0.0,
+      "tvd_pooled": 0.4124,
+      "tvd_equal_size": 0.1006,
+      "tvd_scenario": 0.4398,
+      "tvd_scenario_equal_size": 0.2977,
+      "jaccard_vs_trunc": 0.0389,
+      "gold_removed_rate": 0.1622,
+      "non_gold_removed_mean": 8.07
+    }
+  },
+  "rows": {
+    "0.0": [
+      {
+        "id": "a01_vent",
+        "scenario": "a01_工作强度",
+        "intent": "vent",
+        "ids": [
+          "uw2",
+          "uw3",
+          "aw9",
+          "uw6",
+          "uw14",
+          "ud7",
+          "ud9",
+          "ad6",
+          "uw5",
+          "uw7"
+        ],
+        "n": 10,
+        "types": {
+          "action": 6,
+          "reason": 1,
+          "status": 3
+        },
+        "recall": 0.5,
+        "contam": 0.0,
+        "filter_in": 24,
+        "filter_out": 24
+      },
+      {
+        "id": "a01_plan",
+        "scenario": "a01_工作强度",
+        "intent": "plan",
+        "ids": [
+          "uw2",
+          "uw8",
+          "aw3",
+          "uw4",
+          "uw5",
+          "tw7",
+          "uw7",
+          "uw6",
+          "uw9",
+          "tw6"
+        ],
+        "n": 10,
+        "types": {
+          "action": 5,
+          "emotion": 2,
+          "status": 1,
+          "thing": 2
+        },
+        "recall": 0.4,
+        "contam": 0.0,
+        "filter_in": 20,
+        "filter_out": 20
+      },
+      {
+        "id": "a01_recommend",
+        "scenario": "a01_工作强度",
+        "intent": "recommend",
+        "ids": [
+          "ul3",
+          "uh11",
+          "ul4",
+          "uh10",
+          "uh2",
+          "al2",
+          "al3",
+          "al1",
+          "al5",
+          "ah2"
+        ],
+        "n": 10,
+        "types": {
+          "action": 9,
+          "status": 1
+        },
+        "recall": 0.0,
+        "contam": 0.0,
+        "filter_in": 28,
+        "filter_out": 28
+      },
+      {
+        "id": "a02_vent",
+        "scenario": "a02_作息",
+        "intent": "vent",
+        "ids": [
+          "al8",
+          "ud9",
+          "ul3",
+          "ud2",
+          "ul4",
+          "uw2",
+          "uw6",
+          "uw5",
+          "aw9",
+          "ul1"
+        ],
+        "n": 10,
+        "types": {
+          "action": 7,
+          "status": 3
+        },
+        "recall": 0.3333333333333333,
+        "contam": 0.0,
+        "filter_in": 27,
+        "filter_out": 27
+      },
+      {
+        "id": "a02_plan",
+        "scenario": "a02_作息",
+        "intent": "plan",
+        "ids": [
+          "ud6",
+          "ul5",
+          "ud2",
+          "ud9",
+          "tl3",
+          "ad6",
+          "th3",
+          "uh13",
+          "al6",
+          "th4"
+        ],
+        "n": 10,
+        "types": {
+          "emotion": 2,
+          "action": 4,
+          "status": 1,
+          "thing": 3
+        },
+        "recall": 0.3333333333333333,
+        "contam": 0.0,
+        "filter_in": 11,
+        "filter_out": 11
+      },
+      {
+        "id": "a02_recommend",
+        "scenario": "a02_作息",
+        "intent": "recommend",
+        "ids": [
+          "ud1",
+          "ad4",
+          "ad1",
+          "ud2",
+          "td4",
+          "ud9",
+          "ud6",
+          "td5",
+          "ad6",
+          "ad3"
+        ],
+        "n": 10,
+        "types": {
+          "action": 6,
+          "thing": 2,
+          "status": 1,
+          "emotion": 1
+        },
+        "recall": 0.5,
+        "contam": 0.0,
+        "filter_in": 9,
+        "filter_out": 9
+      },
+      {
+        "id": "a03_vent",
+        "scenario": "a03_成长回顾",
+        "intent": "vent",
+        "ids": [
+          "uh6",
+          "ud3",
+          "uh2",
+          "uh8",
+          "uh7",
+          "as2",
+          "uc6",
+          "uh13",
+          "am4",
+          "uc1"
+        ],
+        "n": 10,
+        "types": {
+          "emotion": 3,
+          "action": 6,
+          "status": 1
+        },
+        "recall": 0.6666666666666666,
+        "contam": 0.0,
+        "filter_in": 44,
+        "filter_out": 44
+      },
+      {
+        "id": "a03_plan",
+        "scenario": "a03_成长回顾",
+        "intent": "plan",
+        "ids": [
+          "ah2",
+          "uh2",
+          "uh8",
+          "uh7",
+          "uh16",
+          "uh3",
+          "th2",
+          "uc1",
+          "uh10",
+          "th7"
+        ],
+        "n": 10,
+        "types": {
+          "action": 6,
+          "status": 1,
+          "emotion": 1,
+          "thing": 2
+        },
+        "recall": 0.0,
+        "contam": 0.0,
+        "filter_in": 35,
+        "filter_out": 35
+      },
+      {
+        "id": "a03_recommend",
+        "scenario": "a03_成长回顾",
+        "intent": "recommend",
+        "ids": [
+          "ul1",
+          "ul3",
+          "ud5",
+          "ul8",
+          "um4",
+          "am4",
+          "al4",
+          "um3",
+          "ad2",
+          "tc4"
+        ],
+        "n": 10,
+        "types": {
+          "status": 2,
+          "action": 6,
+          "emotion": 1,
+          "thing": 1
+        },
+        "recall": 0.3333333333333333,
+        "contam": 0.0,
+        "filter_in": 25,
+        "filter_out": 25
+      },
+      {
+        "id": "a04_vent",
+        "scenario": "a04_社交安排",
+        "intent": "vent",
+        "ids": [
+          "us1",
+          "uh6",
+          "as1",
+          "al8",
+          "as2",
+          "uh2",
+          "uh13",
+          "ul3",
+          "uh7",
+          "uh8"
+        ],
+        "n": 10,
+        "types": {
+          "action": 7,
+          "emotion": 2,
+          "status": 1
+        },
+        "recall": 0.0,
+        "contam": 0.0,
+        "filter_in": 27,
+        "filter_out": 27
+      },
+      {
+        "id": "a04_plan",
+        "scenario": "a04_社交安排",
+        "intent": "plan",
+        "ids": [
+          "as2",
+          "us7",
+          "us2",
+          "as4",
+          "ts5",
+          "ts2",
+          "us9",
+          "us1",
+          "us8",
+          "as1"
+        ],
+        "n": 10,
+        "types": {
+          "action": 6,
+          "emotion": 1,
+          "thing": 2,
+          "person": 1
+        },
+        "recall": 0.75,
+        "contam": 0.0,
+        "filter_in": 7,
+        "filter_out": 7
+      },
+      {
+        "id": "a04_recommend",
+        "scenario": "a04_社交安排",
+        "intent": "recommend",
+        "ids": [
+          "aw2",
+          "uw3",
+          "as2",
+          "uw2",
+          "us7",
+          "as1",
+          "uw6",
+          "uw7",
+          "uw4",
+          "us1"
+        ],
+        "n": 10,
+        "types": {
+          "action": 9,
+          "emotion": 1
+        },
+        "recall": 0.6666666666666666,
+        "contam": 0.0,
+        "filter_in": 20,
+        "filter_out": 20
+      },
+      {
+        "id": "a05_vent",
+        "scenario": "a05_学习进度",
+        "intent": "vent",
+        "ids": [
+          "uc1",
+          "uc7",
+          "uc4",
+          "uc5",
+          "uc16",
+          "uw1",
+          "uc18",
+          "ac2",
+          "uh6",
+          "uc12"
+        ],
+        "n": 10,
+        "types": {
+          "action": 4,
+          "status": 4,
+          "emotion": 2
+        },
+        "recall": 0.0,
+        "contam": 0.0,
+        "filter_in": 37,
+        "filter_out": 37
+      },
+      {
+        "id": "a05_plan",
+        "scenario": "a05_学习进度",
+        "intent": "plan",
+        "ids": [
+          "ul3",
+          "al2",
+          "al3",
+          "al1",
+          "al5",
+          "ul5",
+          "al8",
+          "al4",
+          "al6",
+          "ul4"
+        ],
+        "n": 10,
+        "types": {
+          "action": 10
+        },
+        "recall": 0.6666666666666666,
+        "contam": 0.0,
+        "filter_in": 10,
+        "filter_out": 10
+      },
+      {
+        "id": "a05_recommend",
+        "scenario": "a05_学习进度",
+        "intent": "recommend",
+        "ids": [
+          "ul6",
+          "al2",
+          "al1",
+          "al5",
+          "aw2",
+          "ul3",
+          "al4",
+          "uw3",
+          "al3",
+          "ul2"
+        ],
+        "n": 10,
+        "types": {
+          "status": 2,
+          "action": 8
+        },
+        "recall": 0.75,
+        "contam": 0.0,
+        "filter_in": 11,
+        "filter_out": 11
+      },
+      {
+        "id": "a06_vent",
+        "scenario": "a06_职业想法",
+        "intent": "vent",
+        "ids": [
+          "al8",
+          "uw3",
+          "ul3",
+          "uw2",
+          "aw9",
+          "uw6",
+          "uw5",
+          "uw14",
+          "ul4",
+          "ul2"
+        ],
+        "n": 10,
+        "types": {
+          "action": 7,
+          "status": 2,
+          "reason": 1
+        },
+        "recall": 0.0,
+        "contam": 0.0,
+        "filter_in": 26,
+        "filter_out": 26
+      },
+      {
+        "id": "a06_plan",
+        "scenario": "a06_职业想法",
+        "intent": "plan",
+        "ids": [
+          "uc17",
+          "uc5",
+          "uc3",
+          "aw2",
+          "uw2",
+          "tc4",
+          "uw3",
+          "aw9",
+          "uc6",
+          "tc7"
+        ],
+        "n": 10,
+        "types": {
+          "action": 6,
+          "status": 1,
+          "thing": 2,
+          "emotion": 1
+        },
+        "recall": 0.0,
+        "contam": 0.0,
+        "filter_in": 34,
+        "filter_out": 34
+      },
+      {
+        "id": "a06_recommend",
+        "scenario": "a06_职业想法",
+        "intent": "recommend",
+        "ids": [
+          "uw4",
+          "aw9",
+          "uw6",
+          "uw3",
+          "uc10",
+          "aw8",
+          "aw3",
+          "uw13",
+          "uc3",
+          "uw1"
+        ],
+        "n": 10,
+        "types": {
+          "action": 8,
+          "status": 2
+        },
+        "recall": 0.3333333333333333,
+        "contam": 0.0,
+        "filter_in": 28,
+        "filter_out": 28
+      },
+      {
+        "id": "a07_vent",
+        "scenario": "a07_身体状态",
+        "intent": "vent",
+        "ids": [
+          "ud7",
+          "am1",
+          "um2",
+          "am2",
+          "uh6",
+          "uw6",
+          "aw9",
+          "uw2",
+          "uh7",
+          "uh8"
+        ],
+        "n": 10,
+        "types": {
+          "status": 2,
+          "action": 7,
+          "emotion": 1
+        },
+        "recall": 0.5,
+        "contam": 0.0,
+        "filter_in": 23,
+        "filter_out": 23
+      },
+      {
+        "id": "a07_plan",
+        "scenario": "a07_身体状态",
+        "intent": "plan",
+        "ids": [
+          "ud4",
+          "aw2",
+          "ud7",
+          "uw3",
+          "am1",
+          "uw2",
+          "uw4",
+          "ud2",
+          "ud5",
+          "uw7"
+        ],
+        "n": 10,
+        "types": {
+          "status": 2,
+          "action": 8
+        },
+        "recall": 0.0,
+        "contam": 0.0,
+        "filter_in": 27,
+        "filter_out": 27
+      },
+      {
+        "id": "a07_recommend",
+        "scenario": "a07_身体状态",
+        "intent": "recommend",
+        "ids": [
+          "am1",
+          "ul3",
+          "ud6",
+          "ud2",
+          "ul4",
+          "al2",
+          "am2",
+          "um2",
+          "al3",
+          "al1"
+        ],
+        "n": 10,
+        "types": {
+          "action": 9,
+          "emotion": 1
+        },
+        "recall": 0.75,
+        "contam": 0.0,
+        "filter_in": 21,
+        "filter_out": 21
+      },
+      {
+        "id": "a08_vent",
+        "scenario": "a08_老朋友",
+        "intent": "vent",
+        "ids": [
+          "us6",
+          "uc2",
+          "uh3",
+          "as1",
+          "uc10",
+          "uc16",
+          "uc6",
+          "uc5",
+          "us10",
+          "uh8"
+        ],
+        "n": 10,
+        "types": {
+          "action": 3,
+          "emotion": 3,
+          "status": 3,
+          "person": 1
+        },
+        "recall": 0.0,
+        "contam": 0.0,
+        "filter_in": 35,
+        "filter_out": 35
+      },
+      {
+        "id": "a08_plan",
+        "scenario": "a08_老朋友",
+        "intent": "plan",
+        "ids": [
+          "us3",
+          "as2",
+          "us7",
+          "us1",
+          "as1",
+          "ts3",
+          "us4",
+          "ts1",
+          "td1"
+        ],
+        "n": 9,
+        "types": {
+          "action": 5,
+          "emotion": 1,
+          "thing": 3
+        },
+        "recall": 0.5,
+        "contam": 0.0,
+        "filter_in": 4,
+        "filter_out": 4
+      },
+      {
+        "id": "a08_recommend",
+        "scenario": "a08_老朋友",
+        "intent": "recommend",
+        "ids": [
+          "us10",
+          "us5",
+          "as2",
+          "us7",
+          "ts4",
+          "as1",
+          "ts3",
+          "us1",
+          "us6",
+          "ts1"
+        ],
+        "n": 10,
+        "types": {
+          "person": 1,
+          "status": 1,
+          "action": 4,
+          "emotion": 1,
+          "thing": 3
+        },
+        "recall": 0.6666666666666666,
+        "contam": 0.0,
+        "filter_in": 6,
+        "filter_out": 6
+      },
+      {
+        "id": "a09_vent",
+        "scenario": "a09_未来焦虑",
+        "intent": "vent",
+        "ids": [
+          "uh6",
+          "al8",
+          "ul3",
+          "uh7",
+          "uh2",
+          "uc10",
+          "uh8",
+          "ul4",
+          "uc1",
+          "uh5"
+        ],
+        "n": 10,
+        "types": {
+          "emotion": 1,
+          "action": 6,
+          "status": 3
+        },
+        "recall": 0.0,
+        "contam": 0.0,
+        "filter_in": 31,
+        "filter_out": 31
+      },
+      {
+        "id": "a09_plan",
+        "scenario": "a09_未来焦虑",
+        "intent": "plan",
+        "ids": [
+          "um6",
+          "uw2",
+          "tl4",
+          "uw6",
+          "aw1",
+          "uw3",
+          "uw4",
+          "aw2",
+          "uw7",
+          "aw9"
+        ],
+        "n": 10,
+        "types": {
+          "emotion": 1,
+          "action": 8,
+          "thing": 1
+        },
+        "recall": 0.0,
+        "contam": 0.0,
+        "filter_in": 28,
+        "filter_out": 28
+      },
+      {
+        "id": "a09_recommend",
+        "scenario": "a09_未来焦虑",
+        "intent": "recommend",
+        "ids": [
+          "uc4",
+          "uc3",
+          "uc10",
+          "uc5",
+          "uh3",
+          "uh8",
+          "ac1",
+          "uc7",
+          "uc6",
+          "uh7"
+        ],
+        "n": 10,
+        "types": {
+          "action": 4,
+          "status": 4,
+          "emotion": 2
+        },
+        "recall": 0.25,
+        "contam": 0.0,
+        "filter_in": 30,
+        "filter_out": 30
+      },
+      {
+        "id": "a10_vent",
+        "scenario": "a10_拖延",
+        "intent": "vent",
+        "ids": [
+          "ud7",
+          "uh6",
+          "uw2",
+          "uw6",
+          "ul3",
+          "al8",
+          "aw9",
+          "uh2",
+          "uh7",
+          "uh8"
+        ],
+        "n": 10,
+        "types": {
+          "status": 2,
+          "emotion": 1,
+          "action": 7
+        },
+        "recall": 0.0,
+        "contam": 0.0,
+        "filter_in": 29,
+        "filter_out": 29
+      },
+      {
+        "id": "a10_plan",
+        "scenario": "a10_拖延",
+        "intent": "plan",
+        "ids": [
+          "uw4",
+          "uw3",
+          "uw2",
+          "ud7",
+          "aw3",
+          "uw7",
+          "aw1",
+          "uw8",
+          "tw7",
+          "um6"
+        ],
+        "n": 10,
+        "types": {
+          "action": 6,
+          "status": 1,
+          "emotion": 2,
+          "thing": 1
+        },
+        "recall": 0.3333333333333333,
+        "contam": 0.0,
+        "filter_in": 21,
+        "filter_out": 21
+      },
+      {
+        "id": "a10_recommend",
+        "scenario": "a10_拖延",
+        "intent": "recommend",
+        "ids": [
+          "ul5",
+          "ud7",
+          "ud6",
+          "tl3",
+          "td1",
+          "th3",
+          "ah4",
+          "al6",
+          "ad6",
+          "uh13"
+        ],
+        "n": 10,
+        "types": {
+          "action": 4,
+          "status": 1,
+          "emotion": 2,
+          "thing": 3
+        },
+        "recall": 0.3333333333333333,
+        "contam": 0.0,
+        "filter_in": 11,
+        "filter_out": 11
+      }
+    ],
+    "0.3": [
+      {
+        "id": "a01_vent",
+        "scenario": "a01_工作强度",
+        "intent": "vent",
+        "ids": [
+          "uw2",
+          "uw3",
+          "aw9",
+          "uw6",
+          "uw14",
+          "ud9",
+          "ud7",
+          "uw5",
+          "uw7",
+          "uw4"
+        ],
+        "n": 10,
+        "types": {
+          "action": 6,
+          "reason": 1,
+          "status": 3
+        },
+        "recall": 0.5,
+        "contam": 0.0,
+        "filter_in": 24,
+        "filter_out": 23
+      },
+      {
+        "id": "a01_plan",
+        "scenario": "a01_工作强度",
+        "intent": "plan",
+        "ids": [
+          "uw2",
+          "uw8",
+          "aw3",
+          "uw5",
+          "uw4",
+          "tw7",
+          "uw6",
+          "uw7",
+          "uw9",
+          "aw1"
+        ],
+        "n": 10,
+        "types": {
+          "action": 6,
+          "emotion": 2,
+          "status": 1,
+          "thing": 1
+        },
+        "recall": 0.6,
+        "contam": 0.0,
+        "filter_in": 20,
+        "filter_out": 20
+      },
+      {
+        "id": "a01_recommend",
+        "scenario": "a01_工作强度",
+        "intent": "recommend",
+        "ids": [
+          "ul3",
+          "ul4",
+          "al4",
+          "al2",
+          "al3",
+          "al1",
+          "al5",
+          "ul1",
+          "tl1",
+          "ul2"
+        ],
+        "n": 10,
+        "types": {
+          "action": 7,
+          "status": 2,
+          "thing": 1
+        },
+        "recall": 0.0,
+        "contam": 0.0,
+        "filter_in": 15,
+        "filter_out": 13
+      },
+      {
+        "id": "a02_vent",
+        "scenario": "a02_作息",
+        "intent": "vent",
+        "ids": [
+          "al8",
+          "ud9",
+          "ul3",
+          "ud2",
+          "ul4",
+          "aw9",
+          "uw2",
+          "ad6",
+          "uw6",
+          "ul2"
+        ],
+        "n": 10,
+        "types": {
+          "action": 8,
+          "status": 2
+        },
+        "recall": 0.3333333333333333,
+        "contam": 0.0,
+        "filter_in": 19,
+        "filter_out": 15
+      },
+      {
+        "id": "a02_plan",
+        "scenario": "a02_作息",
+        "intent": "plan",
+        "ids": [
+          "ud6",
+          "ul5",
+          "ud2",
+          "ud9",
+          "ad6",
+          "tl3",
+          "al6",
+          "ah4",
+          "th3",
+          "th4"
+        ],
+        "n": 10,
+        "types": {
+          "emotion": 1,
+          "action": 5,
+          "status": 1,
+          "thing": 3
+        },
+        "recall": 0.3333333333333333,
+        "contam": 0.0,
+        "filter_in": 11,
+        "filter_out": 11
+      },
+      {
+        "id": "a02_recommend",
+        "scenario": "a02_作息",
+        "intent": "recommend",
+        "ids": [
+          "ud1",
+          "ad4",
+          "ad1",
+          "ud2",
+          "ud9",
+          "td4",
+          "ud6",
+          "td5",
+          "ad6",
+          "ad3"
+        ],
+        "n": 10,
+        "types": {
+          "action": 6,
+          "status": 1,
+          "thing": 2,
+          "emotion": 1
+        },
+        "recall": 0.5,
+        "contam": 0.0,
+        "filter_in": 9,
+        "filter_out": 9
+      },
+      {
+        "id": "a03_vent",
+        "scenario": "a03_成长回顾",
+        "intent": "vent",
+        "ids": [
+          "uh6",
+          "ud3",
+          "uh2",
+          "uh8",
+          "uh7",
+          "as2",
+          "uc6",
+          "uh13",
+          "uc1",
+          "uc16"
+        ],
+        "n": 10,
+        "types": {
+          "emotion": 4,
+          "action": 5,
+          "status": 1
+        },
+        "recall": 1.0,
+        "contam": 0.0,
+        "filter_in": 44,
+        "filter_out": 37
+      },
+      {
+        "id": "a03_plan",
+        "scenario": "a03_成长回顾",
+        "intent": "plan",
+        "ids": [
+          "ah2",
+          "uh8",
+          "uh2",
+          "uh7",
+          "uh16",
+          "th2",
+          "uh3",
+          "uc1",
+          "th7",
+          "am4"
+        ],
+        "n": 10,
+        "types": {
+          "action": 6,
+          "status": 1,
+          "thing": 2,
+          "emotion": 1
+        },
+        "recall": 0.0,
+        "contam": 0.0,
+        "filter_in": 34,
+        "filter_out": 34
+      },
+      {
+        "id": "a03_recommend",
+        "scenario": "a03_成长回顾",
+        "intent": "recommend",
+        "ids": [
+          "ul1",
+          "ul3",
+          "am4",
+          "ul8",
+          "ud5",
+          "ud3",
+          "um4",
+          "al2",
+          "al1",
+          "tc4"
+        ],
+        "n": 10,
+        "types": {
+          "status": 1,
+          "action": 7,
+          "emotion": 1,
+          "thing": 1
+        },
+        "recall": 0.3333333333333333,
+        "contam": 0.0,
+        "filter_in": 25,
+        "filter_out": 25
+      },
+      {
+        "id": "a04_vent",
+        "scenario": "a04_社交安排",
+        "intent": "vent",
+        "ids": [
+          "us1",
+          "uh6",
+          "al8",
+          "ul3",
+          "uh7",
+          "as1",
+          "uh3",
+          "as2",
+          "uh2",
+          "uh5"
+        ],
+        "n": 10,
+        "types": {
+          "action": 7,
+          "emotion": 2,
+          "status": 1
+        },
+        "recall": 0.0,
+        "contam": 0.0,
+        "filter_in": 21,
+        "filter_out": 18
+      },
+      {
+        "id": "a04_plan",
+        "scenario": "a04_社交安排",
+        "intent": "plan",
+        "ids": [
+          "as2",
+          "us7",
+          "us2",
+          "as4",
+          "ts5",
+          "ts2",
+          "us1",
+          "us8",
+          "as1",
+          "ts3"
+        ],
+        "n": 10,
+        "types": {
+          "action": 6,
+          "emotion": 1,
+          "thing": 3
+        },
+        "recall": 1.0,
+        "contam": 0.0,
+        "filter_in": 7,
+        "filter_out": 6
+      },
+      {
+        "id": "a04_recommend",
+        "scenario": "a04_社交安排",
+        "intent": "recommend",
+        "ids": [
+          "aw2",
+          "uw3",
+          "as2",
+          "us7",
+          "as1",
+          "uw4",
+          "us1",
+          "aw3",
+          "uw2",
+          "aw1"
+        ],
+        "n": 10,
+        "types": {
+          "action": 9,
+          "emotion": 1
+        },
+        "recall": 0.6666666666666666,
+        "contam": 0.0,
+        "filter_in": 16,
+        "filter_out": 13
+      },
+      {
+        "id": "a05_vent",
+        "scenario": "a05_学习进度",
+        "intent": "vent",
+        "ids": [
+          "uc1",
+          "uc12",
+          "uc13",
+          "uh6",
+          "uc16",
+          "al8",
+          "ul3",
+          "uh7",
+          "uh8",
+          "uc18"
+        ],
+        "n": 10,
+        "types": {
+          "action": 6,
+          "status": 2,
+          "emotion": 2
+        },
+        "recall": 0.3333333333333333,
+        "contam": 0.0,
+        "filter_in": 35,
+        "filter_out": 35
+      },
+      {
+        "id": "a05_plan",
+        "scenario": "a05_学习进度",
+        "intent": "plan",
+        "ids": [
+          "ul3",
+          "al2",
+          "al3",
+          "al1",
+          "al5",
+          "ul5",
+          "al8",
+          "al4",
+          "al6",
+          "ul4"
+        ],
+        "n": 10,
+        "types": {
+          "action": 10
+        },
+        "recall": 0.6666666666666666,
+        "contam": 0.0,
+        "filter_in": 10,
+        "filter_out": 10
+      },
+      {
+        "id": "a05_recommend",
+        "scenario": "a05_学习进度",
+        "intent": "recommend",
+        "ids": [
+          "al2",
+          "al1",
+          "ul6",
+          "al5",
+          "ul4",
+          "ul3",
+          "al8",
+          "al4",
+          "aw2",
+          "uw3"
+        ],
+        "n": 10,
+        "types": {
+          "action": 9,
+          "status": 1
+        },
+        "recall": 0.5,
+        "contam": 0.0,
+        "filter_in": 15,
+        "filter_out": 15
+      },
+      {
+        "id": "a06_vent",
+        "scenario": "a06_职业想法",
+        "intent": "vent",
+        "ids": [
+          "al8",
+          "ul3",
+          "uw2",
+          "aw9",
+          "uw3",
+          "uw6",
+          "ul4",
+          "uw14",
+          "uw4",
+          "uw5"
+        ],
+        "n": 10,
+        "types": {
+          "action": 8,
+          "reason": 1,
+          "status": 1
+        },
+        "recall": 0.0,
+        "contam": 0.0,
+        "filter_in": 22,
+        "filter_out": 19
+      },
+      {
+        "id": "a06_plan",
+        "scenario": "a06_职业想法",
+        "intent": "plan",
+        "ids": [
+          "uc17",
+          "uc5",
+          "aw2",
+          "uw2",
+          "uw3",
+          "uc3",
+          "aw9",
+          "tc4",
+          "uw6",
+          "uw4"
+        ],
+        "n": 10,
+        "types": {
+          "action": 8,
+          "status": 1,
+          "thing": 1
+        },
+        "recall": 0.0,
+        "contam": 0.0,
+        "filter_in": 34,
+        "filter_out": 33
+      },
+      {
+        "id": "a06_recommend",
+        "scenario": "a06_职业想法",
+        "intent": "recommend",
+        "ids": [
+          "aw9",
+          "uw4",
+          "uw6",
+          "aw3",
+          "aw8",
+          "uw3",
+          "uw13",
+          "aw1",
+          "uw7",
+          "aw2"
+        ],
+        "n": 10,
+        "types": {
+          "action": 10
+        },
+        "recall": 0.3333333333333333,
+        "contam": 0.0,
+        "filter_in": 23,
+        "filter_out": 20
+      },
+      {
+        "id": "a07_vent",
+        "scenario": "a07_身体状态",
+        "intent": "vent",
+        "ids": [
+          "ud7",
+          "am1",
+          "um2",
+          "uh6",
+          "uw6",
+          "aw9",
+          "uw2",
+          "uh7",
+          "am2",
+          "uh8"
+        ],
+        "n": 10,
+        "types": {
+          "status": 2,
+          "action": 7,
+          "emotion": 1
+        },
+        "recall": 0.5,
+        "contam": 0.0,
+        "filter_in": 23,
+        "filter_out": 21
+      },
+      {
+        "id": "a07_plan",
+        "scenario": "a07_身体状态",
+        "intent": "plan",
+        "ids": [
+          "ud4",
+          "aw2",
+          "uw3",
+          "ud7",
+          "uw4",
+          "ud2",
+          "ud5",
+          "am1",
+          "uw7",
+          "uw2"
+        ],
+        "n": 10,
+        "types": {
+          "status": 2,
+          "action": 8
+        },
+        "recall": 0.0,
+        "contam": 0.0,
+        "filter_in": 28,
+        "filter_out": 28
+      },
+      {
+        "id": "a07_recommend",
+        "scenario": "a07_身体状态",
+        "intent": "recommend",
+        "ids": [
+          "am1",
+          "ul3",
+          "ud6",
+          "ud2",
+          "ul4",
+          "al2",
+          "um2",
+          "al3",
+          "ud7",
+          "al1"
+        ],
+        "n": 10,
+        "types": {
+          "action": 8,
+          "emotion": 1,
+          "status": 1
+        },
+        "recall": 0.5,
+        "contam": 0.0,
+        "filter_in": 21,
+        "filter_out": 20
+      },
+      {
+        "id": "a08_vent",
+        "scenario": "a08_老朋友",
+        "intent": "vent",
+        "ids": [
+          "us6",
+          "uc10",
+          "uc2",
+          "as1",
+          "uc6",
+          "uc16",
+          "as2",
+          "ts3",
+          "us10",
+          "us7"
+        ],
+        "n": 10,
+        "types": {
+          "action": 4,
+          "status": 1,
+          "emotion": 3,
+          "thing": 1,
+          "person": 1
+        },
+        "recall": 0.0,
+        "contam": 0.0,
+        "filter_in": 25,
+        "filter_out": 19
+      },
+      {
+        "id": "a08_plan",
+        "scenario": "a08_老朋友",
+        "intent": "plan",
+        "ids": [
+          "us3",
+          "as2",
+          "us7",
+          "us1",
+          "as1",
+          "us4",
+          "ts3",
+          "ts1",
+          "td1"
+        ],
+        "n": 9,
+        "types": {
+          "action": 5,
+          "emotion": 1,
+          "thing": 3
+        },
+        "recall": 0.5,
+        "contam": 0.0,
+        "filter_in": 4,
+        "filter_out": 4
+      },
+      {
+        "id": "a08_recommend",
+        "scenario": "a08_老朋友",
+        "intent": "recommend",
+        "ids": [
+          "us5",
+          "as2",
+          "us10",
+          "us7",
+          "ts4",
+          "ts3",
+          "as1",
+          "us1",
+          "us6",
+          "ts1"
+        ],
+        "n": 10,
+        "types": {
+          "status": 1,
+          "action": 4,
+          "person": 1,
+          "emotion": 1,
+          "thing": 3
+        },
+        "recall": 0.6666666666666666,
+        "contam": 0.0,
+        "filter_in": 6,
+        "filter_out": 6
+      },
+      {
+        "id": "a09_vent",
+        "scenario": "a09_未来焦虑",
+        "intent": "vent",
+        "ids": [
+          "uh6",
+          "al8",
+          "ul3",
+          "uh7",
+          "uh2",
+          "uc10",
+          "uh8",
+          "ul4",
+          "uc1",
+          "uh5"
+        ],
+        "n": 10,
+        "types": {
+          "emotion": 1,
+          "action": 6,
+          "status": 3
+        },
+        "recall": 0.0,
+        "contam": 0.0,
+        "filter_in": 31,
+        "filter_out": 23
+      },
+      {
+        "id": "a09_plan",
+        "scenario": "a09_未来焦虑",
+        "intent": "plan",
+        "ids": [
+          "um6",
+          "uw2",
+          "aw1",
+          "uw6",
+          "tl4",
+          "aw2",
+          "uw7",
+          "aw9",
+          "aw5",
+          "aw4"
+        ],
+        "n": 10,
+        "types": {
+          "emotion": 1,
+          "action": 8,
+          "thing": 1
+        },
+        "recall": 0.0,
+        "contam": 0.0,
+        "filter_in": 29,
+        "filter_out": 29
+      },
+      {
+        "id": "a09_recommend",
+        "scenario": "a09_未来焦虑",
+        "intent": "recommend",
+        "ids": [
+          "uc4",
+          "uc3",
+          "uc10",
+          "uc5",
+          "uw13",
+          "ac1",
+          "uh8",
+          "aw9",
+          "uc1",
+          "uc6"
+        ],
+        "n": 10,
+        "types": {
+          "action": 6,
+          "status": 3,
+          "emotion": 1
+        },
+        "recall": 0.25,
+        "contam": 0.0,
+        "filter_in": 33,
+        "filter_out": 30
+      },
+      {
+        "id": "a10_vent",
+        "scenario": "a10_拖延",
+        "intent": "vent",
+        "ids": [
+          "ud7",
+          "uh6",
+          "uw2",
+          "uw6",
+          "ul3",
+          "al8",
+          "aw9",
+          "uh2",
+          "uh7",
+          "uh8"
+        ],
+        "n": 10,
+        "types": {
+          "status": 2,
+          "emotion": 1,
+          "action": 7
+        },
+        "recall": 0.0,
+        "contam": 0.0,
+        "filter_in": 29,
+        "filter_out": 26
+      },
+      {
+        "id": "a10_plan",
+        "scenario": "a10_拖延",
+        "intent": "plan",
+        "ids": [
+          "uw4",
+          "uw3",
+          "uw2",
+          "ud7",
+          "aw3",
+          "uw7",
+          "uw8",
+          "aw1",
+          "tw7",
+          "um6"
+        ],
+        "n": 10,
+        "types": {
+          "action": 6,
+          "status": 1,
+          "emotion": 2,
+          "thing": 1
+        },
+        "recall": 0.3333333333333333,
+        "contam": 0.0,
+        "filter_in": 21,
+        "filter_out": 21
+      },
+      {
+        "id": "a10_recommend",
+        "scenario": "a10_拖延",
+        "intent": "recommend",
+        "ids": [
+          "ul5",
+          "ud7",
+          "ud6",
+          "td1",
+          "th3",
+          "ah4",
+          "tl3",
+          "al6",
+          "ad6",
+          "ud2"
+        ],
+        "n": 10,
+        "types": {
+          "action": 5,
+          "status": 1,
+          "emotion": 1,
+          "thing": 3
+        },
+        "recall": 0.3333333333333333,
+        "contam": 0.0,
+        "filter_in": 10,
+        "filter_out": 9
+      }
+    ],
+    "0.45": [
+      {
+        "id": "a01_vent",
+        "scenario": "a01_工作强度",
+        "intent": "vent",
+        "ids": [
+          "uw2",
+          "uw3",
+          "aw9",
+          "uw14",
+          "uw9",
+          "uw8",
+          "ud6",
+          "td3",
+          "tl2"
+        ],
+        "n": 9,
+        "types": {
+          "action": 3,
+          "reason": 1,
+          "emotion": 3,
+          "thing": 2
+        },
+        "recall": 1.0,
+        "contam": 0.0,
+        "filter_in": 14,
+        "filter_out": 4
+      },
+      {
+        "id": "a01_plan",
+        "scenario": "a01_工作强度",
+        "intent": "plan",
+        "ids": [
+          "tw7",
+          "uw4",
+          "uw2",
+          "aw3",
+          "aw1",
+          "tw6",
+          "tc4",
+          "aw2",
+          "uw3",
+          "tw1"
+        ],
+        "n": 10,
+        "types": {
+          "thing": 4,
+          "action": 6
+        },
+        "recall": 0.8,
+        "contam": 0.0,
+        "filter_in": 12,
+        "filter_out": 7
+      },
+      {
+        "id": "a01_recommend",
+        "scenario": "a01_工作强度",
+        "intent": "recommend",
+        "ids": [
+          "ah4",
+          "aw6",
+          "al8",
+          "td3",
+          "tl2"
+        ],
+        "n": 5,
+        "types": {
+          "action": 3,
+          "thing": 2
+        },
+        "recall": 0.0,
+        "contam": 0.0,
+        "filter_in": 3,
+        "filter_out": 0
+      },
+      {
+        "id": "a02_vent",
+        "scenario": "a02_作息",
+        "intent": "vent",
+        "ids": [
+          "ud9",
+          "ud6",
+          "uw9",
+          "ul8",
+          "ud7",
+          "th8"
+        ],
+        "n": 6,
+        "types": {
+          "status": 2,
+          "emotion": 3,
+          "thing": 1
+        },
+        "recall": 1.0,
+        "contam": 0.0,
+        "filter_in": 8,
+        "filter_out": 1
+      },
+      {
+        "id": "a02_plan",
+        "scenario": "a02_作息",
+        "intent": "plan",
+        "ids": [
+          "ud2",
+          "ad6",
+          "al6",
+          "ah4",
+          "th8",
+          "ud7"
+        ],
+        "n": 6,
+        "types": {
+          "action": 4,
+          "thing": 1,
+          "status": 1
+        },
+        "recall": 0.3333333333333333,
+        "contam": 0.0,
+        "filter_in": 7,
+        "filter_out": 1
+      },
+      {
+        "id": "a02_recommend",
+        "scenario": "a02_作息",
+        "intent": "recommend",
+        "ids": [
+          "ud1",
+          "ud2",
+          "ad4",
+          "ad1",
+          "ad6",
+          "ad3",
+          "ud8",
+          "th8",
+          "ud7"
+        ],
+        "n": 9,
+        "types": {
+          "action": 7,
+          "thing": 1,
+          "status": 1
+        },
+        "recall": 0.5,
+        "contam": 0.0,
+        "filter_in": 9,
+        "filter_out": 4
+      },
+      {
+        "id": "a03_vent",
+        "scenario": "a03_成长回顾",
+        "intent": "vent",
+        "ids": [
+          "uh6",
+          "us7",
+          "uh3",
+          "um6",
+          "ud4",
+          "td5"
+        ],
+        "n": 6,
+        "types": {
+          "emotion": 4,
+          "status": 1,
+          "thing": 1
+        },
+        "recall": 0.0,
+        "contam": 0.0,
+        "filter_in": 8,
+        "filter_out": 1
+      },
+      {
+        "id": "a03_plan",
+        "scenario": "a03_成长回顾",
+        "intent": "plan",
+        "ids": [
+          "ah2",
+          "am4",
+          "th2",
+          "ah6",
+          "th3",
+          "ah3",
+          "th1",
+          "ah1",
+          "ud4",
+          "um6"
+        ],
+        "n": 10,
+        "types": {
+          "action": 5,
+          "thing": 3,
+          "status": 1,
+          "emotion": 1
+        },
+        "recall": 0.6666666666666666,
+        "contam": 0.0,
+        "filter_in": 12,
+        "filter_out": 5
+      },
+      {
+        "id": "a03_recommend",
+        "scenario": "a03_成长回顾",
+        "intent": "recommend",
+        "ids": [
+          "am4",
+          "ul3",
+          "ud3",
+          "al2",
+          "al1",
+          "ul1",
+          "ul4",
+          "ah6",
+          "ac3",
+          "al3"
+        ],
+        "n": 10,
+        "types": {
+          "action": 9,
+          "status": 1
+        },
+        "recall": 0.3333333333333333,
+        "contam": 0.0,
+        "filter_in": 19,
+        "filter_out": 7
+      },
+      {
+        "id": "a04_vent",
+        "scenario": "a04_社交安排",
+        "intent": "vent",
+        "ids": [
+          "uh3",
+          "ul8",
+          "us7",
+          "ts1",
+          "ts3"
+        ],
+        "n": 5,
+        "types": {
+          "emotion": 3,
+          "thing": 2
+        },
+        "recall": 0.3333333333333333,
+        "contam": 0.0,
+        "filter_in": 7,
+        "filter_out": 0
+      },
+      {
+        "id": "a04_plan",
+        "scenario": "a04_社交安排",
+        "intent": "plan",
+        "ids": [
+          "as2",
+          "us2",
+          "ts5",
+          "ts2",
+          "as4",
+          "us1",
+          "us8",
+          "as1",
+          "ts3",
+          "ts1"
+        ],
+        "n": 10,
+        "types": {
+          "action": 6,
+          "thing": 4
+        },
+        "recall": 1.0,
+        "contam": 0.0,
+        "filter_in": 7,
+        "filter_out": 5
+      },
+      {
+        "id": "a04_recommend",
+        "scenario": "a04_社交安排",
+        "intent": "recommend",
+        "ids": [
+          "aw2",
+          "as2",
+          "as1",
+          "us1",
+          "aw1",
+          "ts3",
+          "ts1"
+        ],
+        "n": 7,
+        "types": {
+          "action": 5,
+          "thing": 2
+        },
+        "recall": 0.6666666666666666,
+        "contam": 0.0,
+        "filter_in": 5,
+        "filter_out": 2
+      },
+      {
+        "id": "a05_vent",
+        "scenario": "a05_学习进度",
+        "intent": "vent",
+        "ids": [
+          "uh6",
+          "al8",
+          "ul8",
+          "uh3",
+          "uc6",
+          "ul1",
+          "tl1"
+        ],
+        "n": 7,
+        "types": {
+          "emotion": 4,
+          "action": 1,
+          "status": 1,
+          "thing": 1
+        },
+        "recall": 0.6666666666666666,
+        "contam": 0.0,
+        "filter_in": 14,
+        "filter_out": 2
+      },
+      {
+        "id": "a05_plan",
+        "scenario": "a05_学习进度",
+        "intent": "plan",
+        "ids": [
+          "ul3",
+          "al3",
+          "al1",
+          "al2",
+          "al5",
+          "ul5",
+          "al4",
+          "al6",
+          "tl2",
+          "ul4"
+        ],
+        "n": 10,
+        "types": {
+          "action": 9,
+          "thing": 1
+        },
+        "recall": 0.6666666666666666,
+        "contam": 0.0,
+        "filter_in": 9,
+        "filter_out": 7
+      },
+      {
+        "id": "a05_recommend",
+        "scenario": "a05_学习进度",
+        "intent": "recommend",
+        "ids": [
+          "al2",
+          "al1",
+          "al5",
+          "ul4",
+          "ul3",
+          "al4",
+          "uw3",
+          "aw2",
+          "al3",
+          "al7"
+        ],
+        "n": 10,
+        "types": {
+          "action": 10
+        },
+        "recall": 1.0,
+        "contam": 0.0,
+        "filter_in": 16,
+        "filter_out": 8
+      },
+      {
+        "id": "a06_vent",
+        "scenario": "a06_职业想法",
+        "intent": "vent",
+        "ids": [
+          "uw8",
+          "uw9",
+          "ul8",
+          "td2",
+          "tl1"
+        ],
+        "n": 5,
+        "types": {
+          "emotion": 3,
+          "thing": 2
+        },
+        "recall": 0.6666666666666666,
+        "contam": 0.0,
+        "filter_in": 6,
+        "filter_out": 0
+      },
+      {
+        "id": "a06_plan",
+        "scenario": "a06_职业想法",
+        "intent": "plan",
+        "ids": [
+          "aw2",
+          "uw2",
+          "uw3",
+          "uc17",
+          "uw4",
+          "ac5",
+          "aw1",
+          "al6",
+          "tl1",
+          "uw9"
+        ],
+        "n": 10,
+        "types": {
+          "action": 8,
+          "thing": 1,
+          "emotion": 1
+        },
+        "recall": 0.3333333333333333,
+        "contam": 0.0,
+        "filter_in": 19,
+        "filter_out": 5
+      },
+      {
+        "id": "a06_recommend",
+        "scenario": "a06_职业想法",
+        "intent": "recommend",
+        "ids": [
+          "aw9",
+          "aw8",
+          "uw11",
+          "uw2",
+          "tl1",
+          "uw9"
+        ],
+        "n": 6,
+        "types": {
+          "action": 3,
+          "status": 1,
+          "thing": 1,
+          "emotion": 1
+        },
+        "recall": 0.6666666666666666,
+        "contam": 0.0,
+        "filter_in": 8,
+        "filter_out": 1
+      },
+      {
+        "id": "a07_vent",
+        "scenario": "a07_身体状态",
+        "intent": "vent",
+        "ids": [
+          "uh6",
+          "uw9",
+          "us7",
+          "uh3",
+          "um1",
+          "ud9"
+        ],
+        "n": 6,
+        "types": {
+          "emotion": 4,
+          "status": 2
+        },
+        "recall": 0.25,
+        "contam": 0.0,
+        "filter_in": 12,
+        "filter_out": 1
+      },
+      {
+        "id": "a07_plan",
+        "scenario": "a07_身体状态",
+        "intent": "plan",
+        "ids": [
+          "aw2",
+          "uw3",
+          "uw4",
+          "ud5",
+          "am1",
+          "tw7",
+          "ad2",
+          "um2",
+          "tw1",
+          "aw1"
+        ],
+        "n": 10,
+        "types": {
+          "action": 8,
+          "thing": 2
+        },
+        "recall": 0.0,
+        "contam": 0.0,
+        "filter_in": 19,
+        "filter_out": 11
+      },
+      {
+        "id": "a07_recommend",
+        "scenario": "a07_身体状态",
+        "intent": "recommend",
+        "ids": [
+          "am1",
+          "um2",
+          "ah4",
+          "ad6",
+          "al8",
+          "ud9",
+          "um1"
+        ],
+        "n": 7,
+        "types": {
+          "action": 5,
+          "status": 2
+        },
+        "recall": 0.5,
+        "contam": 0.0,
+        "filter_in": 8,
+        "filter_out": 2
+      },
+      {
+        "id": "a08_vent",
+        "scenario": "a08_老朋友",
+        "intent": "vent",
+        "ids": [
+          "uc16",
+          "us7",
+          "us5",
+          "uc7",
+          "us1",
+          "ts1"
+        ],
+        "n": 6,
+        "types": {
+          "emotion": 2,
+          "status": 2,
+          "action": 1,
+          "thing": 1
+        },
+        "recall": 0.3333333333333333,
+        "contam": 0.0,
+        "filter_in": 8,
+        "filter_out": 1
+      },
+      {
+        "id": "a08_plan",
+        "scenario": "a08_老朋友",
+        "intent": "plan",
+        "ids": [
+          "as2",
+          "us3",
+          "us7",
+          "us1",
+          "as1",
+          "us4",
+          "ts1",
+          "td1"
+        ],
+        "n": 8,
+        "types": {
+          "action": 5,
+          "emotion": 1,
+          "thing": 2
+        },
+        "recall": 0.5,
+        "contam": 0.0,
+        "filter_in": 4,
+        "filter_out": 3
+      },
+      {
+        "id": "a08_recommend",
+        "scenario": "a08_老朋友",
+        "intent": "recommend",
+        "ids": [
+          "as2",
+          "as1",
+          "us1",
+          "us6",
+          "ts1",
+          "td1"
+        ],
+        "n": 6,
+        "types": {
+          "action": 4,
+          "thing": 2
+        },
+        "recall": 0.6666666666666666,
+        "contam": 0.0,
+        "filter_in": 6,
+        "filter_out": 1
+      },
+      {
+        "id": "a09_vent",
+        "scenario": "a09_未来焦虑",
+        "intent": "vent",
+        "ids": [
+          "uc10",
+          "uc6",
+          "ul8",
+          "uh3",
+          "ts1",
+          "tl1"
+        ],
+        "n": 6,
+        "types": {
+          "status": 1,
+          "emotion": 3,
+          "thing": 2
+        },
+        "recall": 0.6666666666666666,
+        "contam": 0.0,
+        "filter_in": 13,
+        "filter_out": 1
+      },
+      {
+        "id": "a09_plan",
+        "scenario": "a09_未来焦虑",
+        "intent": "plan",
+        "ids": [
+          "uw2",
+          "aw1",
+          "aw2",
+          "uw4",
+          "am3",
+          "am4",
+          "tw7",
+          "ul7",
+          "aw3",
+          "tl1"
+        ],
+        "n": 10,
+        "types": {
+          "action": 8,
+          "thing": 2
+        },
+        "recall": 0.3333333333333333,
+        "contam": 0.0,
+        "filter_in": 18,
+        "filter_out": 7
+      },
+      {
+        "id": "a09_recommend",
+        "scenario": "a09_未来焦虑",
+        "intent": "recommend",
+        "ids": [
+          "uc4",
+          "ac2",
+          "ah6",
+          "ac3",
+          "tl1",
+          "ts1"
+        ],
+        "n": 6,
+        "types": {
+          "action": 4,
+          "thing": 2
+        },
+        "recall": 0.0,
+        "contam": 0.0,
+        "filter_in": 11,
+        "filter_out": 1
+      },
+      {
+        "id": "a10_vent",
+        "scenario": "a10_拖延",
+        "intent": "vent",
+        "ids": [
+          "ud7",
+          "uh3",
+          "uw9",
+          "ul8",
+          "ud9",
+          "ud2"
+        ],
+        "n": 6,
+        "types": {
+          "status": 2,
+          "emotion": 3,
+          "action": 1
+        },
+        "recall": 1.0,
+        "contam": 0.0,
+        "filter_in": 11,
+        "filter_out": 1
+      },
+      {
+        "id": "a10_plan",
+        "scenario": "a10_拖延",
+        "intent": "plan",
+        "ids": [
+          "uw4",
+          "uw3",
+          "uw2",
+          "aw3",
+          "aw1",
+          "aw2",
+          "am4",
+          "ud2",
+          "ud9"
+        ],
+        "n": 9,
+        "types": {
+          "action": 8,
+          "status": 1
+        },
+        "recall": 0.3333333333333333,
+        "contam": 0.0,
+        "filter_in": 16,
+        "filter_out": 4
+      },
+      {
+        "id": "a10_recommend",
+        "scenario": "a10_拖延",
+        "intent": "recommend",
+        "ids": [
+          "ah4",
+          "al6",
+          "ad6",
+          "ud2",
+          "ud9"
+        ],
+        "n": 5,
+        "types": {
+          "action": 4,
+          "status": 1
+        },
+        "recall": 0.3333333333333333,
+        "contam": 0.0,
+        "filter_in": 6,
+        "filter_out": 0
+      }
+    ],
+    "0.55": [
+      {
+        "id": "a01_vent",
+        "scenario": "a01_工作强度",
+        "intent": "vent",
+        "ids": [
+          "uw9",
+          "uw8",
+          "ud6",
+          "td3",
+          "tl2"
+        ],
+        "n": 5,
+        "types": {
+          "emotion": 3,
+          "thing": 2
+        },
+        "recall": 0.5,
+        "contam": 0.0,
+        "filter_in": 5,
+        "filter_out": 0
+      },
+      {
+        "id": "a01_plan",
+        "scenario": "a01_工作强度",
+        "intent": "plan",
+        "ids": [
+          "uw4",
+          "tw7",
+          "aw1",
+          "aw2",
+          "uw3",
+          "td3",
+          "tl2"
+        ],
+        "n": 7,
+        "types": {
+          "action": 4,
+          "thing": 3
+        },
+        "recall": 0.8,
+        "contam": 0.0,
+        "filter_in": 7,
+        "filter_out": 2
+      },
+      {
+        "id": "a01_recommend",
+        "scenario": "a01_工作强度",
+        "intent": "recommend",
+        "ids": [
+          "ah4",
+          "aw6",
+          "al8",
+          "td3",
+          "tl2"
+        ],
+        "n": 5,
+        "types": {
+          "action": 3,
+          "thing": 2
+        },
+        "recall": 0.0,
+        "contam": 0.0,
+        "filter_in": 3,
+        "filter_out": 0
+      },
+      {
+        "id": "a02_vent",
+        "scenario": "a02_作息",
+        "intent": "vent",
+        "ids": [
+          "ud6",
+          "uw9",
+          "ul8",
+          "ud7",
+          "th8"
+        ],
+        "n": 5,
+        "types": {
+          "emotion": 3,
+          "status": 1,
+          "thing": 1
+        },
+        "recall": 0.6666666666666666,
+        "contam": 0.0,
+        "filter_in": 8,
+        "filter_out": 0
+      },
+      {
+        "id": "a02_plan",
+        "scenario": "a02_作息",
+        "intent": "plan",
+        "ids": [
+          "ad6",
+          "al6",
+          "ah4",
+          "th8",
+          "ud7"
+        ],
+        "n": 5,
+        "types": {
+          "action": 3,
+          "thing": 1,
+          "status": 1
+        },
+        "recall": 0.3333333333333333,
+        "contam": 0.0,
+        "filter_in": 6,
+        "filter_out": 0
+      },
+      {
+        "id": "a02_recommend",
+        "scenario": "a02_作息",
+        "intent": "recommend",
+        "ids": [
+          "ad6",
+          "ad3",
+          "ud8",
+          "th8",
+          "ud7"
+        ],
+        "n": 5,
+        "types": {
+          "action": 3,
+          "thing": 1,
+          "status": 1
+        },
+        "recall": 0.0,
+        "contam": 0.0,
+        "filter_in": 6,
+        "filter_out": 0
+      },
+      {
+        "id": "a03_vent",
+        "scenario": "a03_成长回顾",
+        "intent": "vent",
+        "ids": [
+          "us7",
+          "uh3",
+          "um6",
+          "ud4",
+          "td5"
+        ],
+        "n": 5,
+        "types": {
+          "emotion": 3,
+          "status": 1,
+          "thing": 1
+        },
+        "recall": 0.0,
+        "contam": 0.0,
+        "filter_in": 7,
+        "filter_out": 0
+      },
+      {
+        "id": "a03_plan",
+        "scenario": "a03_成长回顾",
+        "intent": "plan",
+        "ids": [
+          "ah6",
+          "ah3",
+          "ah1",
+          "ud4",
+          "um6"
+        ],
+        "n": 5,
+        "types": {
+          "action": 3,
+          "status": 1,
+          "emotion": 1
+        },
+        "recall": 0.6666666666666666,
+        "contam": 0.0,
+        "filter_in": 8,
+        "filter_out": 0
+      },
+      {
+        "id": "a03_recommend",
+        "scenario": "a03_成长回顾",
+        "intent": "recommend",
+        "ids": [
+          "ah6",
+          "ac3",
+          "al3",
+          "ud4",
+          "um6"
+        ],
+        "n": 5,
+        "types": {
+          "action": 3,
+          "status": 1,
+          "emotion": 1
+        },
+        "recall": 0.0,
+        "contam": 0.0,
+        "filter_in": 7,
+        "filter_out": 0
+      },
+      {
+        "id": "a04_vent",
+        "scenario": "a04_社交安排",
+        "intent": "vent",
+        "ids": [
+          "uh3",
+          "ul8",
+          "us7",
+          "ts1",
+          "ts3"
+        ],
+        "n": 5,
+        "types": {
+          "emotion": 3,
+          "thing": 2
+        },
+        "recall": 0.3333333333333333,
+        "contam": 0.0,
+        "filter_in": 7,
+        "filter_out": 0
+      },
+      {
+        "id": "a04_plan",
+        "scenario": "a04_社交安排",
+        "intent": "plan",
+        "ids": [
+          "as2",
+          "us1",
+          "us8",
+          "as1",
+          "ts3",
+          "ts1"
+        ],
+        "n": 6,
+        "types": {
+          "action": 4,
+          "thing": 2
+        },
+        "recall": 1.0,
+        "contam": 0.0,
+        "filter_in": 5,
+        "filter_out": 1
+      },
+      {
+        "id": "a04_recommend",
+        "scenario": "a04_社交安排",
+        "intent": "recommend",
+        "ids": [
+          "as1",
+          "us1",
+          "aw1",
+          "ts3",
+          "ts1"
+        ],
+        "n": 5,
+        "types": {
+          "action": 3,
+          "thing": 2
+        },
+        "recall": 0.6666666666666666,
+        "contam": 0.0,
+        "filter_in": 5,
+        "filter_out": 0
+      },
+      {
+        "id": "a05_vent",
+        "scenario": "a05_学习进度",
+        "intent": "vent",
+        "ids": [
+          "ul8",
+          "uh3",
+          "uc6",
+          "ul1",
+          "tl1"
+        ],
+        "n": 5,
+        "types": {
+          "emotion": 3,
+          "status": 1,
+          "thing": 1
+        },
+        "recall": 0.3333333333333333,
+        "contam": 0.0,
+        "filter_in": 13,
+        "filter_out": 0
+      },
+      {
+        "id": "a05_plan",
+        "scenario": "a05_学习进度",
+        "intent": "plan",
+        "ids": [
+          "ul3",
+          "al4",
+          "al6",
+          "ul4",
+          "tl1",
+          "ul1"
+        ],
+        "n": 6,
+        "types": {
+          "action": 4,
+          "thing": 1,
+          "status": 1
+        },
+        "recall": 0.6666666666666666,
+        "contam": 0.0,
+        "filter_in": 8,
+        "filter_out": 1
+      },
+      {
+        "id": "a05_recommend",
+        "scenario": "a05_学习进度",
+        "intent": "recommend",
+        "ids": [
+          "al2",
+          "al1",
+          "ul4",
+          "ul3",
+          "al4",
+          "al3",
+          "al7",
+          "aw1",
+          "ul1",
+          "tl1"
+        ],
+        "n": 10,
+        "types": {
+          "action": 8,
+          "status": 1,
+          "thing": 1
+        },
+        "recall": 0.75,
+        "contam": 0.0,
+        "filter_in": 13,
+        "filter_out": 5
+      },
+      {
+        "id": "a06_vent",
+        "scenario": "a06_职业想法",
+        "intent": "vent",
+        "ids": [
+          "uw8",
+          "uw9",
+          "ul8",
+          "td2",
+          "tl1"
+        ],
+        "n": 5,
+        "types": {
+          "emotion": 3,
+          "thing": 2
+        },
+        "recall": 0.6666666666666666,
+        "contam": 0.0,
+        "filter_in": 6,
+        "filter_out": 0
+      },
+      {
+        "id": "a06_plan",
+        "scenario": "a06_职业想法",
+        "intent": "plan",
+        "ids": [
+          "aw2",
+          "ac5",
+          "aw1",
+          "al6",
+          "tl1",
+          "uw9"
+        ],
+        "n": 6,
+        "types": {
+          "action": 4,
+          "thing": 1,
+          "emotion": 1
+        },
+        "recall": 0.3333333333333333,
+        "contam": 0.0,
+        "filter_in": 9,
+        "filter_out": 1
+      },
+      {
+        "id": "a06_recommend",
+        "scenario": "a06_职业想法",
+        "intent": "recommend",
+        "ids": [
+          "aw8",
+          "uw11",
+          "uw2",
+          "tl1",
+          "uw9"
+        ],
+        "n": 5,
+        "types": {
+          "action": 2,
+          "status": 1,
+          "thing": 1,
+          "emotion": 1
+        },
+        "recall": 0.6666666666666666,
+        "contam": 0.0,
+        "filter_in": 7,
+        "filter_out": 0
+      },
+      {
+        "id": "a07_vent",
+        "scenario": "a07_身体状态",
+        "intent": "vent",
+        "ids": [
+          "uw9",
+          "us7",
+          "uh3",
+          "um1",
+          "ud9"
+        ],
+        "n": 5,
+        "types": {
+          "emotion": 3,
+          "status": 2
+        },
+        "recall": 0.25,
+        "contam": 0.0,
+        "filter_in": 11,
+        "filter_out": 0
+      },
+      {
+        "id": "a07_plan",
+        "scenario": "a07_身体状态",
+        "intent": "plan",
+        "ids": [
+          "aw2",
+          "uw3",
+          "ud5",
+          "aw1",
+          "ud3",
+          "ad6",
+          "ud9",
+          "um1"
+        ],
+        "n": 8,
+        "types": {
+          "action": 6,
+          "status": 2
+        },
+        "recall": 0.3333333333333333,
+        "contam": 0.0,
+        "filter_in": 15,
+        "filter_out": 3
+      },
+      {
+        "id": "a07_recommend",
+        "scenario": "a07_身体状态",
+        "intent": "recommend",
+        "ids": [
+          "ah4",
+          "ad6",
+          "al8",
+          "ud9",
+          "um1"
+        ],
+        "n": 5,
+        "types": {
+          "action": 3,
+          "status": 2
+        },
+        "recall": 0.0,
+        "contam": 0.0,
+        "filter_in": 7,
+        "filter_out": 0
+      },
+      {
+        "id": "a08_vent",
+        "scenario": "a08_老朋友",
+        "intent": "vent",
+        "ids": [
+          "us7",
+          "us5",
+          "uc7",
+          "us1",
+          "ts1"
+        ],
+        "n": 5,
+        "types": {
+          "emotion": 1,
+          "status": 2,
+          "action": 1,
+          "thing": 1
+        },
+        "recall": 0.3333333333333333,
+        "contam": 0.0,
+        "filter_in": 8,
+        "filter_out": 0
+      },
+      {
+        "id": "a08_plan",
+        "scenario": "a08_老朋友",
+        "intent": "plan",
+        "ids": [
+          "us1",
+          "as1",
+          "us4",
+          "ts1",
+          "td1"
+        ],
+        "n": 5,
+        "types": {
+          "action": 3,
+          "thing": 2
+        },
+        "recall": 0.25,
+        "contam": 0.0,
+        "filter_in": 4,
+        "filter_out": 0
+      },
+      {
+        "id": "a08_recommend",
+        "scenario": "a08_老朋友",
+        "intent": "recommend",
+        "ids": [
+          "as1",
+          "us1",
+          "us6",
+          "ts1",
+          "td1"
+        ],
+        "n": 5,
+        "types": {
+          "action": 3,
+          "thing": 2
+        },
+        "recall": 0.3333333333333333,
+        "contam": 0.0,
+        "filter_in": 6,
+        "filter_out": 0
+      },
+      {
+        "id": "a09_vent",
+        "scenario": "a09_未来焦虑",
+        "intent": "vent",
+        "ids": [
+          "uc6",
+          "ul8",
+          "uh3",
+          "ts1",
+          "tl1"
+        ],
+        "n": 5,
+        "types": {
+          "emotion": 3,
+          "thing": 2
+        },
+        "recall": 0.6666666666666666,
+        "contam": 0.0,
+        "filter_in": 9,
+        "filter_out": 0
+      },
+      {
+        "id": "a09_plan",
+        "scenario": "a09_未来焦虑",
+        "intent": "plan",
+        "ids": [
+          "am4",
+          "ul7",
+          "aw3",
+          "tl1",
+          "ts1"
+        ],
+        "n": 5,
+        "types": {
+          "action": 3,
+          "thing": 2
+        },
+        "recall": 0.3333333333333333,
+        "contam": 0.0,
+        "filter_in": 5,
+        "filter_out": 0
+      },
+      {
+        "id": "a09_recommend",
+        "scenario": "a09_未来焦虑",
+        "intent": "recommend",
+        "ids": [
+          "ac2",
+          "ah6",
+          "ac3",
+          "tl1",
+          "ts1"
+        ],
+        "n": 5,
+        "types": {
+          "action": 3,
+          "thing": 2
+        },
+        "recall": 0.0,
+        "contam": 0.0,
+        "filter_in": 5,
+        "filter_out": 0
+      },
+      {
+        "id": "a10_vent",
+        "scenario": "a10_拖延",
+        "intent": "vent",
+        "ids": [
+          "uh3",
+          "uw9",
+          "ul8",
+          "ud9",
+          "ud2"
+        ],
+        "n": 5,
+        "types": {
+          "emotion": 3,
+          "status": 1,
+          "action": 1
+        },
+        "recall": 1.0,
+        "contam": 0.0,
+        "filter_in": 11,
+        "filter_out": 0
+      },
+      {
+        "id": "a10_plan",
+        "scenario": "a10_拖延",
+        "intent": "plan",
+        "ids": [
+          "aw1",
+          "aw2",
+          "am4",
+          "ud2",
+          "ud9"
+        ],
+        "n": 5,
+        "types": {
+          "action": 4,
+          "status": 1
+        },
+        "recall": 0.3333333333333333,
+        "contam": 0.0,
+        "filter_in": 6,
+        "filter_out": 0
+      },
+      {
+        "id": "a10_recommend",
+        "scenario": "a10_拖延",
+        "intent": "recommend",
+        "ids": [
+          "ah4",
+          "al6",
+          "ad6",
+          "ud2",
+          "ud9"
+        ],
+        "n": 5,
+        "types": {
+          "action": 4,
+          "status": 1
+        },
+        "recall": 0.3333333333333333,
+        "contam": 0.0,
+        "filter_in": 6,
+        "filter_out": 0
+      }
+    ]
+  }
+}

@@ -34,11 +34,16 @@ dist/
 .venv_mem0/
 .venv_graphiti/
 .venv/
-eval/
 frameworks/
 build_lifemem.py
-dba_eval/
+/dba_eval/
 LiFEMem*
+
+# 评测目录：源码、数据集与统计产物随预印本 artifact 开源；
+# 向量缓存、完整上下文全文、历史批次产物仍不入库。
+/eval/.cache/
+/eval/outputs/
+/eval/__pycache__/
 
 # 介绍网站产物（仅本地使用，不入库）
 website/
@@ -116,3 +121,9 @@ engine*
 
 # 本地演示服务（仅本机运行，不入库）
 /ariadne_service/
+
+# 论文源码随预印本 artifact 开源；本地打包物、历史 PDF 与中文草稿不入库。
+/docs/paper/*
+!/docs/paper/latex/
+!/docs/paper/figs/
+/docs/paper/PAR-overleaf.zip

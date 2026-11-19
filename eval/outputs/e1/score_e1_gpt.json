@@ -1,0 +1,235 @@
+{
+  "meta": {
+    "judge_model": "gpt-5.6-luna",
+    "method": "joint_1pass",
+    "rubric": [
+      "记忆丰富度",
+      "易理解性",
+      "用户建模度"
+    ],
+    "abstain_excluded": true
+  },
+  "summary": {
+    "Ariadne": {
+      "n": 70,
+      "total": 4.46,
+      "记忆丰富度": 4.66,
+      "易理解性": 4.2,
+      "用户建模度": 4.53
+    },
+    "Graphiti": {
+      "n": 70,
+      "total": 3.77,
+      "记忆丰富度": 4.2,
+      "易理解性": 3.2,
+      "用户建模度": 3.91
+    },
+    "Mem0": {
+      "n": 70,
+      "total": 3.46,
+      "记忆丰富度": 3.84,
+      "易理解性": 3.06,
+      "用户建模度": 3.49
+    }
+  },
+  "by_category": {
+    "single_fact": {
+      "Ariadne": 4.69,
+      "Graphiti": 3.62,
+      "Mem0": 3.57
+    },
+    "preference": {
+      "Ariadne": 4.04,
+      "Graphiti": 3.71,
+      "Mem0": 3.33
+    },
+    "multi_hop": {
+      "Ariadne": 4.56,
+      "Graphiti": 3.96,
+      "Mem0": 3.59
+    },
+    "knowledge_update": {
+      "Ariadne": 4.39,
+      "Graphiti": 3.72,
+      "Mem0": 3.28
+    },
+    "temporal": {
+      "Ariadne": 4.53,
+      "Graphiti": 3.93,
+      "Mem0": 3.47
+    },
+    "cross_scene": {
+      "Ariadne": 4.33,
+      "Graphiti": 3.57,
+      "Mem0": 3.57
+    },
+    "assistant_behavior": {
+      "Ariadne": 4.46,
+      "Graphiti": 3.42,
+      "Mem0": 3.46
+    },
+    "mixed_memory": {
+      "Ariadne": 4.46,
+      "Graphiti": 4.25,
+      "Mem0": 3.29
+    }
+  },
+  "abstention": [
+    {
+      "query_id": "q27",
+      "category": "abstention",
+      "query": "我之前一直想出国留学，可惜没能成。",
+      "scores": {
+        "Ariadne": {
+          "记忆丰富度": 4.0,
+          "易理解性": 4.0,
+          "用户建模度": 2.0,
+          "total": 3.33
+        },
+        "Mem0": {
+          "记忆丰富度": 3.0,
+          "易理解性": 2.0,
+          "用户建模度": 2.0,
+          "total": 2.33
+        },
+        "Graphiti": {
+          "记忆丰富度": 4.0,
+          "易理解性": 3.0,
+          "用户建模度": 2.0,
+          "total": 3.0
+        }
+      },
+      "label_map": null
+    },
+    {
+      "query_id": "q28",
+      "category": "abstention",
+      "query": "我一直念叨想养条狗，就是一直没养成。",
+      "scores": {
+        "Ariadne": {
+          "记忆丰富度": 2.0,
+          "易理解性": 4.0,
+          "用户建模度": 2.0,
+          "total": 2.67
+        },
+        "Mem0": {
+          "记忆丰富度": 2.0,
+          "易理解性": 4.0,
+          "用户建模度": 2.0,
+          "total": 2.67
+        },
+        "Graphiti": {
+          "记忆丰富度": 2.0,
+          "易理解性": 3.0,
+          "用户建模度": 2.0,
+          "total": 2.33
+        }
+      },
+      "label_map": null
+    },
+    {
+      "query_id": "q29",
+      "category": "abstention",
+      "query": "有人建议我转去当产品经理，我有点心动。",
+      "scores": {
+        "Ariadne": {
+          "记忆丰富度": 4.0,
+          "易理解性": 5.0,
+          "用户建模度": 4.0,
+          "total": 4.33
+        },
+        "Mem0": {
+          "记忆丰富度": 3.0,
+          "易理解性": 3.0,
+          "用户建模度": 3.0,
+          "total": 3.0
+        },
+        "Graphiti": {
+          "记忆丰富度": 3.0,
+          "易理解性": 3.0,
+          "用户建模度": 3.0,
+          "total": 3.0
+        }
+      },
+      "label_map": null
+    },
+    {
+      "query_id": "q30",
+      "category": "abstention",
+      "query": "我想去北方发展，听说那边机会更多。",
+      "scores": {
+        "Ariadne": {
+          "记忆丰富度": 5.0,
+          "易理解性": 4.0,
+          "用户建模度": 4.0,
+          "total": 4.33
+        },
+        "Mem0": {
+          "记忆丰富度": 2.0,
+          "易理解性": 4.0,
+          "用户建模度": 1.0,
+          "total": 2.33
+        },
+        "Graphiti": {
+          "记忆丰富度": 3.0,
+          "易理解性": 3.0,
+          "用户建模度": 3.0,
+          "total": 3.0
+        }
+      },
+      "label_map": null
+    },
+    {
+      "query_id": "q75",
+      "category": "abstention",
+      "query": "我想开一家自己的咖啡店，正在攒启动资金。",
+      "scores": {
+        "Ariadne": {
+          "记忆丰富度": 1.0,
+          "易理解性": 4.0,
+          "用户建模度": 1.0,
+          "total": 2.0
+        },
+        "Mem0": {
+          "记忆丰富度": 2.0,
+          "易理解性": 3.0,
+          "用户建模度": 2.0,
+          "total": 2.33
+        },
+        "Graphiti": {
+          "记忆丰富度": 2.0,
+          "易理解性": 3.0,
+          "用户建模度": 2.0,
+          "total": 2.33
+        }
+      },
+      "label_map": null
+    },
+    {
+      "query_id": "q76",
+      "category": "abstention",
+      "query": "我最新一次体检医生说我有点高血压。",
+      "scores": {
+        "Ariadne": {
+          "记忆丰富度": 3.0,
+          "易理解性": 4.0,
+          "用户建模度": 3.0,
+          "total": 3.33
+        },
+        "Mem0": {
+          "记忆丰富度": 3.0,
+          "易理解性": 3.0,
+          "用户建模度": 3.0,
+          "total": 3.0
+        },
+        "Graphiti": {
+          "记忆丰富度": 4.0,
+          "易理解性": 2.0,
+          "用户建模度": 3.0,
+          "total": 3.0
+        }
+      },
+      "label_map": null
+    }
+  ]
+}

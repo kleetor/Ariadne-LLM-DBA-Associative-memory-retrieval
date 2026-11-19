@@ -16,6 +16,7 @@ from langchain_core.embeddings import Embeddings
 
 from dba_pipeline.core.jump_axis import get_jump_weight, NodeType, RelationType
 from dba_pipeline.core.purpose import PurposeModel
+from dba_pipeline.core.purpose_frame import PurposeFrame
 from dba_pipeline.core.peak_find import PeakFinder, resolve_peak_tolerance
 from dba_pipeline.graph.memory_graph import MemoryGraph
 from dba_pipeline.llm.inference import InferenceEngine, _STORY_MAX_CHARS
@@ -260,6 +261,7 @@ class PurposeDrivenRetriever:
         purpose_weight_coef: float = 0.5,
         purpose_filter_threshold: float = 0.30,
         purpose_filter_decay: float = 0.0,
+        purpose_filter_sigma: float = 0.0,
         peak_tolerance: float = 0.10,
         peak_tolerance_ratio: float = 0.0,
         path_tracker=None,
@@ -288,6 +290,12 @@ class PurposeDrivenRetriever:
         self.purpose_weight_coef = purpose_weight_coef
         self.purpose_filter_threshold = purpose_filter_threshold
         self.purpose_filter_decay = purpose_filter_decay
+        # 相对目的阈值（T1）：>0 时每跳用 `μ + k·σ` 替换绝对 τ。
+        # 为什么需要：绝对 τ 的语义随 embedding 漂移（bge-m3 的"无关基线"高达 0.40–0.55，
+        # bge-large-zh 只有 0.27），同一个 0.30 在两套模型上代表完全不同的强度。
+        # 相对形式只依赖**本跳候选自身的分布**，因而与模型尺度无关。
+        # 默认 0 = 走绝对阈值，行为与改造前逐字一致。
+        self.purpose_filter_sigma = purpose_filter_sigma
         self.path_tracker = path_tracker  # 可选：PathTracker 实例
 
     def _get_hop_threshold(self, hop: int) -> float:
@@ -300,6 +308,49 @@ class PurposeDrivenRetriever:
         if self.purpose_filter_decay > 0.0:
             return self.purpose_filter_threshold * (self.purpose_filter_decay ** hop)
         return self.purpose_filter_threshold
+
+    def _frame_scores(
+        self,
+        ids: List[str],
+        emb_scores: np.ndarray,
+        frame: PurposeFrame,
+        weights: Tuple[float, float, float],
+        rel_types: Optional[List[Any]] = None,
+        anchor_scores: Optional[np.ndarray] = None,
+        anchor: float = 0.0,
+    ) -> np.ndarray:
+        """把「嵌入余弦」与「帧亲和」合成为目的关联度。
+
+        只在调用方显式传入 `purpose_frame` 时启用；默认路径不经过这里，行为与改造前一致。
+
+        **乘性门控**，不是加性奖励：`ps = 话题相似 × (w_emb + w_type·类型亲和 + w_rel·关系亲和)`。
+        加性形式（`w_e·余弦 + w_t·亲和`）实测会让类型先验压过话题——倾诉（情绪先验）会把
+        「作息」情节的 status/emotion 节点当成证据拽进来，gold recall 从 0.58 掉到 0.23。
+        乘性形式保证：话题不像的节点，类型再对也拿不到高分。
+
+        `anchor_scores`（与 query 原文的余弦）是帧的第三维 `{主体}`：目的短语本身不含
+        「说的是谁的哪一段」，只带类型偏好时会把别的情节里同类型的节点（学习焦虑的
+        「助手建议」）当成推荐结果。`anchor>0` 时话题相似 = `(1-anchor)·目的余弦 + anchor·query 余弦`，
+        类型偏好只在当前情节内生效。
+
+        关系项只在扩展轮可用（种子轮没有入边），故种子轮把权重在 (w_emb, w_type) 上
+        重新归一——否则一个常数项会把 hop0 的 μ 整体抬高，寻峰的斜率又被尺度带偏。
+        """
+        emb = np.asarray(emb_scores, dtype=float)
+        topic = emb
+        if anchor_scores is not None and anchor > 0:
+            topic = (1.0 - float(anchor)) * emb + float(anchor) * np.asarray(anchor_scores, dtype=float)
+        w_e, w_t, w_r = (float(w) for w in weights)
+        aff = np.array([frame.type_affinity(self.graph.get_node_type(i)) for i in ids],
+                       dtype=float)
+        if rel_types is None:
+            total = (w_e + w_t) or 1.0
+            gate = (w_e + w_t * aff) / total
+            return topic * gate
+        total = (w_e + w_t + w_r) or 1.0
+        rel = np.array([frame.rel_affinity(rt) for rt in rel_types], dtype=float)
+        gate = (w_e + w_t * aff + w_r * rel) / total
+        return topic * gate
 
     def _embed(self, text: str) -> np.ndarray:
         return self.vector_store._embed(text)
@@ -484,6 +535,11 @@ class PurposeDrivenRetriever:
         purpose: Optional[List[str]] = None,
         on_stage: StageHook = None,
         max_peak_nodes: Optional[int] = None,
+        purpose_blind: bool = False,
+        seed_cos_min: Optional[float] = None,
+        purpose_frame: Optional[PurposeFrame] = None,
+        frame_weights: Tuple[float, float, float] = (0.55, 0.35, 0.10),
+        frame_anchor: float = 0.0,
     ) -> Dict:
         """执行完整的目的驱动联想检索
 
@@ -501,6 +557,23 @@ class PurposeDrivenRetriever:
                 `PEAK_NODES_AUTO`(-1) = 按叙事篇幅预算反推条数）。
                      容忍带是"整轮并集"，在大图上会把读出量顶到全图六成（实测 200 节点
                      → 124 条 / 62%），远超设计区间 5–37。
+            purpose_blind: 消融开关（默认 False，行为与改造前逐字一致）。True 时**目的通道
+                整体关闭**：不推断目的、种子只走文本、不做目的过滤、组合分不含目的项、
+                寻峰判据改用跳转权重均值（与 hop 无关）。仅用于 E4 的 no-purpose 对照。
+            seed_cos_min: 可选，**种子阶段的余弦下限**（默认 None = 不过滤，行为不变）。
+                为什么需要：种子是全局 top-k，在多主体/大图上会把"别的用户/别的领域"的
+                节点直接选进来，后续几十个节点都围绕它扩展（E10-D 实测跨主体混入的主因）。
+                给种子加一道绝对下限，比只在扩展阶段过滤更能收住方向。
+            purpose_frame: 可选，**结构化目的帧**（`core.purpose_frame.PurposeFrame`）。
+                None（默认）时目的只用「目的文本嵌入」这一路，行为与改造前逐字一致；
+                提供时目的关联度改为 `余弦 × (w_emb + w_type·类型亲和 + w_rel·关系亲和)`，
+                并在**种子重排 / 逐跳过滤 / 组合排序**三处生效。动机见 purpose_frame 模块：
+                纯文本嵌入只保留话题、丢掉检索意图（E5 实测三意图节点类型分布 TVD 仅 0.04–0.07）。
+            frame_weights: 帧通道的 (w_emb, w_type, w_rel)，内部会归一化；仅 `purpose_frame`
+                非 None 时有效。
+            frame_anchor: 帧的 `{主体}` 维权重（0–1，默认 0 = 关闭）。>0 时话题相似度取
+                `(1-a)·目的余弦 + a·query 余弦`，把类型偏好约束在**当前情节**内，
+                避免目的短语把别的情节里同类型的节点拉进来。
 
         Returns:
             {
@@ -519,42 +592,101 @@ class PurposeDrivenRetriever:
 
         # Step 1: 推断状态和目的（可注入：主 LLM 提供则跳过独立推断）
         emit_stage(on_stage, "intent_start", injected=purpose is not None, query=query)
-        if purpose is not None:
+        if purpose_blind:
+            # 消融开关（E4 `no-purpose`）：**目的通道整体关闭**——不推断、不做目的种子、
+            # 不做目的过滤、组合分不含目的项、寻峰判据改用跳转权重均值。
+            # 论文里这一条对应"去掉目的驱动"，必须同时关掉四处，否则残留任一环节
+            # 都还带着目的信息（只关过滤/加权会让种子与寻峰仍被目的牵引）。
+            purpose_info = {"status": "disabled", "purposes": []}
+        elif purpose is not None:
             purpose_info = {"status": "injected", "purposes": list(purpose)}
         else:
             purpose_info = self.inference.infer_purpose(query)
         purposes = purpose_info.get("purposes", [])
         emit_stage(on_stage, "intent_done", purpose=purpose_info)
-        purpose_vec = self.purpose_model.get_purpose_vector(purposes)
+        purpose_vec = None if purpose_blind else self.purpose_model.get_purpose_vector(purposes)
+        # 结构化帧：None 时整条链路与改造前逐字一致（目的只走文本嵌入这一路）
+        frame = None if purpose_blind else purpose_frame
+        # 帧的 {主体} 维：只有开启锚点时才需要对 query 原文编码
+        query_vec = None
+        if frame is not None and frame_anchor > 0:
+            query_vec = self._embed(query)
 
         # Step 2: 向量搜索种子记忆（混合 query text + 目的向量）
-        half_k = max(1, seed_k // 2)
-        text_seeds = self.vector_store.search(query, k=half_k)
-        purpose_seeds = self.vector_store.search_by_vector(purpose_vec, k=max(1, seed_k - half_k))
+        # 种子余弦下限（可选，`seed_cos_min`）：在多主体/大图上，全局 top-k 会把无关主体
+        # 直接选进来，后续几十个节点都围绕它扩展（E10-D 实测跨主体混入的主因）。
+        # 不足 seed_k 时**不补齐**——宁可少给种子，也不要为凑数引入无关起点。
+        def _seed_floor(pairs):
+            # `search*` 返回的是元组（id 在第 0 位、相似度在第 1 位，后续可能还有内容），
+            # 故按位取分数、**原样保留元组**，不拆包（拆包会在字段更多时直接报错）。
+            if seed_cos_min is None:
+                return pairs
+            return [r for r in pairs if float(r[1]) >= seed_cos_min]
 
-        # 合并去重，保持 text 种子优先顺序，purpose 种子补充；跳过废弃/遗忘节点
-        seen = set()
-        seed_ids = []
-        for r in text_seeds:
-            if r[0] not in seen and self._is_active(r[0]):
-                seen.add(r[0])
-                seed_ids.append(r[0])
-        for r in purpose_seeds:
-            if r[0] not in seen and len(seed_ids) < seed_k and self._is_active(r[0]):
-                seen.add(r[0])
-                seed_ids.append(r[0])
-        # 不足时用更多 text 种子补齐
-        if len(seed_ids) < seed_k:
-            extra = self.vector_store.search(query, k=seed_k * 2)
-            for r in extra:
+        if purpose_blind:
+            # 只用文本通道（原来的一半文本 + 一半目的）
+            text_seeds = _seed_floor(self.vector_store.search(query, k=seed_k))
+            purpose_seeds = []
+            seed_ids = []
+            for r in text_seeds:
+                if r[0] not in seed_ids and self._is_active(r[0]):
+                    seed_ids.append(r[0])
+                if len(seed_ids) >= seed_k:
+                    break
+        else:
+            half_k = max(1, seed_k // 2)
+            purpose_slots = max(1, seed_k - half_k)
+            text_seeds = _seed_floor(self.vector_store.search(query, k=half_k))
+            if frame is None:
+                purpose_seeds = _seed_floor(
+                    self.vector_store.search_by_vector(purpose_vec, k=purpose_slots))
+            else:
+                # 目的种子按帧重排：向量搜索只能表达"话题近"，表达不了"要哪一类节点"。
+                # 先取更大的候选池（4× 槽位），再用帧亲和重排，只保留前 purpose_slots 条。
+                pool = _seed_floor(self.vector_store.search_by_vector(
+                    purpose_vec, k=max(purpose_slots * 4, purpose_slots)))
+                pool_ids = [r[0] for r in pool]
+                pool_vecs = self.vector_store.get_content_vectors(pool_ids)
+                pool_emb = self.purpose_model.compute_purpose_score_from_vectors(
+                    pool_vecs, purpose_vec)
+                pool_q = (self.purpose_model.compute_purpose_score_from_vectors(
+                    pool_vecs, query_vec) if query_vec is not None else None)
+                pool_sc = self._frame_scores(pool_ids, pool_emb, frame, frame_weights,
+                                             anchor_scores=pool_q, anchor=frame_anchor)
+                order = np.argsort(-pool_sc)[:purpose_slots]
+                purpose_seeds = [(pool_ids[i], float(pool_sc[i])) for i in order]
+
+            # 合并去重，保持 text 种子优先顺序，purpose 种子补充；跳过废弃/遗忘节点
+            seen = set()
+            seed_ids = []
+            for r in text_seeds:
+                if r[0] not in seen and self._is_active(r[0]):
+                    seen.add(r[0])
+                    seed_ids.append(r[0])
+            for r in purpose_seeds:
                 if r[0] not in seen and len(seed_ids) < seed_k and self._is_active(r[0]):
                     seen.add(r[0])
                     seed_ids.append(r[0])
+            # 不足时用更多 text 种子补齐
+            if len(seed_ids) < seed_k:
+                extra = self.vector_store.search(query, k=seed_k * 2)
+                for r in extra:
+                    if r[0] not in seen and len(seed_ids) < seed_k and self._is_active(r[0]):
+                        seen.add(r[0])
+                        seed_ids.append(r[0])
         # 计算种子轮目的关联度（使用预缓存向量，无 API 调用）
-        seed_vectors = self.vector_store.get_content_vectors(seed_ids)
-        seed_scores = self.purpose_model.compute_purpose_score_from_vectors(
-            seed_vectors, purpose_vec
-        )
+        if purpose_blind:
+            seed_scores = np.zeros(len(seed_ids))
+        else:
+            seed_vectors = self.vector_store.get_content_vectors(seed_ids)
+            seed_scores = self.purpose_model.compute_purpose_score_from_vectors(
+                seed_vectors, purpose_vec
+            )
+            if frame is not None:
+                seed_q = (self.purpose_model.compute_purpose_score_from_vectors(
+                    seed_vectors, query_vec) if query_vec is not None else None)
+                seed_scores = self._frame_scores(seed_ids, seed_scores, frame, frame_weights,
+                                                 anchor_scores=seed_q, anchor=frame_anchor)
         # 寻峰判据统一取**目的关联度均值**（与跳数无关）：组合分里的跳转项带
         # `decay^hop` 确定性衰减，喂给寻峰会让斜率被衰减主导、峰值判据失真；
         # 且种子轮本就没有跳转项，两者不同尺度不该进同一条斜率序列。
@@ -562,8 +694,13 @@ class PurposeDrivenRetriever:
         emit_stage(on_stage, "seeds", ids=seed_ids, mean_score=round(mu_0, 4),
                    text_hits=len(text_seeds), purpose_hits=len(purpose_seeds))
 
+        # 种子轮（hop 0）**不参与寻峰与容忍带**：它是检索入口（M_0），不是联想过程中的一轮。
+        # 它的 μ 在「与 query 最相似的 k 条」上计算，与扩展轮（邻居候选）是两个总体，
+        # 天然偏高；把它塞进同一条斜率序列会让 peak_index 恒停在 0，容忍带退化为
+        # 「允许比种子轮低多少」——实测 μ0−μ1 常超过 δ=0.10，整轮 hop1 被剔除，
+        # 输出只剩 5 个种子（E1 76 条中 36 条如此）。M_0 仍**无条件**进输出，
+        # 见 `_collect_peak_tolerance`。
         self.peak_finder.reset()
-        self.peak_finder.add_round(mu_0)  # 首轮必返回 continue（见 PeakFinder.add_round）
 
         # Step 3-6: 循环扩展
         current_ids = list(seed_ids)
@@ -605,20 +742,45 @@ class PurposeDrivenRetriever:
                             self.path_tracker.record_activation(pk)
             if not expanded:
                 emit_stage(on_stage, "hop", hop=hop, expanded=0, kept=0, stop="无可扩展邻居")
-                result_ids = current_ids
+                # 扩展耗尽只是**终止条件**，不是"输出就是当前前沿"：论文定义的输出是
+                # 「M_0 ∪ 峰值容忍带内各轮候选」的去重并集（`_collect_peak_tolerance`）。
+                # 早期版本在此直接 `result_ids = current_ids`，会把种子轮与所有历史轮
+                # 一并丢掉——小图（几百节点）上扩展很快耗尽，最后一个前沿常常只有 1 条，
+                # 表现为"PAR 只返回 1 个节点"，与算法定义不符（E3 复现）。
+                result_ids = self._collect_peak_tolerance(hop_history, max_peak_nodes)
                 break
 
             # 目的过滤（使用预缓存向量，无 API 调用）；跳过废弃/遗忘节点
             candidate_ids = [mid for mid in expanded.keys() if self._is_active(mid)]
             candidate_contents = self.graph.get_contents(candidate_ids)
-            candidate_vectors = self.vector_store.get_content_vectors(candidate_ids)
-            candidate_scores = self.purpose_model.compute_purpose_score_from_vectors(
-                candidate_vectors, purpose_vec
-            )
+            if purpose_blind:
+                # 关掉目的通道后没有"目的关联度"可算，过滤器整体失效（等价 τ=0）
+                candidate_scores = np.zeros(len(candidate_ids))
+            else:
+                candidate_vectors = self.vector_store.get_content_vectors(candidate_ids)
+                candidate_scores = self.purpose_model.compute_purpose_score_from_vectors(
+                    candidate_vectors, purpose_vec
+                )
+                if frame is not None:
+                    # 扩展轮回合的关系项可用：候选是「沿某条边找到的」，边类型本身携带目的信息
+                    cand_q = (self.purpose_model.compute_purpose_score_from_vectors(
+                        candidate_vectors, query_vec) if query_vec is not None else None)
+                    candidate_scores = self._frame_scores(
+                        candidate_ids, candidate_scores, frame, frame_weights,
+                        rel_types=[expanded[mid]["rel_type"] for mid in candidate_ids],
+                        anchor_scores=cand_q, anchor=frame_anchor)
 
             filtered: Dict[str, Dict] = {}
             # {mem_id: {content, jump_weight, from, rel_type, is_reverse, purpose_score}}
-            hop_threshold = self._get_hop_threshold(hop)
+            if purpose_blind:
+                hop_threshold = 0.0
+            elif self.purpose_filter_sigma > 0 and candidate_scores.size:
+                # 相对阈值（T1）：只依赖**本跳候选自身**的分布，与 embedding 尺度无关。
+                # 取 μ+kσ 而非分位数，是为了在候选很少（<10 条）时也稳定。
+                hop_threshold = float(np.mean(candidate_scores)
+                                      + self.purpose_filter_sigma * np.std(candidate_scores))
+            else:
+                hop_threshold = self._get_hop_threshold(hop)
             for i, mid in enumerate(candidate_ids):
                 ps = float(candidate_scores[i])
                 trace = expanded[mid]
@@ -649,7 +811,9 @@ class PurposeDrivenRetriever:
             if not filtered:
                 emit_stage(on_stage, "hop", hop=hop, expanded=len(expanded), kept=0,
                            stop="目的回归过滤后为空")
-                result_ids = current_ids
+                # 同上一处终止分支：过滤为空只说明"不能再往下跳"，输出仍应是
+                # M_0 ∪ 已观测各轮的峰值容忍带，而不是只剩当前前沿。
+                result_ids = self._collect_peak_tolerance(hop_history, max_peak_nodes)
                 break
 
             # 距离衰减 + 组合得分
@@ -667,11 +831,16 @@ class PurposeDrivenRetriever:
                     "rel_type": info["rel_type"],
                     "is_reverse": info["is_reverse"],
                     "combined_score": jw * decay * self.jump_weight_coef
-                                      + ps * self.purpose_weight_coef,
+                                      + (0.0 if purpose_blind else ps * self.purpose_weight_coef),
                 }
 
             # 当前轮目的关联度均值（与跳数无关，作为寻峰判据）
-            mu_hop = float(np.mean([v["purpose_score"] for v in combined.values()]))
+            # purpose_blind 下没有目的分，改用**跳转权重均值**：它是边的静态权重，
+            # 同样与 hop 无关，不会像 combined_score 那样被 decay^hop 的确定性衰减带偏。
+            if purpose_blind:
+                mu_hop = float(np.mean([v["jump_weight"] for v in combined.values()]))
+            else:
+                mu_hop = float(np.mean([v["purpose_score"] for v in combined.values()]))
 
             # 寻峰判断
             decision = self.peak_finder.add_round(mu_hop)
@@ -691,7 +860,9 @@ class PurposeDrivenRetriever:
 
             if decision == "peak_found":
                 emit_stage(on_stage, "peak_found", hop=hop, mean_score=round(mu_hop, 4),
+                           # peak_index 现在只在扩展轮序列（hop≥1）里编号，故实际跳数需 +1
                            peak_index=self.peak_finder.peak_index,
+                           peak_hop=self.peak_finder.peak_index + 1,
                            tolerance=self.peak_finder.peak_tolerance)
                 result_ids = self._collect_peak_tolerance(hop_history, max_peak_nodes)
                 break
@@ -718,7 +889,19 @@ class PurposeDrivenRetriever:
     def _collect_peak_tolerance(
         self, hop_history: List[Dict], max_nodes: Optional[int] = None
     ) -> List[str]:
-        """峰值容忍带：取 μ ≥ peak_mean - tolerance 的所有轮候选
+        """输出 M_0 ∪ 峰值容忍带内的扩展轮候选。
+
+        **种子轮（hop 0）无条件进入输出，且不参与寻峰 / 带宽判定**：它是检索入口 M_0，
+        不是联想过程的一轮。带宽判据只作用于 hop≥1 的扩展轮：
+            μ_hop ≥ peak_mean − δ,  peak_mean = max(μ_1..μ_n)
+
+        为什么要分离（0930 复审）：hop0 的 μ 在「与 query 最相似的 k 条」上计算，与扩展轮
+        （邻居候选）是两个总体，天然偏高。早期实现把 hop0 也喂给 PeakFinder，导致
+        peak_index 恒停在 0、threshold = μ0 − δ；只要首轮扩展的轮均分比种子轮低过 δ
+        （E1 实测 0.087~0.145），整轮候选就被剔除，输出退化为 5 个种子（76 条中 36 条）。
+        反向情形同样错误：若某扩展轮反超 μ0 超过 δ，hop0 也会出带，输出连 M_0 都没有。
+
+        无扩展轮（hop_history 只有种子轮）时直接返回 M_0。
 
         max_nodes 为可选的输出条数上限（None / 0 表示不限）。**必须按 combined_score
         降序截断，不能按收集顺序截断**：容忍带是"整轮并集"，收集顺序是 hop 优先
@@ -727,37 +910,60 @@ class PurposeDrivenRetriever:
         按分数截断不会切断 StoryRank 的路径：`select_core_nodes` 回溯 parent 时会把
         被截掉的祖先节点补回分组（见其 `while nid is not None` 分支），故叙事仍成链。
         """
-        peak_mean = self.peak_finder.history[self.peak_finder.peak_index]
-        # 带宽解析：绝对（默认，= 现行 0.10，行为不变）/ 相对（ratio>0，随轮均分的观测范围自适应）
-        hop_means = [float(h.get("mean_score", 0)) for h in hop_history]
-        delta = resolve_peak_tolerance(
-            peak_mean,
-            hop_means,
-            absolute=self.peak_finder.peak_tolerance,
-            ratio=self.peak_tolerance_ratio,
-        )
-        threshold = peak_mean - delta
-        result_ids = []
+        result_ids: List[str] = []
         seen = set()
-        band_rounds = 0
         cand_total = 0
-        for h in hop_history:
-            mu = h.get("mean_score", 0)
-            cand_total += len(h.get("candidates") or [])
-            if mu >= threshold:
+
+        # M_0：无条件保留
+        seed_round = hop_history[0] if hop_history else {}
+        seed_cands = seed_round.get("candidates") or []
+        cand_total += len(seed_cands)
+        for c in seed_cands:
+            cid = c.get("id", "")
+            if cid not in seen:
+                seen.add(cid)
+                result_ids.append(cid)
+
+        # 扩展轮：只在 hop≥1 之间寻峰 / 比较容忍带
+        peak_mean = None
+        delta = 0.0
+        band_rounds = 0
+        if self.peak_finder.history:
+            peak_mean = float(self.peak_finder.history[self.peak_finder.peak_index])
+            # 带宽解析：绝对（默认，= 0.10，行为不变）/ 相对（ratio>0，随轮均分的观测范围自适应）
+            hop_means = [float(h.get("mean_score", 0)) for h in hop_history[1:]]
+            delta = resolve_peak_tolerance(
+                peak_mean,
+                hop_means,
+                absolute=self.peak_finder.peak_tolerance,
+                ratio=self.peak_tolerance_ratio,
+            )
+            threshold = peak_mean - delta
+            for h in hop_history[1:]:
+                mu = float(h.get("mean_score", 0))
+                cands = h.get("candidates") or []
+                cand_total += len(cands)
+                if mu < threshold:
+                    continue
                 band_rounds += 1
-                for c in h.get("candidates", []):
+                for c in cands:
                     cid = c.get("id", "")
                     if cid not in seen:
                         seen.add(cid)
                         result_ids.append(cid)
+        else:
+            for h in hop_history[1:]:
+                cand_total += len(h.get("candidates") or [])
+
         # 观测：把"寻峰到底筛掉了多少"直接记下来。此前只能事后用日志里的 `峰值/候选` 反推，
         # 而线上该比值恒 ≈0.80（几乎不筛）。有了 mode/delta/band_ratio 才能判断相对带宽是否真的
         # 起了作用，也才能为"按场景调参"提供读数。
         self._band_stats = {
-            "peak_mean": round(float(peak_mean), 4),
+            "peak_mean": round(float(peak_mean), 4) if peak_mean is not None else None,
             "delta": round(float(delta), 4),
             "mode": ("相对" if self.peak_tolerance_ratio > 0 else "绝对"),
+            "scope": "expanded_only",  # 种子轮不参与带宽判定
+            "seed_rounds": 1 if hop_history else 0,
             "rounds_total": len(hop_history),
             "rounds_in_band": band_rounds,
             "cand_total": cand_total,
@@ -1109,6 +1315,11 @@ class PurposeDrivenRetriever:
         max_peak_nodes: Optional[int] = None,
         extra_nodes: Optional[List[Dict]] = None,
         story: bool = True,
+        purpose_blind: bool = False,
+        seed_cos_min: Optional[float] = None,
+        purpose_frame: Optional[PurposeFrame] = None,
+        frame_weights: Tuple[float, float, float] = (0.55, 0.35, 0.10),
+        frame_anchor: float = 0.0,
     ) -> Dict:
         """检索 → 连通性粗筛 → StoryRank 故事化 →（可选）生成回复
 
@@ -1139,6 +1350,15 @@ class PurposeDrivenRetriever:
             retrieve_kwargs["purpose"] = purpose
         if max_peak_nodes:
             retrieve_kwargs["max_peak_nodes"] = max_peak_nodes
+        if purpose_blind:
+            retrieve_kwargs["purpose_blind"] = True
+        if seed_cos_min is not None:
+            retrieve_kwargs["seed_cos_min"] = seed_cos_min
+        if purpose_frame is not None:
+            retrieve_kwargs["purpose_frame"] = purpose_frame
+            retrieve_kwargs["frame_weights"] = frame_weights
+            if frame_anchor:
+                retrieve_kwargs["frame_anchor"] = frame_anchor
         result = self.retrieve(query, **retrieve_kwargs)
         peak_memories = result.get("peak_memories", [])
         hop_history = result.get("hop_history", [])

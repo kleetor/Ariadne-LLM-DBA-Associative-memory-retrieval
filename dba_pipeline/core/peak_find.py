@@ -56,16 +56,24 @@ class PeakFinder:
     """
 
     def __init__(self, patience: int = 2, min_delta: float = 0.015,
-                 peak_tolerance: float = 0.10):
+                 peak_tolerance: float = 0.10, first_peak: bool = False):
         """
         Args:
             patience: 首次下降后允许额外探索的轮数（默认 2 轮）
             min_delta: 最小变化阈值，|Δμ| < min_delta 视为持平
             peak_tolerance: 峰值容忍常数，均值在 [peak-δ, peak] 内的轮都参与输出
+            first_peak: **首个峰即停**（默认 False，行为与改造前逐字一致）。
+                为什么需要它：现行实现里 `delta > min_delta` 会**重置** `seen_decline`，
+                于是 μ 只要在链上回升一次，计时就清零、机制继续往下走。
+                而在"多种子 + 图被拉成团"的实际条件下，走完整条链的代价是**大量重复节点**
+                （近义节点互连，不同种子的链会交叉、闭合），而覆盖面的缺口可以由
+                **其他种子的第一个峰**补上。故"首峰即停"是一个刻意的取舍：
+                **宁可浅、不可深；覆盖面靠多种子互补，而不是靠单链走到底。**
         """
         self.patience = patience
         self.min_delta = min_delta
         self.peak_tolerance = peak_tolerance
+        self.first_peak = first_peak
         self.history: List[float] = []
         self.peak_index: int = 0
         self.seen_decline: bool = False
@@ -86,6 +94,10 @@ class PeakFinder:
         # 永远成不了峰值，peak_index 会停在种子轮，容忍带退化成"全收"。
         if curr >= self.history[self.peak_index]:
             self.peak_index = len(self.history) - 1
+
+        # 首峰模式：**首次显著下降立即停**，不等 patience、也不因后续回升重置。
+        if self.first_peak and delta < -self.min_delta:
+            return "peak_found"
 
         # 显著上升 → 重置下降计时
         if delta > self.min_delta:

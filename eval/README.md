@@ -4,8 +4,10 @@
 Memory Graph**（v0.5，2026-11-19）的评测代码与归档产物。论文把评测对象定义为“系统喂给下游
 模型的结构化记忆上下文块”，主指标是三个 LLM judge 的同题并排 1–5 分，检索侧指标只作机制诊断。
 
-> 已归档：预印本 DOI [10.5281/zenodo.24372785](https://doi.org/10.5281/zenodo.24372785)；
-> 本仓库 v0.5 快照 DOI [10.5281/zenodo.24372787](https://doi.org/10.5281/zenodo.24372787)。
+> 已归档：预印本 v0.5.1 DOI [10.5281/zenodo.24373015](https://doi.org/10.5281/zenodo.24373015)
+> （concept DOI [10.5281/zenodo.24372784](https://doi.org/10.5281/zenodo.24372784)）；
+> 本仓库 v0.5.1 快照 DOI [10.5281/zenodo.24373025](https://doi.org/10.5281/zenodo.24373025)
+> （concept DOI [10.5281/zenodo.24372786](https://doi.org/10.5281/zenodo.24372786)）。
 
 ## 1. 环境
 

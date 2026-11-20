@@ -30,16 +30,22 @@
 \setlength{\emergencystretch}{2em}
 
 \graphicspath{{../figs/}}
+% Figure width: ChinaXiv caps figures at 120mm; other builds use the full text width.
+\ifchinaxiv
+  \newlength{\figwidth}\setlength{\figwidth}{120mm}
+\else
+  \newlength{\figwidth}\setlength{\figwidth}{\linewidth}
+\fi
 \bibliographystyle{plainnat}
 
 \title{Purpose-Driven Associative Retrieval:\\
 Building a User-Modeling Context from a Memory Graph}
 
-\author{Siyu Chen\thanks{Preprint v0.5.1: \url{https://doi.org/10.5281/zenodo.24373015}.
-  Code, data, and evaluation scripts: \url{https://doi.org/10.5281/zenodo.24373025}.} \\
+\author{Siyu Chen\thanks{Corresponding author (E-mail: \texttt{chensiyu61@cqepc.edu.cn}).
+  Preprint v0.5.1: \url{https://doi.org/10.5281/zenodo.24373015}. Code, data, and evaluation
+  scripts: \url{https://doi.org/10.5281/zenodo.24373025}.} \\
   Chongqing Electric Power College \\
-  Chongqing, China \\
-  \texttt{chensiyu61@cqepc.edu.cn}}
+  Chongqing, China 400053}
 \date{November 2026}
 
 \hypersetup{
@@ -467,7 +473,7 @@ object.
 
 \begin{figure}[t]
   \centering
-  \includegraphics[width=\linewidth]{fig1_mechanism.pdf}
+  \includegraphics[width=\figwidth]{fig1_mechanism.pdf}
   \caption{(a) Pooling three purposes into one vector leaves the retrieved node-type mix almost
   identical across intents (E5, $n=30$; the four largest types are renormalised). (b) With three
   explicit requirements, only candidates that match both topic and type survive; additive
@@ -763,7 +769,7 @@ large reduction in reading cost, not from more information.
 
 \begin{figure}[t]
   \centering
-  \includegraphics[width=\linewidth]{fig2_e3_paired.pdf}
+  \includegraphics[width=\figwidth]{fig2_e3_paired.pdf}
   \caption{E3 per-query pairing ($n=70$). Thin lines are queries, the thick line is the mean;
   the three panels are the three judges. Same graph, same assembler, only the selection differs.}
   \label{fig:e3}
@@ -1010,7 +1016,7 @@ the global AUC. Yet TPR at FPR$=10\%$ is only 0.33 / 0.41 / 0.43 (m3) and 0.36 /
 
 \begin{figure}[t]
   \centering
-  \includegraphics[width=\linewidth]{fig3_e10_tradeoff.pdf}
+  \includegraphics[width=\figwidth]{fig3_e10_tradeoff.pdf}
   \caption{(a) Same-subject vs.\ cross-subject separability (ROC AUC, 0.5 = chance); the label
   above each bar is the difference between the two cosine means. (b) Cross-subject share of the
   output as a function of threshold and graph size; the label under the axis is the mean output

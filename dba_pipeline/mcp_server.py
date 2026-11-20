@@ -250,6 +250,11 @@ class DBAServer:
         self.frame_anchor = _parse_frame_anchor(
             os.environ.get("ARIADNE_MCP_FRAME_ANCHOR")
         )
+        # 首峰即停（论文 Limitations 记录的已知偏差）：默认关闭，保持与论文主表一致。
+        # 开启后首次显著下降即停，不再进入 patience 计时。
+        self.first_peak_enabled = _env_flag("ARIADNE_MCP_FIRST_PEAK")
+        if self.first_peak_enabled and self.retriever is not None:
+            self.retriever.peak_finder.first_peak = True
         self.reload_params(force=True)
 
     # ---- 跨进程一致性 ----

@@ -136,6 +136,11 @@ retriever 内部会归一化。格式非法、含负值或和为 0 时告警并�
 0.4 表示话题相似 = `0.6 × 目的余弦 + 0.4 × query 原文余弦`。大于 0 时每次检索会多编码一次
 query，用于把类型偏好限制在当前情节内（对应论文 E11 的 `a04`）。非法值同样告警退回 0。
 
+`ARIADNE_MCP_FIRST_PEAK=1` 切换寻峰终止：默认（关闭）在显著下降后进入 patience 计时，
+期间回升会重置；开启后**首次显著下降立即停**。受控实验（70 条查询，bge-m3）显示输出减少
+约 19%、gold recall 降 0.8pp（论文 Limitations 与 `eval/outputs/mechanism/peak_stop_real.json`）。
+默认保持关闭，与论文主表口径一致。
+
 ### 11 个 Tool
 
 | Tool                   | 说明                             |

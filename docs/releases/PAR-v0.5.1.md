@@ -61,3 +61,13 @@ pdflatex chinaxiv && bibtex chinaxiv && pdflatex chinaxiv && pdflatex chinaxiv
   E15c（换 embedding）；修正 0.30 过滤的归因、7–9 pp 混入差距、E9 的 92.1% 口径。
 - **v0.5.1**：首页补 Zenodo DOI；标题/摘要口径不变。
 - **待发布（v0.5.2）**：机构署名、通讯作者邮箱脚注、图宽、ChinaXiv 前置格式；arXiv 待 endorsement。
+
+## 7. 遗留问题
+
+- **输出规模口径待定（暂不改正文）**：正文 `6--27 nodes` 出自附录 A 的 216 节点实验；163 主图上
+  E3 实测为 5–46 条、默认配置约 30–45 条。PAR 的输出量取决于数据集与图的可达结构（峰值带宽 ×
+  实际可达轮次），**不宜写成固定区间**，也不能简单替换成另一组数字。需单独研究"输出规模与
+  图可达性的关系"后再定表述。
+- **首峰即停**：论文 Limitations 已记录（输出 −19%、recall −0.8pp）；MCP 侧只提供
+  `ARIADNE_MCP_FIRST_PEAK` 开关，默认关闭，是否改产品默认待定。
+

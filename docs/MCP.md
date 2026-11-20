@@ -90,6 +90,42 @@ ariadne-mcp --yaml data.yaml --llm-model gpt-4o-mini --llm-api-key sk-xxx \
     --embedding-model BAAI/bge-m3 --embedding-local
 ```
 
+### 检索参数
+
+运行时参数存放在图谱同目录的 `retrieval_params.yaml`（可用 `--params` 指定），启动时加载，
+之后按文件 mtime 热更新；面板与 MCP 共用同一份文件，也可通过 `dba_intervene(action=set_params)` 修改。
+
+| 参数 | 默认 | 说明 |
+|---|---|---|
+| `seed_k` | 5 | 向量种子数 |
+| `max_hops` | 5 | 最大跳数 |
+| `expand_k` | 0 | 0 表示与 `seed_k` 相同 |
+| `max_peak_nodes` | 0 | 峰值带输出上限，0 表示不限制（作用于检索侧，早于连通性粗筛） |
+| `seed_cos_min` | 0 | 种子余弦下限，0 表示不设下限；不足时不补齐 |
+| `distance_decay` | 0.85 | 每跳衰减底数 |
+| `jump_weight_coef` | 0.5 | 组合分中跳转轴权重 |
+| `purpose_weight_coef` | 0.5 | 组合分中目的关联权重 |
+| `purpose_filter_threshold` | 0.30 | 目的关联度阈值 |
+| `purpose_filter_decay` | 0 | 阈值逐跳衰减，0 表示固定 |
+| `peak_tolerance` | 0.10 | 峰值带宽（绝对）：轮均分 ≥ 峰值 − δ 的轮进入输出 |
+| `peak_tolerance_ratio` | 0 | 峰值带宽（相对）：>0 时 δ = ratio ×（峰值 − 最低轮均分），与尺度无关 |
+
+两点口径提醒：
+
+- **默认阈值 0.30 在 163 节点主图上不删除任何候选**（0/163），等价于未开启；有效工作点在
+  0.45–0.55，且以输出规模换精度（论文 §6.4、§6.10）。不要把它当成"已开启过滤"。
+- 论文的实验配置是 `seed_k=5`、`expand_k=5`、`max_hops=5`；ALM 服务使用按图规模自适应的
+  seed（`seed_k=40` 上限，163 节点图取 16）与 `expand_k=40`，两者不可直接对比。
+
+结构化目的帧（论文 E11）默认关闭，用环境变量开启：
+
+```bash
+ARIADNE_MCP_PURPOSE_FRAME=1 ariadne-mcp --yaml data.yaml ...
+```
+
+开启后，检索前先推断 purposes 并编译 `PurposeFrame`（内容类型 / 关系类型 / 时段），
+显式注入目的会跳过内部推断，不增加 LLM 调用次数。
+
 ### 11 个 Tool
 
 | Tool                   | 说明                             |

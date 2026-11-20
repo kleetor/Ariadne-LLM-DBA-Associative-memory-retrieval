@@ -39,6 +39,7 @@ from typing import Optional
 # Package installed via pip
 
 from dba_pipeline.graph.memory_graph import MemoryGraph
+from dba_pipeline.core.purpose_frame import compile_frame
 from dba_pipeline.graph.review import find_duplicate_candidates
 from dba_pipeline.kwindex import KeywordIndex, truncate_for_return
 from dba_pipeline.loader import load_graph, load_into
@@ -178,6 +179,11 @@ class DBAServer:
         )
         self._params_mtime = 0
         self.params = params_mod.default_params()
+        # 结构化目的帧（论文 E11）：默认关闭，行为与改造前一致；
+        # 开启后从推断出的 purposes 编译 PurposeFrame，并在检索时生效。
+        self.purpose_frame_enabled = os.environ.get(
+            "ARIADNE_MCP_PURPOSE_FRAME", "0"
+        ).strip().lower() in ("1", "true", "yes", "on")
         self.reload_params(force=True)
 
     # ---- 跨进程一致性 ----
@@ -540,6 +546,38 @@ class DBAServer:
             "error": "DBA pipeline not wired",
         }
 
+    def _story_kwargs(self, query: str) -> dict:
+        """两条检索工具共用的运行时参数（与面板 retrieval_params.yaml 同源）。
+
+        除 seed / hop / expand 外，还透传两个新参数：
+        - `max_peak_nodes`：峰值带输出上限（0 → None，不限制）；
+        - `seed_cos_min`：种子余弦下限（0 → None，不设下限）。
+
+        开启 `ARIADNE_MCP_PURPOSE_FRAME=1` 时，先推断 purposes 再编译结构化目的帧；
+        显式注入 purpose 会跳过检索器内部推断，因此不会多一次 LLM 调用。
+        """
+        rp = self.params.get("retrieval", {})
+        kwargs = {
+            "seed_k": int(rp.get("seed_k", 5)),
+            "max_hops": int(rp.get("max_hops", 5)),
+            "expand_k": (int(rp.get("expand_k", 0)) or None),
+            "max_peak_nodes": (int(rp.get("max_peak_nodes", 0)) or None),
+            "seed_cos_min": (float(rp.get("seed_cos_min", 0.0)) or None),
+        }
+        if self.purpose_frame_enabled and self.retriever is not None:
+            try:
+                info = self.retriever.inference.infer_purpose(query)
+                purposes = list(info.get("purposes") or []) if isinstance(info, dict) else []
+            except Exception as e:
+                logging.getLogger("mcp").warning(
+                    "结构化目的帧推断失败，退回默认目的向量: %s", e
+                )
+                purposes = []
+            if purposes:
+                kwargs["purpose"] = purposes
+                kwargs["purpose_frame"] = compile_frame(purposes)
+        return kwargs
+
     def query_memory(self, query: str, rerank_k: int = 20) -> dict:
         """检索记忆：走完整 P 链路 + StoryRank 故事化，返回记忆故事片段"""
         if self.retriever is None:
@@ -562,13 +600,11 @@ class DBAServer:
                     # StoryRank：检索 → 连通性粗筛 → 故事化（不生成回复，交由 Agent 处理）
                     # render_timestamps=True：把节点「记录于 <日期>」交给叙事整理，让上层 LLM
                     # 自己判断时间关系，而不依赖独立的时序锚点网络。
-                    # 运行时参数（面板可调）：种子数量 / 最大跳数 / 每轮扩展数
-                    rp = self.params.get("retrieval", {})
+                    # 运行时参数统一由 _story_kwargs 提供（种子/跳数/扩展数，
+                    # 以及峰值上限、种子余弦下限与可选的结构化目的帧）
                     result = self.retriever.retrieve_with_story(
                         query, with_response=False, render_timestamps=True,
-                        seed_k=int(rp.get("seed_k", 5)),
-                        max_hops=int(rp.get("max_hops", 5)),
-                        expand_k=(int(rp.get("expand_k", 0)) or None),
+                        **self._story_kwargs(query),
                     )
                 stories = result.get("stories", [])
                 # rank-k：最多返回 rerank_k 个故事片段（0 表示不截断）
@@ -816,8 +852,7 @@ class DBAServer:
 
                 result = self.retriever.retrieve_with_story(
                     query, with_response=False, render_timestamps=True,
-                    seed_k=seed_k, max_hops=max_hops, expand_k=expand_k,
-                    on_stage=on_stage,
+                    on_stage=on_stage, **self._story_kwargs(query),
                 )
             stories = result.get("stories", [])
             if rerank_k > 0:
@@ -1654,9 +1689,11 @@ TOOL_SCHEMAS = [
                         "delete_node: {node_id}；"
                         "create_edge: {source, target, rel_type}；"
                         "delete_edge: {source, target}；"
-                        "set_params: {retrieval?: {seed_k, max_hops, expand_k, temporal_*},"
+                        "set_params: {retrieval?: {seed_k, max_hops, expand_k, max_peak_nodes,"
+                        " seed_cos_min, temporal_*},"
                         " scoring?: {distance_decay, jump_weight_coef, purpose_weight_coef,"
-                        " purpose_filter_threshold, purpose_filter_decay},"
+                        " purpose_filter_threshold, purpose_filter_decay,"
+                        " peak_tolerance, peak_tolerance_ratio},"
                         " weights?: {节点类型: {关系类型: [正向, 反向]}}}"
                         "（只传要改的部分即可，未传字段保持现值；权重与系数取值区间 0~1）。"
                         "返回值提示：create_node 命中**完全相同**的内容时 success=false 并给出 duplicate_of；"

@@ -36,6 +36,10 @@ PARAM_SPEC = [
     ("seed_k", "retrieval", "种子数量", "int", 1, 50, 1, "向量检索进入联想扩张的初始种子数"),
     ("max_hops", "retrieval", "最大跳数", "int", 1, 10, 1, "联想扩张的最大跳数"),
     ("expand_k", "retrieval", "每轮扩展数", "int", 0, 50, 1, "0 表示与「种子数量」相同"),
+    ("max_peak_nodes", "retrieval", "峰值带输出上限", "int", 0, 2000, 1,
+     "0 表示不限制；作用在检索侧，早于连通性粗筛"),
+    ("seed_cos_min", "retrieval", "种子余弦下限", "float", 0.0, 1.0, 0.01,
+     "0 表示不设下限；不足种子数时不补齐，宁可少给种子"),
     ("temporal_k_seed", "retrieval", "时序工具·种子数", "int", 1, 30, 1, "定位时间锚点的候选数"),
     ("temporal_max_facts", "retrieval", "时序工具·共时事实上限", "int", 0, 50, 1, "0 表示不截断"),
     ("temporal_max_anchors", "retrieval", "时序工具·锚点上限", "int", 1, 10, 1, "最多返回的时间锚点候选数"),
@@ -44,6 +48,10 @@ PARAM_SPEC = [
     ("purpose_weight_coef", "scoring", "目的关联权重系数", "float", 0.0, 1.0, 0.05, "组合得分中目的关联度占比"),
     ("purpose_filter_threshold", "scoring", "目的回归阈值", "float", 0.0, 1.0, 0.05, "低于该目的关联度的候选被过滤"),
     ("purpose_filter_decay", "scoring", "目的阈值逐跳衰减", "float", 0.0, 1.0, 0.05, "0 表示固定阈值不衰减"),
+    ("peak_tolerance", "scoring", "峰值带宽（绝对）", "float", 0.0, 1.0, 0.01,
+     "轮均分 ≥ 峰值 − δ 的轮进入输出；δ 过大时接近全保留"),
+    ("peak_tolerance_ratio", "scoring", "峰值带宽（相对）", "float", 0.0, 1.0, 0.01,
+     ">0 时 δ = ratio ×（峰值 − 最低轮均分），与尺度无关；0 走绝对模式"),
 ]
 
 # 分组标题（面板分区展示用）
@@ -80,19 +88,23 @@ NODE_TYPE_LABELS = {
     "emotion": "情绪",
 }
 
-# 标量参数的代码默认值（与 retrieval/retriever.py:206-210 的构造函数默认值一致）
+# 标量参数的代码默认值（与 retrieval/retriever.py 的构造函数 / retrieve() 默认值一致）
 _SCALAR_DEFAULTS = {
-    "seed_k": 5,                      # retriever.py:412 retrieve(seed_k=5)
-    "max_hops": 5,                    # retriever.py:413
-    "expand_k": 0,                    # retriever.py:414（None → 用 seed_k），此处 0 表示同 seed_k
-    "temporal_k_seed": 8,             # retriever.py:285
-    "temporal_max_facts": 8,          # retriever.py:286
-    "temporal_max_anchors": 3,        # retriever.py:287
-    "distance_decay": 0.85,           # retriever.py:206
-    "jump_weight_coef": 0.5,          # retriever.py:207
-    "purpose_weight_coef": 0.5,       # retriever.py:208
-    "purpose_filter_threshold": 0.30,  # retriever.py:261（bge-m3 标定值，非 0.2）
-    "purpose_filter_decay": 0.0,      # retriever.py:210
+    "seed_k": 5,                      # retrieve(seed_k=5)
+    "max_hops": 5,                    # retrieve(max_hops=5)
+    "expand_k": 0,                    # None → 用 seed_k；此处 0 表示同 seed_k
+    "max_peak_nodes": 0,              # 0 → None，不限制
+    "seed_cos_min": 0.0,              # 0 → None，不设种子余弦下限
+    "temporal_k_seed": 8,             # temporal_lookup(k_seed=8)
+    "temporal_max_facts": 8,          # temporal_lookup(max_facts=8)
+    "temporal_max_anchors": 3,        # temporal_lookup(max_anchors=3)
+    "distance_decay": 0.85,           # PurposeDrivenRetriever(distance_decay=0.85)
+    "jump_weight_coef": 0.5,          # PurposeDrivenRetriever(jump_weight_coef=0.5)
+    "purpose_weight_coef": 0.5,       # PurposeDrivenRetriever(purpose_weight_coef=0.5)
+    "purpose_filter_threshold": 0.30,  # 构造参数；bge-m3 上标定值（非 0.2）
+    "purpose_filter_decay": 0.0,      # 构造参数；0 表示固定阈值
+    "peak_tolerance": 0.10,           # 构造参数；绝对带宽，与 PeakFinder 库默认一致
+    "peak_tolerance_ratio": 0.0,      # 构造参数；0 表示走绝对模式
 }
 
 

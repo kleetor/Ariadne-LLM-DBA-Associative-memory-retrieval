@@ -298,6 +298,19 @@ class PurposeDrivenRetriever:
         self.purpose_filter_sigma = purpose_filter_sigma
         self.path_tracker = path_tracker  # 可选：PathTracker 实例
 
+    @property
+    def peak_tolerance(self) -> float:
+        """峰值容忍带绝对带宽（代理到 PeakFinder）。
+
+        运行时调参（`params.apply`）通过 setattr 写回；若只写实例属性，
+        PeakFinder 内部的取值不会变，调参看起来"成功"但检索行为不变。
+        """
+        return self.peak_finder.peak_tolerance
+
+    @peak_tolerance.setter
+    def peak_tolerance(self, value: float) -> None:
+        self.peak_finder.peak_tolerance = float(value)
+
     def _get_hop_threshold(self, hop: int) -> float:
         """计算当前跳数的有效过滤阈值
 

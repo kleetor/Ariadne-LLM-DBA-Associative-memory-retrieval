@@ -1862,14 +1862,36 @@ TOOL_SCHEMAS = [
 ]
 
 
-def _build_tool_list() -> list:
-    """将 TOOL_SCHEMAS 转为 MCP Tool 对象列表"""
+def _spec_snapshot(extra_tools) -> dict:
+    """把 dict / ToolRegistry 统一成插件工具表快照。"""
+    if extra_tools is None:
+        return {}
+    if hasattr(extra_tools, "snapshot"):
+        return extra_tools.snapshot()
+    return dict(extra_tools)
+
+
+def _spec_for(name, extra_tools):
+    """按名字取插件工具；dict 与 ToolRegistry 都支持。"""
+    if extra_tools is None:
+        return None
+    return extra_tools.get(name)
+
+
+def _build_tool_list(extra_tools: dict = None) -> list:
+    """将 TOOL_SCHEMAS 转为 MCP Tool 对象列表；插件工具追加在后。"""
     tools = []
     for ts in TOOL_SCHEMAS:
         tools.append(Tool(
             name=ts["name"],
             description=ts["description"],
             input_schema=ts["inputSchema"],
+        ))
+    for spec in _spec_snapshot(extra_tools).values():
+        tools.append(Tool(
+            name=spec.name,
+            description=spec.description,
+            input_schema=spec.input_schema,
         ))
     return tools
 
@@ -1882,9 +1904,17 @@ _OPLOG_REDACT_TOOLS = {
 }
 
 
-def _oplog_request(name: str, arguments: dict) -> dict:
+def _redacted(name: str, extra_tools: dict = None) -> bool:
+    """是否对该工具做日志脱敏：内置敏感工具集合，或插件声明 redact=True。"""
+    if name in _OPLOG_REDACT_TOOLS:
+        return True
+    spec = _spec_for(name, extra_tools)
+    return bool(spec is not None and getattr(spec, "redact", False))
+
+
+def _oplog_request(name: str, arguments: dict, extra_tools: dict = None) -> dict:
     """构造写入操作日志的请求字段：敏感工具的字符串值只记长度。"""
-    if name not in _OPLOG_REDACT_TOOLS or not isinstance(arguments, dict):
+    if not _redacted(name, extra_tools) or not isinstance(arguments, dict):
         return arguments
     out = {}
     for k, v in arguments.items():
@@ -1908,9 +1938,9 @@ _OPLOG_RESULT_PAYLOAD_KEYS = {
 _OPLOG_MAX_STRING = 200
 
 
-def _oplog_result(name: str, result):
+def _oplog_result(name: str, result, extra_tools: dict = None):
     """构造写入操作日志的返回值字段：敏感工具的正文载荷只记长度/条数。"""
-    if name not in _OPLOG_REDACT_TOOLS or not isinstance(result, dict):
+    if not _redacted(name, extra_tools) or not isinstance(result, dict):
         return result
     out = {}
     for k, v in result.items():
@@ -1928,8 +1958,15 @@ def _oplog_result(name: str, result):
     return out
 
 
-def create_mcp_server(dba: DBAServer) -> "Server":
-    """构建 MCP Server 实例 (MCP v2.0 API)"""
+def create_mcp_server(dba: DBAServer, extra_tools: dict = None) -> "Server":
+    """构建 MCP Server 实例 (MCP v2.0 API)
+
+    extra_tools: 可选的插件工具表 ``{name: ToolSpec}`` 或 ToolRegistry；``None`` 时
+    与历史行为完全一致。插件工具走同一条分派链，因此自动复用
+    ``touch`` / oplog / ``error_id`` 约定。
+    """
+    if extra_tools is None:
+        extra_tools = {}
     # 工具 handler 是协程，而下面的记忆链路全是**阻塞式**的（embedding + 多次 LLM，
     # 单次可达分钟级）。直接调用会堵住整个事件循环：SSE 下所有连接的心跳、tools/call
     # 都会被这一条请求卡住。故统一丢到线程池执行（与 ALM 侧 run_in_threadpool 同口径）。
@@ -1940,7 +1977,7 @@ def create_mcp_server(dba: DBAServer) -> "Server":
     log_path = oplog.default_oplog_path(dba.yaml_path)
 
     async def handle_list_tools(ctx, params: PaginatedRequestParams):
-        return ListToolsResult(tools=_build_tool_list())
+        return ListToolsResult(tools=_build_tool_list(extra_tools))
 
     async def handle_call_tool(ctx, params: CallToolRequestParams):
         name = params.name
@@ -1980,6 +2017,9 @@ def create_mcp_server(dba: DBAServer) -> "Server":
                 result = await run_in_threadpool(dba.review_graph, **arguments)
             elif name == "dba_review_sources":
                 result = await run_in_threadpool(dba.review_sources, **arguments)
+            elif (spec := _spec_for(name, extra_tools)) is not None:
+                # 插件工具：与内置工具走同一条分派，天然继承 touch/oplog/error_id
+                result = await run_in_threadpool(spec.handler, **arguments)
             else:
                 return CallToolResult(
                     content=[TextContent(
@@ -1995,8 +2035,8 @@ def create_mcp_server(dba: DBAServer) -> "Server":
             logging.getLogger("mcp").exception(
                 "工具调用失败 tool=%s error_id=%s", name, error_id
             )
-            oplog.log_operation("llm", op=name, request=_oplog_request(name, arguments),
-                                result=_oplog_result(name, {"status": "error", "error_id": error_id}),
+            oplog.log_operation("llm", op=name, request=_oplog_request(name, arguments, extra_tools),
+                                result=_oplog_result(name, {"status": "error", "error_id": error_id}, extra_tools),
                                 actor=actor, tool=name, path=log_path)
             return CallToolResult(
                 content=[TextContent(
@@ -2007,8 +2047,8 @@ def create_mcp_server(dba: DBAServer) -> "Server":
                 isError=True,
             )
 
-        oplog.log_operation("llm", op=name, request=_oplog_request(name, arguments),
-                            result=_oplog_result(name, result),
+        oplog.log_operation("llm", op=name, request=_oplog_request(name, arguments, extra_tools),
+                            result=_oplog_result(name, result, extra_tools),
                             actor=actor, tool=name, path=log_path)
         return CallToolResult(
             content=[TextContent(type="text", text=json.dumps(result, ensure_ascii=False, indent=2))]
@@ -2150,8 +2190,8 @@ def _local_embeddings_available() -> bool:
         return False
 
 
-def _print_status(graph, dba, retriever, vector_ready, args) -> None:
-    """输出统一的状态日志"""
+def _print_status(graph, dba, retriever, vector_ready, args, extra_tools: dict = None) -> None:
+    """输出统一的状态日志；工具列表 = 内置（原序）+ 插件。"""
     retrieval = "P 链路（跳转轴+目的回归+寻峰）" if retriever else "未启用"
     llm = args.llm_model or "未配置"
     if args.embedding_model:
@@ -2169,10 +2209,17 @@ def _print_status(graph, dba, retriever, vector_ready, args) -> None:
     print(f"  向量索引   : {'已就绪' if vector_ready else '未启用'}", file=sys.stderr)
     print(f"  传输模式   : {transport}", file=sys.stderr)
     print(f"  图谱规模   : {graph.node_count} 节点 / {graph.edge_count} 边", file=sys.stderr)
-    print("  工具        : dba_add_conversation / dba_query_memory / dba_add_note / "
-          "dba_query_knowledge / dba_temporal_lookup / "
-          "dba_inspect_graph / dba_intervene / dba_review_graph / dba_review_sources / "
-          "dba_checkpoint / dba_get_stats", file=sys.stderr)
+    # 内置工具按「原打印顺序」保留，插件工具追加在后；无插件时输出逐字不变。
+    tool_str = (
+        "dba_add_conversation / dba_query_memory / dba_add_note / "
+        "dba_query_knowledge / dba_temporal_lookup / "
+        "dba_inspect_graph / dba_intervene / dba_review_graph / dba_review_sources / "
+        "dba_checkpoint / dba_get_stats"
+    )
+    extra_names = list((extra_tools or {}).keys())
+    if extra_names:
+        tool_str += " / " + " / ".join(extra_names)
+    print("  工具        : " + tool_str, file=sys.stderr)
     print("=" * 60, file=sys.stderr)
 
 
@@ -2482,10 +2529,43 @@ def main():
     print(f"[DBA MCP] 图谱切换监听已启动（轮询 {switch_watcher.interval:.0f}s，"
           f"图谱库目录 {graphlib.graph_dir(args.yaml)}）", file=sys.stderr)
 
-    server = create_mcp_server(dba_server)
+    # 插件：发现工具 + 生命周期钩子；未安装/加载失败时按无插件运行，不影响内置工具。
+    try:
+        from ariadne_plugins import PluginContext, PluginWatcher, ToolRegistry, load_plugins
+        plugin_ctx = PluginContext(dba=dba_server, yaml_path=args.yaml)
+        plugin_bundle = load_plugins(plugin_ctx)
+        extra_tools = ToolRegistry(plugin_bundle.tools)
+    except Exception as e:
+        logging.getLogger("mcp").warning("插件系统加载失败（按无插件运行）: %s", e)
+        plugin_ctx = None
+        plugin_bundle = None
+        extra_tools = None
+
+    for hook in (plugin_bundle.startups if plugin_bundle else []):
+        try:
+            hook(plugin_ctx)
+        except Exception as e:
+            logging.getLogger("mcp").warning("插件 on_startup 失败: %s", e)
+    if extra_tools is not None and extra_tools.names():
+        logging.getLogger("mcp").info("已加载插件工具: %s", " / ".join(extra_tools.names()))
+
+    server = create_mcp_server(dba_server, extra_tools=extra_tools)
 
     _print_status(graph=graph, dba=dba_instance, retriever=retriever_instance,
-                  vector_ready=vector_ready, args=args)
+                  vector_ready=vector_ready, args=args,
+                  extra_tools=extra_tools.snapshot() if extra_tools is not None else None)
+
+    # 插件热加载（opt-in）：ARIADNE_PLUGIN_RELOAD=<秒>
+    plugin_watcher = None
+    _reload = os.environ.get("ARIADNE_PLUGIN_RELOAD")
+    if _reload and plugin_bundle is not None:
+        try:
+            plugin_watcher = PluginWatcher(extra_tools, interval=float(_reload))
+            plugin_watcher.start()
+            print(f"[DBA MCP] 插件热加载已启动（轮询 {plugin_watcher.interval:.0f}s）",
+                  file=sys.stderr)
+        except Exception as e:
+            logging.getLogger("mcp").warning("插件热加载启动失败: %s", e)
 
     try:
         if args.sse:
@@ -2508,6 +2588,14 @@ def main():
             asyncio.run(run_stdio(server))
     finally:
         # 优雅退出：先停空闲巡检（它可能正在调 LLM），再 flush 调度器缓冲中的对话
+        if plugin_watcher:
+            plugin_watcher.stop()
+        if plugin_bundle:
+            for hook in plugin_bundle.shutdowns:
+                try:
+                    hook(plugin_ctx)
+                except Exception as e:
+                    logging.getLogger("mcp").warning("插件 on_shutdown 失败: %s", e)
         if switch_watcher:
             switch_watcher.stop()
         if review_scheduler:

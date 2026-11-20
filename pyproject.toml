@@ -45,9 +45,13 @@ ariadne-render = "dba_pipeline.viz.renderer:main"
 ariadne-alm = "alm.server:main"
 ariadne-alm-cleanup = "alm.cleanup:main"
 
+# 插件工具发现（可选）：安装态的插件可通过此 entry-point 组注册 ToolSpec。
+# 源码树调试用 ARIADNE_PLUGINS=<模块路径> 即可，无需在此登记。
+[project.entry-points."ariadne.mcp.tools"]
+
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["dba_pipeline*", "alm*"]
+include = ["dba_pipeline*", "alm*", "ariadne_plugins*"]
 
 [tool.setuptools.dynamic]
 version = {attr = "dba_pipeline.__version__"}

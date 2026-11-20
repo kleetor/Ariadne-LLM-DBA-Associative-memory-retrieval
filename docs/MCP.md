@@ -121,10 +121,16 @@ ariadne-mcp --yaml data.yaml --llm-model gpt-4o-mini --llm-api-key sk-xxx \
 
 ```bash
 ARIADNE_MCP_PURPOSE_FRAME=1 ariadne-mcp --yaml data.yaml ...
+# 同时指定三通道权重（嵌入 / 节点类型 / 关系类型）
+ARIADNE_MCP_PURPOSE_FRAME=1 ARIADNE_MCP_FRAME_WEIGHTS=0.55,0.35,0.10 \
+    ariadne-mcp --yaml data.yaml ...
 ```
 
 开启后，检索前先推断 purposes 并编译 `PurposeFrame`（内容类型 / 关系类型 / 时段），
 显式注入目的会跳过内部推断，不增加 LLM 调用次数。
+
+`ARIADNE_MCP_FRAME_WEIGHTS` 接受逗号或分号分隔的三个非负浮点数，默认 `0.55,0.35,0.10`；
+retriever 内部会归一化。格式非法、含负值或和为 0 时告警并退回默认，不会带病启动。
 
 ### 11 个 Tool
 

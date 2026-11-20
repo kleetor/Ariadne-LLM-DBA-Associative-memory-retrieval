@@ -25,6 +25,7 @@ os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 import argparse
 import json
 import logging
+import math
 import sys
 import tempfile
 import threading
@@ -133,6 +134,37 @@ def _write_text_atomic(path: Path, text: str) -> None:
         raise
 
 
+# 目的帧三通道默认权重（内容嵌入 / 节点类型 / 关系类型），与 retriever 默认一致
+DEFAULT_FRAME_WEIGHTS = (0.55, 0.35, 0.10)
+
+
+def _parse_frame_weights(raw: Optional[str]) -> tuple:
+    """解析 `ARIADNE_MCP_FRAME_WEIGHTS`（形如 "0.55,0.35,0.10"）。
+
+    三通道权重在 retriever 内部会归一化，这里只做合法性校验：必须是 3 个非负浮点数
+    且和大于 0。任何非法值都退回默认，并在日志里告警——宁可默认，不要静默错配。
+    也接受分号分隔，方便从面板/文档直接粘贴。
+    """
+    if not raw or not raw.strip():
+        return DEFAULT_FRAME_WEIGHTS
+    parts = [p.strip() for p in raw.replace(";", ",").split(",")]
+    try:
+        if len(parts) != 3:
+            raise ValueError("需要 3 个值")
+        values = tuple(float(p) for p in parts)
+        if any(not math.isfinite(v) for v in values):
+            raise ValueError("权重必须是有限数值")
+        if any(v < 0 for v in values) or sum(values) <= 0:
+            raise ValueError("权重必须非负且和大于 0")
+    except ValueError as e:
+        logging.getLogger("mcp").warning(
+            "ARIADNE_MCP_FRAME_WEIGHTS=%r 非法（%s），改用默认 %s", raw, e,
+            DEFAULT_FRAME_WEIGHTS,
+        )
+        return DEFAULT_FRAME_WEIGHTS
+    return values
+
+
 class DBAServer:
     """DBA 核心逻辑，与 MCP 协议层解耦"""
 
@@ -184,6 +216,10 @@ class DBAServer:
         self.purpose_frame_enabled = os.environ.get(
             "ARIADNE_MCP_PURPOSE_FRAME", "0"
         ).strip().lower() in ("1", "true", "yes", "on")
+        # 帧三通道权重（仅 purpose_frame 生效时使用）；非法值已在解析时退回默认。
+        self.frame_weights = _parse_frame_weights(
+            os.environ.get("ARIADNE_MCP_FRAME_WEIGHTS")
+        )
         self.reload_params(force=True)
 
     # ---- 跨进程一致性 ----
@@ -576,6 +612,7 @@ class DBAServer:
             if purposes:
                 kwargs["purpose"] = purposes
                 kwargs["purpose_frame"] = compile_frame(purposes)
+                kwargs["frame_weights"] = self.frame_weights
         return kwargs
 
     def query_memory(self, query: str, rerank_k: int = 20) -> dict:

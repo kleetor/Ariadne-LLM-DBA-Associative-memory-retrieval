@@ -5,6 +5,13 @@
 %   \usepackage{amsmath,amsfonts}
 \documentclass[11pt]{article}
 
+% ChinaXiv build switch:
+%   pdflatex "\def\CHINAXIVBUILD{1}\input{main.tex}"
+% The switch only changes the front matter (five-part structured abstract,
+% five keywords, author contributions) required by the ChinaXiv template.
+\newif\ifchinaxiv
+\ifdefined\CHINAXIVBUILD\chinaxivtrue\fi
+
 \usepackage[margin=1in]{geometry}
 \usepackage[T1]{fontenc}
 \usepackage{amsmath}
@@ -43,6 +50,46 @@ Building a User-Modeling Context from a Memory Graph}
 \begin{document}
 \maketitle
 
+\ifchinaxiv
+\begin{abstract}
+\noindent\textbf{Objective.} Dialogue agents must rebuild the user's current state from memory
+rather than retrieve passages that answer a question. We test whether a purpose-driven,
+set-valued traversal over a typed memory graph yields a better user-modeling context than
+vector retrieval and than two existing memory systems.
+
+\par\smallskip
+\noindent\textbf{Methods.} PAR expands candidates along six node types and eight relation types
+with a direction-aware weight matrix, scores them by purpose relevance, and stops by a
+peak-tolerance band over round-level mean scores. Three LLM judges score the produced context
+blocks on a three-dimensional rubric over a 163-node companion-memory graph with 76 queries,
+complemented by a same-graph isolation design, mechanism ablations, and graph-source and
+structural-perturbation checks.
+
+\par\smallskip
+\noindent\textbf{Results.} The full system scores 4.46--4.72 against 3.25--3.77 (Mem0) and
+2.92--3.46 (Graphiti) and ranks first with every judge; isolating selection gives $+1.35$ to
+$+1.86$ over vector top-$k$ on 70 non-abstention queries ($r\approx1.00$). The purpose channel
+changes the retrieved set (Jaccard 0.31) but is right about half the time: the type-distribution
+divergence between intents stays below 0.07 and gold recall is higher without it (0.894 versus
+0.857). Rewriting the purpose as three explicit requirements raises that divergence from 0.09 to
+0.47 and facet recall from 0.30 to 0.53, but the requirements are hand-written.
+
+\par\smallskip
+\noindent\textbf{Limitations.} The study uses one manually built graph, 76 queries, one language,
+and no human user study; the weight matrix is a fixed prior and the purpose frame is supplied by
+hand.
+
+\par\smallskip
+\noindent\textbf{Conclusions.} Associative selection is a reliable gain, whereas the bottleneck
+is the purpose representation rather than graph traversal. The default purpose filter at 0.30 is
+inactive on this graph, and tuning it above 0.45 is zero-sum.
+\end{abstract}
+
+\noindent\textbf{Keywords:} Associative memory; Agent long-term memory; Memory graph;
+LLM evaluation; User modeling
+
+\else
+
 \begin{abstract}
 Retrieval research mostly targets question answering: given a query, return passages that
 contain the answer. Dialogue memory poses a different problem. The system must reconstruct
@@ -76,6 +123,7 @@ show that the default purpose-filter threshold of 0.30 removes no candidate on t
 negative result therefore concerns purpose seeding and weighting, not filtering. The filter only
 starts to bite at 0.45--0.55, where it trades output size for precision.
 \end{abstract}
+\fi
 
 \section{Introduction}
 
@@ -1338,6 +1386,12 @@ PAR is not a stronger RAG but a solution to a different problem. Its value is to
 of evaluation from a ranked list to a user-modeling context, to give this still standard-less
 area a reproducible starting point, and to state clearly where the current ceiling is.
 
+\ifchinaxiv
+\section*{Author Contributions}
+Siyu Chen: conceptualization, methodology, software, validation, formal analysis, investigation,
+data curation, visualization, writing---original draft, and writing---review and editing.
+
+\fi
 \appendix
 
 \section{Old Retrieval Metrics (Diagnostics Only)}

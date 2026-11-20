@@ -1,0 +1,5 @@
+% ChinaXiv build driver.
+% Build: pdflatex chinaxiv && bibtex chinaxiv && pdflatex chinaxiv (x2)
+% It reuses main.tex unchanged except for the \CHINAXIVBUILD switch.
+\def\CHINAXIVBUILD{1}
+\input{main.tex}

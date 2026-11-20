@@ -15,6 +15,10 @@
 - [0828 前置数据管理与后处理](theory/0828前置数据管理与后处理.md)：LLM DBA 图谱构建
 - [0908 e2e 实验文档](theory/0908e2e实验文档.md)：端到端实验记录
 
+## 发布记录
+
+- [PAR v0.5.1 发布与归档](releases/PAR-v0.5.1.md)：DOI、归档文件与哈希、ChinaXiv 提交信息
+
 ## 部署与运维
 
 - [容器部署与公网暴露](../README.md#docker-部署)：compose、embedding 模式、回环绑定与 SSH 隧道

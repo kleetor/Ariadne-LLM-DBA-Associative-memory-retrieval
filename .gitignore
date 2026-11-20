@@ -135,5 +135,5 @@ engine*
 /docs/paper/latex/*.bbl
 /docs/paper/latex/*.blg
 /docs/paper/latex/*.out
-/docs/paper/latex/main.pdf
+/docs/paper/latex/*.pdf
 /docs/paper/figs/*.png

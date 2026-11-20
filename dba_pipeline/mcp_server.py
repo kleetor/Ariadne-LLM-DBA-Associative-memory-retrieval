@@ -165,6 +165,32 @@ def _parse_frame_weights(raw: Optional[str]) -> tuple:
     return values
 
 
+# 目的帧「时段」维的默认强度：0 表示只用目的短语向量（改造前行为）
+DEFAULT_FRAME_ANCHOR = 0.0
+
+
+def _parse_frame_anchor(raw: Optional[str]) -> float:
+    """解析 `ARIADNE_MCP_FRAME_ANCHOR`（0~1）。
+
+    取值是 query 原文余弦在话题相似里的占比：0 = 关闭，0.4 表示
+    `0.6·目的余弦 + 0.4·query 余弦`。大于 0 时检索会多编码一次 query。
+    非法值告警并退回 0，避免"看起来开了、实际没开"。
+    """
+    if not raw or not raw.strip():
+        return DEFAULT_FRAME_ANCHOR
+    try:
+        value = float(raw.strip())
+        if not math.isfinite(value) or not 0.0 <= value <= 1.0:
+            raise ValueError("需要 [0,1] 内的有限数值")
+    except ValueError as e:
+        logging.getLogger("mcp").warning(
+            "ARIADNE_MCP_FRAME_ANCHOR=%r 非法（%s），改用默认 %s",
+            raw, e, DEFAULT_FRAME_ANCHOR,
+        )
+        return DEFAULT_FRAME_ANCHOR
+    return value
+
+
 class DBAServer:
     """DBA 核心逻辑，与 MCP 协议层解耦"""
 
@@ -219,6 +245,10 @@ class DBAServer:
         # 帧三通道权重（仅 purpose_frame 生效时使用）；非法值已在解析时退回默认。
         self.frame_weights = _parse_frame_weights(
             os.environ.get("ARIADNE_MCP_FRAME_WEIGHTS")
+        )
+        # 帧「时段」维强度（0 = 关闭，只用目的短语向量）
+        self.frame_anchor = _parse_frame_anchor(
+            os.environ.get("ARIADNE_MCP_FRAME_ANCHOR")
         )
         self.reload_params(force=True)
 
@@ -591,6 +621,8 @@ class DBAServer:
 
         开启 `ARIADNE_MCP_PURPOSE_FRAME=1` 时，先推断 purposes 再编译结构化目的帧；
         显式注入 purpose 会跳过检索器内部推断，因此不会多一次 LLM 调用。
+        帧的三通道权重与「时段」强度分别来自 `ARIADNE_MCP_FRAME_WEIGHTS` /
+        `ARIADNE_MCP_FRAME_ANCHOR`。
         """
         rp = self.params.get("retrieval", {})
         kwargs = {
@@ -613,6 +645,8 @@ class DBAServer:
                 kwargs["purpose"] = purposes
                 kwargs["purpose_frame"] = compile_frame(purposes)
                 kwargs["frame_weights"] = self.frame_weights
+                if self.frame_anchor > 0:
+                    kwargs["frame_anchor"] = self.frame_anchor
         return kwargs
 
     def query_memory(self, query: str, rerank_k: int = 20) -> dict:

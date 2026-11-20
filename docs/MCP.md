@@ -132,6 +132,10 @@ ARIADNE_MCP_PURPOSE_FRAME=1 ARIADNE_MCP_FRAME_WEIGHTS=0.55,0.35,0.10 \
 `ARIADNE_MCP_FRAME_WEIGHTS` 接受逗号或分号分隔的三个非负浮点数，默认 `0.55,0.35,0.10`；
 retriever 内部会归一化。格式非法、含负值或和为 0 时告警并退回默认，不会带病启动。
 
+`ARIADNE_MCP_FRAME_ANCHOR`（0–1，默认 0）控制帧的第三维「时段」：0 表示只用目的短语向量，
+0.4 表示话题相似 = `0.6 × 目的余弦 + 0.4 × query 原文余弦`。大于 0 时每次检索会多编码一次
+query，用于把类型偏好限制在当前情节内（对应论文 E11 的 `a04`）。非法值同样告警退回 0。
+
 ### 11 个 Tool
 
 | Tool                   | 说明                             |

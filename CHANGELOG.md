@@ -5,23 +5,6 @@
 
 ## [Unreleased]
 
-## [0.1.7] - 2026-11-20
-
-### Added
-
-- 插件工具注册框架 `ariadne_plugins`：`ToolSpec` / `ToolRegistry`、`ARIADNE_PLUGINS` 与 entry-points 两种发现方式、`ARIADNE_PLUGIN_RELOAD` 热加载、`on_startup` / `on_shutdown` 生命周期钩子与示例插件。插件工具复用内置分派链，自动获得活动追踪、操作日志与统一错误回执。
-- MCP 检索参数新增 `max_peak_nodes`、`seed_cos_min`、`peak_tolerance`、`peak_tolerance_ratio`，面板与 MCP 共用同一份 `retrieval_params.yaml`。
-- 结构化目的帧开关：`ARIADNE_MCP_PURPOSE_FRAME`、`ARIADNE_MCP_FRAME_WEIGHTS`、`ARIADNE_MCP_FRAME_ANCHOR`（默认全关）。
-- 首峰即停开关：`ARIADNE_MCP_FIRST_PEAK`（默认关，与论文主表口径一致）。
-
-### Fixed
-
-- `peak_tolerance` 的运行时调参此前只写入实例属性，`PeakFinder` 内部取值不变，表现为"面板显示已生效、检索行为不变"；现改为代理 `PeakFinder` 的属性。
-
-### Changed
-
-- README 中 R@all 的口径按论文改为诊断指标，删除"随规模放大"；参数面板补充默认阈值 0.30 在主图上不删候选的说明。
-
 ## [0.1.6] - 2026-11-07
 
 ### Fixed

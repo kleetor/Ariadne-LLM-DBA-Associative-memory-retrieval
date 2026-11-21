@@ -177,42 +177,6 @@ query，用于把类型偏好限制在当前情节内（对应论文 E11 的 `a0
 - `rerank_k` 控制返回条数上限（rank-k，默认 20）；`total_matched` 是真实候选总数，`returned` 是本次实际返回数。若 `total_matched > returned`，可调大 `rerank_k` 取回剩余记忆。
 - 已废弃/遗忘的节点会被过滤，不出现在结果中。
 
-### 插件工具注册
-
-内置 11 个工具之外，可通过插件追加工具，**无需修改 MCP 核心代码**。
-
-插件就是一个 `ToolSpec`（见 `ariadne_plugins/api.py`）：
-
-```python
-from ariadne_plugins import ToolSpec
-
-def _hello(name: str = "world") -> dict:
-    return {"message": f"hello, {name}"}
-
-REGISTER = [
-    ToolSpec(
-        name="plugin_hello",
-        description="示例插件",
-        input_schema={"type": "object", "properties": {"name": {"type": "string"}}},
-        handler=_hello,          # 同步、dict 进 dict 出
-        redact=False,            # True 时该工具的操作日志做脱敏
-    ),
-]
-```
-
-发现方式（二选一）：
-
-- **源码树 / 调试**：`ARIADNE_PLUGINS=ariadne_plugins.examples.hello ariadne-mcp ...`（逗号/空白分隔多个模块）；
-- **安装态**：在插件包里登记 entry-point 组 `ariadne.mcp.tools`。
-
-插件工具与内置工具走同一条分派链，因此自动获得活动追踪、操作日志与统一错误回执；`redact=True` 的工具在操作日志中只记长度。未配置插件时，服务行为与此前完全一致。
-
-**生命周期钩子**（可选）：插件模块可额外暴露 `on_startup(ctx)` / `on_shutdown(ctx)`，`ctx` 含 `dba` / `yaml_path` / `logger`，分别在服务就绪后与退出前调用一次。
-
-**热加载**（可选）：设置 `ARIADNE_PLUGIN_RELOAD=<秒>` 后，服务会轮询 `ARIADNE_PLUGINS` 模块文件变化并原地刷新工具表（`tools/list` 重新拉取即可看到新工具）；未设置时行为与一次性加载完全相同。
-
-**发布**：把插件做成独立可安装包（wheel/sdist），在 `pyproject.toml` 里登记 `[project.entry-points."ariadne.mcp.tools"]`，用户 `pip install` 后无需再设 `ARIADNE_PLUGINS`。
-
 ### Agent 接入配置
 
 **Claude Desktop（stdio）**：

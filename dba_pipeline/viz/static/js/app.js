@@ -163,11 +163,11 @@
     const f = A.graph.getFilter();
     if (!stats.totalNodes) {
       title.textContent = '当前图谱是空的';
-      desc.textContent = '用 MCP 的 dba_add_conversation 写入对话，或用 dba_add_note 写入一条笔记。';
+      desc.textContent = '用 MCP 的 dba_add_conversation 写入对话，或用 dba_intervene 建节点。';
     } else if (f.showNotesOnly && !stats.notes) {
       // 判断「图里真的没有笔记」而不是「当前没显示笔记」：后者可能只是类型过滤挡掉了
       title.textContent = '当前图谱没有笔记';
-      desc.textContent = '笔记是 channel=note 的普通节点，通过 MCP 的 dba_add_note 写入；也可以先切回全部节点。';
+      desc.textContent = '当前图谱没有 channel=note 的历史笔记节点（写入入口已移除）；可先切回全部节点。';
     } else {
       title.textContent = '当前过滤条件下没有节点';
       desc.textContent = '放宽节点类型 / 边类型过滤，或点击下方按钮恢复默认。';

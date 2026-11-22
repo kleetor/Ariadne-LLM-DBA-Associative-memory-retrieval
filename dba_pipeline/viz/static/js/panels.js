@@ -317,6 +317,7 @@
       body.appendChild(toggle('隐藏笔记节点', false, function (v) {
         A.graph.setFilter({ hideNotes: v, showNotesOnly: false });
       }));
+      body.appendChild(toggle('隐藏原文兜底节点', true, function (v) { A.graph.setFilter({ hideRaw: v }); }));
       body.appendChild(toggle('显示废弃节点', true, function (v) { A.graph.setFilter({ showDeprecated: v }); }));
       body.appendChild(toggle('显示遗忘节点', false, function (v) { A.graph.setFilter({ showForgotten: v }); }));
       body.appendChild(toggle('隐藏孤立节点', false, function (v) { A.graph.setFilter({ hideOrphans: v }); }));
@@ -357,10 +358,11 @@
       const toggles = $('panel-filters').querySelectorAll('.toggle input');
       if (toggles[0]) toggles[0].checked = filter.showNotesOnly;
       if (toggles[1]) toggles[1].checked = filter.hideNotes;
-      if (toggles[2]) toggles[2].checked = filter.showDeprecated;
-      if (toggles[3]) toggles[3].checked = filter.showForgotten;
-      if (toggles[4]) toggles[4].checked = filter.hideOrphans;
-      if (toggles[5]) toggles[5].checked = filter.highDegOnly;
+      if (toggles[2]) toggles[2].checked = filter.hideRaw !== false;
+      if (toggles[3]) toggles[3].checked = filter.showDeprecated;
+      if (toggles[4]) toggles[4].checked = filter.showForgotten;
+      if (toggles[5]) toggles[5].checked = filter.hideOrphans;
+      if (toggles[6]) toggles[6].checked = filter.highDegOnly;
     },
   };
 
@@ -375,7 +377,7 @@
     A.graph.setFilter({
       nodeTypes: {}, edgeTypes: {},
       showDeprecated: true, showForgotten: false, hideOrphans: false, highDegOnly: false,
-      showNotesOnly: false, hideNotes: false,
+      showNotesOnly: false, hideNotes: false, hideRaw: true,
     });
     // 空对象代表全部放行；重填后同步 UI
     const f = A.graph.getFilter();
@@ -518,7 +520,7 @@
         body.appendChild(el('div', { class: 'divider' }));
         body.appendChild(el('div', { class: 'group-label', text: '笔记信息' }));
         if (meta.channel === 'note') {
-          body.appendChild(el('div', { class: 'hint note-hint' }, '📝 项目笔记（无边、可被知识检索）'));
+          body.appendChild(el('div', { class: 'hint note-hint', text: '📝 项目笔记（无边、可被知识检索）' }));
           if (meta.title) body.appendChild(el('div', { class: 'field' }, [
             el('span', { class: 'muted', text: '标题' }),
             el('span', { class: 'mono', text: meta.title }),

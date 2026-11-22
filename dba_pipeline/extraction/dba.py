@@ -773,6 +773,15 @@ class MemoryDBA:
         finally:
             self.builder.dedup_threshold = saved_threshold
         created = result.get("created_ids") or []
+        # 打上 channel=raw 标记：这类节点是"没抽取出价值"的原文，只作存储/检索兜底，
+        # 面板按 channel 识别并默认隐藏，避免无信息量的聊天把图撑大。
+        # channel 已在 exporter 的 _METADATA_KEYS 白名单里，会透传到前端。
+        nodes_view = self.builder.graph.graph.nodes
+        for nid in created:
+            if nid in nodes_view:
+                meta = nodes_view[nid].get("metadata") or {}
+                meta["channel"] = "raw"
+                nodes_view[nid]["metadata"] = meta
         # 用 WARNING：ALM 容器把 dba_pipeline 钉在 WARNING 以上，INFO 不可见。
         # 本行只有计数，不含正文，可安全放行。
         logger.warning("原文兜底落库: %d 字符 → %d 块 → %d 个节点",

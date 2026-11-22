@@ -19,6 +19,7 @@
       showDeprecated: true, showForgotten: false,
       hideOrphans: false, highDegOnly: false,
       showNotesOnly: false, hideNotes: false,
+      hideRaw: true,
     },
     medianDegree: 1,
     settings: C.DEFAULT_SETTINGS,
@@ -178,6 +179,7 @@
     const f = state.filter;
     const nodes = state.nodes.filter(function (n) {
       const isNote = n.metadata && n.metadata.channel === 'note';
+      if (f.hideRaw !== false && isRawNode(n)) return false;
       if (f.showNotesOnly && !isNote) return false;
       if (f.hideNotes && isNote) return false;
       if (f.nodeTypes[n.node_type] === false) return false;
@@ -210,6 +212,8 @@
   }
 
   function isNoteNode(n) { return !!(n.metadata && n.metadata.channel === 'note'); }
+  // 原文兜底节点：抽取未产出时按原文落库的占位节点，面板默认不显示
+  function isRawNode(n) { return !!(n.metadata && n.metadata.channel === 'raw'); }
 
   function statsOf(sets) {
     return {
@@ -222,7 +226,9 @@
       deprecated: state.nodes.filter(function (n) { return n.deprecated; }).length,
       forgotten: state.nodes.filter(function (n) { return n.forgotten; }).length,
       orphans: state.nodes.filter(function (n) {
-        return !n.deprecated && !n.forgotten && !(n.in_degree || 0) && !(n.out_degree || 0);
+        // 原文兜底节点天生无边，计入孤立会让这个指标失去意义
+        return !n.deprecated && !n.forgotten && !isRawNode(n)
+          && !(n.in_degree || 0) && !(n.out_degree || 0);
       }).length,
     };
   }

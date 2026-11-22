@@ -611,10 +611,19 @@ class GraphBuilder:
     # ---- 孤立节点检测 ----
 
     def _check_orphans(self):
-        """检查并处理孤立节点（入边=0 且 出边=0）"""
+        """检查并处理孤立节点（入边=0 且 出边=0）
+
+        笔记（channel=note）与原文兜底（channel=raw）节点**天生没有边**：前者在
+        `_create_edge` 里被显式禁止连边，后者是"没抽取出价值"的原文。把它们计入
+        孤立次数会让内容在 `orphan_threshold` 次维护后被 `forgotten` 掉——
+        隐藏一个节点很容易，但"忘了却还存在"的语义是错的。
+        """
         for node_id in list(self.graph.graph.nodes()):
             node = self.graph.get_node(node_id)
             if node is None or node.get("deprecated") or node.get("forgotten"):
+                continue
+            # 无边是这类节点的设计属性，不是"连接失败"，不进入孤立计数
+            if ((node.get("metadata") or {}).get("channel") or "") in ("note", "raw"):
                 continue
 
             in_degree = self.graph.graph.in_degree(node_id)

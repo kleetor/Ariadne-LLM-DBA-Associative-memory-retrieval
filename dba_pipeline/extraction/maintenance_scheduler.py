@@ -32,10 +32,8 @@ logger = logging.getLogger(__name__)
 
 class TriggerReason(Enum):
     PROACTIVE = auto()    # 主动模式批量
-    SESSION_END = auto()  # 会话结束
     IDLE_TIMEOUT = auto() # 空闲超时
-    AUTO_SKIP = auto()    # 自动跳过（连续空转过多）
-    MANUAL = auto()       # 手动触发
+    MANUAL = auto()       # 手动触发（`flush_now` / 退出时 flush）
 
 
 @dataclass
@@ -47,9 +45,6 @@ class ScheduleConfig:
 
     # 最大合并轮数：单次维护最多合并多少轮对话
     max_batch_rounds: int = 10
-
-    # 会话结束是否强制触发
-    flush_on_session_end: bool = True
 
     # ── 主动模式 ──
     # DBA 累积判定"需要维护"多少次后，进入主动模式
@@ -86,8 +81,12 @@ class MaintenanceScheduler:
         scheduler = MaintenanceScheduler(dba, config)
         scheduler.start()
         scheduler.on_conversation("user: 今天好累...")
-        scheduler.on_session_end()
         scheduler.stop()
+
+    没有 `on_session_end`：MCP 协议里不存在"会话结束"这一事件——stdio 模式没有
+    会话边界（进程退出时才结束），SSE 模式也无法把客户端断连映射成可靠的
+    "这一轮对话说完了"。真正的落库时机靠 `idle_timeout` 与 `stop()`（退出时
+    flush 剩余缓冲）；调用方若确知会话结束，可直接调 `flush_now()`。
     """
 
     def __init__(
@@ -144,11 +143,6 @@ class MaintenanceScheduler:
                 return
 
             self._start_idle_timer()
-
-    def on_session_end(self):
-        with self._lock:
-            if self.config.flush_on_session_end and self._buffer:
-                self._trigger(TriggerReason.SESSION_END)
 
     def flush_now(self):
         with self._lock:
@@ -265,6 +259,9 @@ class MaintenanceScheduler:
                 self._do_flush_locked(conversations, reason)
         except Exception:
             logger.exception("[DBA 维护] 进入写临界区失败或维护异常逃逸")
+            # `_do_flush_locked` 根本没跑（取锁失败等），这批对话尚未落任何库，
+            # 必须退回缓冲区，否则就是静默丢写。
+            self._requeue(conversations)
             if self._flushing:
                 self._on_flush_done()
 
@@ -274,6 +271,12 @@ class MaintenanceScheduler:
             f"[DBA 维护] {reason.name}, {batch_count} 轮, "
             f"连续跳过={self._consecutive_skips}"
         )
+
+        # 失败路径要拿得到本批原文：这两个变量在截断/自动跳过分支之前就必须可用，
+        # 否则异常时既无法兜底落库、也无法判断"到底有没有维护成功"。
+        merged: Optional[str] = None
+        batch_ts: Optional[int] = None
+        maintained = False
 
         try:
             if batch_count > self.config.max_batch_rounds:
@@ -288,14 +291,20 @@ class MaintenanceScheduler:
 
             # 自动跳过 — 连续空转太多，不再调用 LLM
             auto_skip = False
-            if reason not in (TriggerReason.SESSION_END, TriggerReason.MANUAL):
+            if reason != TriggerReason.MANUAL:
                 with self._lock:
                     if self._consecutive_skips >= self.config.auto_skip_threshold:
                         self.stats["total_auto_skipped"] += 1
                         auto_skip = True
             if auto_skip:
+                # 自动跳过的本意是「省下一次 LLM 调用」，不是「永久关掉维护」：
+                # 不在这里复位计数，`_consecutive_skips` 会一直 ≥ 阈值，此后每一批
+                # 都被自动跳过（状态机卡死）。跳过一次即重新计数，让下一批回到
+                # LLM 维护；若仍空转，再从 1 累计到阈值。
+                with self._lock:
+                    self._consecutive_skips = 0
                 logger.info(
-                    f"[DBA 维护] 自动跳过（连续 {self._consecutive_skips} 次空转），"
+                    f"[DBA 维护] 自动跳过（连续 {self.config.auto_skip_threshold} 次空转），"
                     f"丢弃 {batch_count} 轮对话"
                 )
                 # 自动跳过的本意是「省下一次 LLM 调用」，不是「丢内容」——原文兜底
@@ -320,6 +329,7 @@ class MaintenanceScheduler:
             # 原文按轮次交给 DBA：开启原文落盘时保留每轮到达时间，便于溯源核对
             source_rounds = [{"ts": ts, "text": text} for ts, text in conversations]
             result = self.dba.maintain(merged, timestamp=batch_ts, source_rounds=source_rounds)
+            maintained = True
 
             # triage 判 SKIP、抽取空产出（no_ops/no_create）、create 全被拒
             # （create_rejected）时内容原本被静默丢弃（MCP 没有 ALM 的文档通道）。
@@ -334,7 +344,20 @@ class MaintenanceScheduler:
             ops = result.get("ops", {})
             node_ops = ops.get("node_ops", [])
             edge_ops = ops.get("edge_ops", [])
-            was_skipped = not node_ops and not edge_ops
+            exec_res = result.get("result") or {}
+            # 「有效维护」必须看**实际写入**，不能只看 LLM 输出了几条 op：
+            # 一批 op 全部被校验拒绝 / 全部命中语义去重时，图没有任何变化，
+            # 若仍计为有效，`_consecutive_skips` 会被清零、主动模式被误触发，
+            # 连续空转保护随之失效。
+            # 非 create 的 op（update / deprecate / fix_type）无法逐条归因，按"有动作"
+            # 计入；但若被拒条数已达到 op 总数，说明这一批整体没落地，仍算跳过。
+            node_applied = bool(exec_res.get("created_ids")) or any(
+                (op.get("action") or "create") != "create" for op in node_ops
+            )
+            rejected = len(exec_res.get("skipped") or []) + len(exec_res.get("errors") or [])
+            if rejected and rejected >= len(node_ops) + len(edge_ops):
+                node_applied = False
+            was_skipped = not node_applied and not edge_ops
 
             with self._lock:
                 if was_skipped:
@@ -363,8 +386,41 @@ class MaintenanceScheduler:
 
         except Exception as e:
             logger.error(f"[DBA 维护] 失败: {e}", exc_info=True)
+            # 维护中断时这批对话已经离开缓冲区，不补偿就是静默丢写。
+            # 补偿顺序：① 原文兜底落库（内容仍可检索）；② 兜底本身也失败
+            # （如 embedding 不可用）才退回缓冲区，等下一次触发重试。
+            # 已经 `maintain` 成功、只是后续步骤（落盘回调等）抛错时不兜底——
+            # 节点已在图中，再写一份原文等于重复入库。
+            if not maintained:
+                if merged is None:
+                    merged = "\n\n".join(
+                        _format_round(ts, text) for ts, text in conversations
+                    )
+                    batch_ts = next(
+                        (ts for ts, _ in reversed(conversations) if ts), None
+                    )
+                try:
+                    self.dba.store_raw(merged, timestamp=batch_ts)
+                    logger.warning("[DBA 维护] 维护失败，已原文兜底落库")
+                except Exception:
+                    logger.exception("[DBA 维护] 原文兜底也失败，对话退回缓冲区")
+                    self._requeue(conversations)
         finally:
             self._on_flush_done()
+
+    def _requeue(self, conversations: List[Tuple[Optional[int], str]]):
+        """把一批尚未落任何库的对话放回缓冲区头部（保持到达顺序）。
+
+        调用方须保证这批对话已从缓冲区移出且没有被写入图谱/原文库，否则会重复入库。
+        """
+        if not conversations:
+            return
+        with self._lock:
+            self._buffer = list(conversations) + self._buffer
+            # 刷新活动时间并重启空闲计时：否则这批内容要等到下一次新对话才可能被重试
+            self._last_conversation_time = time.time()
+            self._cancel_idle_timer()
+            self._start_idle_timer()
 
     def _on_flush_done(self):
         """维护完成后的清理"""

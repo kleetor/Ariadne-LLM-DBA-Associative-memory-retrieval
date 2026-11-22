@@ -106,7 +106,7 @@ The core thesis is that the value of memory lies not in storing more, but in bei
 | 🔧 Automated DBA maintenance | node extraction and edge linking as two separate steps, correction/deprecation + batched async scheduling to cut tokens |
 | 🎯 Purpose-driven retrieval | Jump Axis + Purpose Regression + Peak Finding, replacing fixed top-K |
 | 📖 StoryRank narrativization | causal chains → story fragments, avoiding context pollution for the chat LLM |
-| 🔌 MCP integration | 11 tools (including note-taking and knowledge lookup) over stdio / SSE |
+| 🔌 MCP integration | 10 tools (memory retrieval + keyword lookup + maintenance) over stdio / SSE |
 | ☁️ ALM synchronous HTTP | `/add` / `/search` contract for external programs, spaces isolated by `user_id` |
 | 🔐 Unified auth | panel and MCP share `auth.json` (Cookie / Basic / Bearer); changing the password revokes old sessions |
 | 🖥️ 3D visualization | force-directed graph, layer filtering, focus mode, online CRUD |
@@ -120,7 +120,7 @@ The core thesis is that the value of memory lies not in storing more, but in bei
   </a>
 </p>
 
-Writes queue the conversation and let a background worker run batch maintenance (triage → extraction → edge linking → dedupe/deprecation); reads run the full chain "vector seeds → directed expansion → purpose regression → peak termination → StoryRank". MCP and the panel share one YAML file and cross-process lock, while ALM keeps a separate space per `user_id`. Notes enter both the vector store and the keyword index, but only act as retrieval seeds and never take part in edge linking.
+Writes queue the conversation and let a background worker run batch maintenance (triage → extraction → edge linking → dedupe/deprecation); reads run the full chain "vector seeds → directed expansion → purpose regression → peak termination → StoryRank". MCP and the panel share one YAML file and cross-process lock, while ALM keeps a separate space per `user_id`. When extraction fails, the raw text is stored as fallback nodes (`channel=raw`) and kept visible as pending items in review reports.
 
 | Layer | Responsibility | Key modules |
 |-------|----------------|-------------|
@@ -128,7 +128,7 @@ Writes queue the conversation and let a background worker run batch maintenance 
 | **Storage** | graph + vector index | `graph/memory_graph.py`, `embedding/store.py` |
 | **Retrieval** | directed expansion, purpose filtering, peak termination | `core/jump_axis.py`, `core/purpose.py`, `core/peak_find.py` |
 | **Story** | causal chains → story fragments | `retrieval/retriever.py` (StoryRank) |
-| **Knowledge** | keyword-first note lookup | `kwindex.py` (inverted index, no embedding dependency) |
+| **Keyword** | literal screening over all nodes | `kwindex.py` (inverted index, no embedding dependency) |
 | **Access** | API / MCP / visualization | `viz/api_server.py`, `mcp_server.py` |
 
 ## Installation
@@ -337,9 +337,9 @@ The entry point is `retrieve_with_story` (a library method); its output includes
 
 ## MCP Server
 
-The MCP server exposes the memory graph as 11 tools over stdio or SSE.
+The MCP server exposes the memory graph as 10 tools over stdio or SSE.
 
-Two of them form the knowledge layer: `dba_add_note` writes project notes and `dba_query_knowledge` retrieves them by keyword. Notes are ordinary graph nodes (`metadata.channel="note"`), not a separate store, so they can be recalled semantically by the memory layer and screened literally by the knowledge layer.
+`dba_query_knowledge` screens **all memory nodes** literally by keyword, complementing the semantic recall of `dba_query_memory`; it is not a separate knowledge base and has no dedicated write entry.
 
 - Tool reference, environment variables, graph switching and agent setup: [docs/MCP.en.md](docs/MCP.en.md)
 - One-command start: `python start_all.py`

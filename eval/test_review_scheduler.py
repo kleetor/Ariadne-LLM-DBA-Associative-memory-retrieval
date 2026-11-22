@@ -57,7 +57,9 @@ def _make_server():
 def test_config():
     print("\n① 配置解析")
     os.environ.pop(IDLE_ENV, None)
-    check(ReviewConfig.from_env() is None, "未设环境变量时应返回 None（默认关闭）")
+    default_cfg = ReviewConfig.from_env()
+    check(default_cfg is not None and default_cfg.idle_seconds == 300,
+          "未设环境变量时应按 300s 默认开启")
 
     os.environ[IDLE_ENV] = "abc"
     check(ReviewConfig.from_env() is None, "非法值应返回 None")

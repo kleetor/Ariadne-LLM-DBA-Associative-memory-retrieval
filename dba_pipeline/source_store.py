@@ -8,7 +8,7 @@
 只能被动提醒或在错误节点上继续抽取。
 
 隐私与体积是它的固有代价，因此：
-- **默认关闭**（`ARIADNE_SOURCE_STORE=1` 或 `MemoryDBA(enable_source_store=True)` 才落盘）
+- **默认开启**（`ARIADNE_SOURCE_STORE=0` 可关闭；巡检没有原文就无从核对幻觉）
 - **默认脱敏**：邮箱、手机号、长数字 ID（QQ 号 / User ID）落盘前掩码
 - **默认 TTL 30 天**：写入时顺手清理过期批次文件
 - **仅批次级**：不做句子级 span（LLM 产出的是消解指代后的陈述，本就不是原文子串）
@@ -45,8 +45,16 @@ def _valid_batch_id(batch_id: str) -> bool:
 
 
 def source_store_enabled() -> bool:
-    """环境变量开关（默认关闭）"""
-    return os.environ.get(SOURCE_STORE_ENV, "").strip().lower() in ("1", "true", "yes", "on")
+    """环境变量开关（**默认开启**，置 0/false/off 关闭）。
+
+    默认开启的理由：溯源巡检（`dba_review_sources`）没有原文就无法核对节点是不是
+    幻觉，而这个能力只有配上原文才成立。代价是脱敏后的对话会落盘 30 天，属部署
+    决策——不需要巡检的部署可显式关闭。
+    """
+    raw = os.environ.get(SOURCE_STORE_ENV)
+    if raw is None or not raw.strip():
+        return True
+    return raw.strip().lower() in ("1", "true", "yes", "on")
 
 
 def default_source_dir(yaml_path) -> Path:

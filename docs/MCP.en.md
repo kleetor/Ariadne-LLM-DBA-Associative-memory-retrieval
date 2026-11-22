@@ -27,6 +27,10 @@ Besides CLI flags, LLM/Embedding config can live in the project root `.env` (or 
 | `--embedding-base-url` | `EMBEDDING_API_BASE` |
 | `--embedding-local` | `EMBEDDING_LOCAL` |
 
+Maintenance batching (`ARIADNE_MCP_IDLE_TIMEOUT` / `MAX_BATCH_ROUNDS` / `PROACTIVE_*` / `AUTO_SKIP`),
+`ARIADNE_MCP_TRIAGE`, source storage (`ARIADNE_SOURCE_STORE`) and idle review (`ARIADNE_REVIEW_*`)
+are documented with their defaults in `.env.example` under "MCP 维护 / 检索开关" and "记忆保真".
+
 ```bash
 # project root .env example
 OPENAI_API_KEY=sk-xxx
@@ -73,40 +77,35 @@ ariadne-mcp --yaml data.yaml --llm-model gpt-4o-mini --llm-api-key sk-xxx \
     --embedding-model BAAI/bge-m3 --embedding-local
 ```
 
-### 11 tools
+### 10 tools
 
 | Tool | Description |
 |------|-------------|
 | `dba_add_conversation` | append a conversation; queued in the scheduler first and maintained asynchronously once a threshold is reached |
 | `dba_query_memory` | purpose-driven associative retrieval (PAR pipeline: Jump Axis + Purpose Regression + Peak Finding) |
-| `dba_add_note` | write a project note as an ordinary graph node (it can also be recalled by the memory layer) |
-| `dba_query_knowledge` | keyword-exact lookup over project facts/conventions/APIs/error codes; results contain no edges |
+| `dba_query_knowledge` | literal keyword screening over **all active nodes**; results contain no edges |
 | `dba_temporal_lookup` | standalone single-hop temporal query (only "time → event", reverse direction) for "what happened at a given time" |
 | `dba_inspect_graph` | expand a node's 1-hop neighbors |
 | `dba_intervene` | manually CRUD nodes and edges |
 | `dba_checkpoint` | save a full checkpoint |
-| `dba_get_stats` | graph statistics (including the note count) |
-| `dba_review_graph` | graph health check (read-only): reports likely duplicate pairs and isolated nodes, never edits the graph |
-| `dba_review_sources` | source tracing (read-only): checks extraction quality against the original conversations; requires `ARIADNE_SOURCE_STORE=1` |
+| `dba_get_stats` | graph statistics (including the raw-fallback count) |
+| `dba_review_graph` | graph health check (read-only): reports likely duplicate pairs, isolated nodes and pending raw fallbacks, never edits the graph |
+| `dba_review_sources` | source tracing (read-only): audits **node** extraction against the original conversations; edges are not audited (fix them by re-linking/deleting). Source store is on by default; `ARIADNE_SOURCE_STORE=0` disables |
 
-### Notes and knowledge lookup (`dba_add_note` / `dba_query_knowledge`)
+### Keyword lookup (`dba_query_knowledge`)
 
-- A note is an ordinary node: `metadata.channel="note"`, indexed by the vector store, and usable as a PAR seed. It is not a separate store.
-- `dba_add_note(title, text, observed_at?, source_hint?, fidelity?, tags?)`
-  - `title` is required; `text` must be ≤ 4000 chars, otherwise it is rejected and you should split it;
-  - `tags` express project ownership (e.g. `project:alpha`); there is no server-side project filter;
-  - `source_hint` is a hint only; the server never fetches it;
-  - identical `title + text + tags` returns the existing node (`duplicate=true`).
+- The index covers **all active nodes** (extracted nodes and raw fallbacks included); it is not a separate knowledge base.
 - `dba_query_knowledge(query, top_k?)`
-  - keyword matching: ASCII tokens + CJK character bigrams; `title/tags/text` weights are 3/2/1;
-  - returns `node_id / text / score / observed_at / source_hint / fidelity`, **without edges**;
+  - keyword matching: ASCII tokens + CJK character bigrams;
+  - returns `node_id / text / score`, **without edges**;
   - no threshold and no refusal; an empty list simply means no keyword hit.
-- `ARIADNE_MCP_RERANK=1` enables reranking for the knowledge layer. It is independent of `ALM_RERANK`; failures fall back to keyword order.
+- `ARIADNE_MCP_RERANK=1` enables reranking for keyword results. It is independent of `ALM_RERANK`; failures fall back to keyword order.
+- Historical data may still contain `metadata.channel="note"` nodes (early project notes); the panel can filter by that flag, but the write entry has been removed.
 
 ### Retrieval details (`dba_query_memory`)
 
 - Runs the full PAR pipeline: Jump Axis directed expansion + Purpose Regression filtering + Peak Finding termination.
-- `rerank_k` caps the number of returned items (rank-k, default 20); `total_matched` is the true candidate count and `returned` is the number actually returned. If `total_matched > returned`, raise `rerank_k` to retrieve the remaining memories.
+- Reranking and compression happen inside StoryRank, which returns a **single** narrative and never truncates by count. `total_matched` is the true PAR candidate count; `returned` is the number of story segments (always 0 or 1).
 - Deprecated/forgotten nodes are filtered out and never appear in results.
 
 ### Agent integration

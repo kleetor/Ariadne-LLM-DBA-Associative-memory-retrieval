@@ -214,7 +214,7 @@ def main() -> int:
         query, facts = item["query"], item["gold_facts"]
         gold_text = "、".join(facts)
 
-        mcp_res = call_tool(mcp_handlers, "dba_query_memory", {"query": query, "rerank_k": 20})
+        mcp_res = call_tool(mcp_handlers, "dba_query_memory", {"query": query})
         # 0927 审查 C1 消费者同步：query_memory 不再返回采纳 id 列表（story_nodes），无法按 id
         # 取采纳节点正文；原"MCP 记忆 = 故事 + 采纳节点正文"退化为只用故事正文（res["stories"]），
         # 不做任何节点级编造。

@@ -157,7 +157,7 @@ def main() -> int:
     with engine._lease(USER_ID, create=False) as space:
         for item in queries:
             query = item["query"]
-            res = call_tool(mcp_handlers, "dba_query_memory", {"query": query, "rerank_k": 20})
+            res = call_tool(mcp_handlers, "dba_query_memory", {"query": query})
             # 0927 审查 C1 消费者同步：query_memory 不再返回采纳 id 列表（story_nodes），
             # 无法按 id 取采纳节点正文；原"MCP 块 = 故事 + 采纳节点原文"退化为只用故事正文
             # （res["stories"]），不做任何节点级编造。

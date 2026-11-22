@@ -295,7 +295,7 @@ def run_companion_chain(ctx: dict) -> list:
     for q in DATASET["queries"]:
         rounds, stories = [], set()
         for i in range(REPLY_ROUNDS):
-            qres = call_tool(handlers, "dba_query_memory", {"query": q["text"], "rerank_k": 3})
+            qres = call_tool(handlers, "dba_query_memory", {"query": q["text"]})
             story = "\n".join(qres.get("stories") or [])
             stories.add(story)
             reply = gen_reply(reply_llm, q["text"], story)

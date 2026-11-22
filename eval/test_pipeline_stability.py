@@ -171,7 +171,7 @@ def run_round(idx: int) -> dict:
         1 for _, nd in graph.graph.nodes(data=True) if nd.get("source_ref"))
 
     # ── ③ 检索 ──
-    q = call_tool(handlers, "dba_query_memory", {"query": "客户要换主色那件事怎么样了？", "rerank_k": 3})
+    q = call_tool(handlers, "dba_query_memory", {"query": "客户要换主色那件事怎么样了？"})
     res["obs"]["query_returned"] = q.get("returned")
     if not q.get("stories"):
         res["fail"].append("主链路检索返回空")

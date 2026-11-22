@@ -105,7 +105,7 @@ Ariadne 将 LLM 对话中的事实抽取、纠错、去重、废弃等数据库�
 | 🔧 DBA 自动维护      | 节点抽取与边连接两步分离，纠错/废弃 + 批量异步调度降 token |
 | 🎯 目的驱动检索        | 跳转轴 + 目的回归 + 寻峰终止，替代固定 top-K    |
 | 📖 StoryRank 故事化 | 因果链路 → 故事片段，避免污染聊天上下文           |
-| 🔌 MCP 集成        | 11 个工具（含笔记与知识检索），支持 stdio / SSE 两种传输 |
+| 🔌 MCP 集成        | 10 个工具（记忆检索 + 关键词精筛 + 运维），支持 stdio / SSE 两种传输 |
 | ☁️ ALM 同步 HTTP   | `/add` `/search` 契约供外部程序调用，按 `user_id` 隔离空间 |
 | 🔐 统一鉴权        | 面板与 MCP 共用 `auth.json`，Cookie / Basic / Bearer；改密即吊销旧会话 |
 | 🖥️ 3D 可视化       | 力导向图、图层过滤、聚焦模式、在线 CRUD          |
@@ -120,7 +120,7 @@ Ariadne 将 LLM 对话中的事实抽取、纠错、去重、废弃等数据库�
   </a>
 </p>
 
-写入把对话先放进缓冲，由后台 worker 批量维护（triage → 抽取 → 连边 → 去重/废弃）；读取沿「向量种子 → 有向扩展 → 目的回归 → 寻峰 → StoryRank」走完整条链。MCP 与面板共用同一份 YAML 和跨进程文件锁，ALM 则按 `user_id` 各持一份空间。笔记同时进入向量库与关键词倒排，但只作检索种子，不参与边连接。
+写入把对话先放进缓冲，由后台 worker 批量维护（triage → 抽取 → 连边 → 去重/废弃）；读取沿「向量种子 → 有向扩展 → 目的回归 → 寻峰 → StoryRank」走完整条链。MCP 与面板共用同一份 YAML 和跨进程文件锁，ALM 则按 `user_id` 各持一份空间。抽取失败时原文会以兜底节点落库（`channel=raw`），并在巡检报告里持续列出待处理项。
 
 | 层       | 职责              | 主要模块                                                      |
 | ------- | --------------- | --------------------------------------------------------- |
@@ -128,7 +128,7 @@ Ariadne 将 LLM 对话中的事实抽取、纠错、去重、废弃等数据库�
 | **存储层** | 图谱 + 向量索引       | `graph/memory_graph.py`、`embedding/store.py`              |
 | **检索层** | 有向扩展、目的过滤、寻峰终止  | `core/jump_axis.py`、`core/purpose.py`、`core/peak_find.py` |
 | **故事层** | 因果链路 → 故事片段     | `retrieval/retriever.py`（StoryRank）                       |
-| **知识层** | 笔记关键词精筛          | `kwindex.py`（倒排表，无向量依赖）                              |
+| **关键词层** | 全量节点的字面精筛       | `kwindex.py`（倒排表，无向量依赖）                              |
 | **接入层** | API / MCP / 可视化 | `viz/api_server.py`、`mcp_server.py`                       |
 
 ## 安装
@@ -359,9 +359,9 @@ PAR 检索产出的是由「节点 + 关系」构成的**因果链路**，而非
 
 ## MCP 服务
 
-MCP Server 将记忆图谱暴露为 11 个工具，支持 stdio 与 SSE 两种传输模式。
+MCP Server 将记忆图谱暴露为 10 个工具，支持 stdio 与 SSE 两种传输模式。
 
-其中 `dba_add_note` 写入项目笔记、`dba_query_knowledge` 用关键词做精确检索。笔记是普通节点（`metadata.channel="note"`），不是独立存储，因此既能被知识层按字面精筛，也能被记忆层按语义召回。
+其中 `dba_query_knowledge` 用关键词对**全部记忆节点**做字面精筛，与 `dba_query_memory` 的语义联想互补；它不是独立的知识库，也没有单独的写入入口。
 
 - 工具清单、环境变量、图谱切换与 Agent 接入：[docs/MCP.md](docs/MCP.md)
 - 一键启动：`python start_all.py`

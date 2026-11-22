@@ -88,19 +88,10 @@ MAX_CONVERSATION_LENGTH = 20000
 # 超大文本固化进图（每次 to_dict / yaml.dump / 检索响应都会被拖累）
 MAX_NODE_CONTENT_LENGTH = 20000
 
-# 笔记：单条正文上限、返回单条截断长度、默认返回条数
-MAX_NOTE_LENGTH = 4000
+# 关键词检索（dba_query_knowledge）：返回单条截断长度、默认/最大返回条数
 NOTE_TEXT_LIMIT = 1200
 NOTE_TOP_K = 8
 NOTE_MAX_TOP_K = 50
-NOTE_FIDELITIES = {"verbatim", "transcript", "summary"}
-
-# 笔记的附属字段上限：标题/tags/source_hint 会整份进 metadata（落到 YAML 并随
-# 检索返回），不设上限等于给了另一条灌大文本的通道。
-MAX_NOTE_TITLE_LENGTH = 200
-MAX_NOTE_TAGS = 20
-MAX_NOTE_TAG_LENGTH = 50
-MAX_NOTE_SOURCE_HINT_LENGTH = 500
 
 # inspect_graph 的返回体积上限：hub 节点可能有几千条边，逐条返回邻居正文会把
 # 整张图塞进一次工具响应（也是把私有内容交给调用方的放大器）。
@@ -654,8 +645,13 @@ class DBAServer:
                     kwargs["frame_anchor"] = self.frame_anchor
         return kwargs
 
-    def query_memory(self, query: str, rerank_k: int = 20) -> dict:
-        """检索记忆：走完整 P 链路 + StoryRank 故事化，返回记忆故事片段"""
+    def query_memory(self, query: str) -> dict:
+        """检索记忆：走完整 P 链路 + StoryRank 故事化，返回记忆故事片段
+
+        重排与压缩都在 StoryRank 内部完成，产出的是**一段**叙事，不提供条数上限：
+        早期这里有一个 `rerank_k` 做 `stories[:k]`，但 `stories` 长度恒为 1，
+        参数从未生效，且"截断叙事"本身没有语义（截一半的故事不可读）。
+        """
         if self.retriever is None:
             return {"error": "检索链路未初始化（需要 embedding）", "stories": []}
 
@@ -683,14 +679,17 @@ class DBAServer:
                         **self._story_kwargs(query),
                     )
                 stories = result.get("stories", [])
-                # rank-k：最多返回 rerank_k 个故事片段（0 表示不截断）
-                if rerank_k > 0:
-                    stories = stories[:rerank_k]
                 return {
                     "stories": stories,
                     # StoryRank 只回 `used` 计数，不再回采纳/丢弃的 id 列表
                     # （理由见 InferenceEngine.story_rank 的 Returns）。
                     "story_used": result.get("story_used", 0),
+                    # 降级叙事与"寻峰筛掉多少"此前只在服务端可见：调用方拿到的
+                    # 只是一个正常的故事串，看不出它是拼接降级产物、也看不出
+                    # 峰值带宽是否退化成"几乎全收"。这三项只回观测值，不改判定。
+                    "story_degraded": bool(result.get("story_degraded")),
+                    "peak_band": result.get("peak_band") or {},
+                    "purpose_pass": result.get("purpose_pass") or [],
                     "total_matched": result.get("total_candidates", 0),
                     "returned": len(stories),
                     "query": query,
@@ -723,118 +722,8 @@ class DBAServer:
         self._kw_index.build(nodes)
         self._kw_dirty = False
 
-    def add_note(
-        self,
-        title: str,
-        text: str,
-        observed_at: Optional[int] = None,
-        source_hint: Optional[str] = None,
-        fidelity: Optional[str] = None,
-        tags: Optional[list] = None,
-    ) -> dict:
-        """把一条项目笔记写成普通节点（channel=note）。
-
-        笔记进向量索引（可被记忆层召回），同时进关键词倒排表；
-        不调用 DBA、不进调度器、不建边。
-        """
-        title = (title or "").strip()
-        text = (text or "").strip()
-        if not title:
-            return {"error": "title 不能为空"}
-        if len(title) > MAX_NOTE_TITLE_LENGTH:
-            return {"error": f"title 超过 {MAX_NOTE_TITLE_LENGTH} 字符上限"}
-        if not text:
-            return {"error": "text 不能为空"}
-        if len(text) > MAX_NOTE_LENGTH:
-            return {"error": f"text 超过 {MAX_NOTE_LENGTH} 字，请拆成多条笔记"}
-        if observed_at is not None and (
-            isinstance(observed_at, bool) or not isinstance(observed_at, int)
-        ):
-            return {"error": "observed_at 必须为 Unix 毫秒整数，或省略"}
-        if fidelity is not None:
-            fidelity = str(fidelity).strip().lower() or None
-            if fidelity is not None and fidelity not in NOTE_FIDELITIES:
-                return {"error": f"fidelity 只能是 {sorted(NOTE_FIDELITIES)} 或省略"}
-        if isinstance(tags, str):
-            tags = [tags]
-        if tags is None:
-            tags = []
-        if not isinstance(tags, list) or any(not isinstance(t, str) for t in tags):
-            return {"error": "tags 必须是字符串数组"}
-        tags = [t.strip() for t in tags if t and t.strip()]
-        if len(tags) > MAX_NOTE_TAGS:
-            return {"error": f"tags 最多 {MAX_NOTE_TAGS} 个"}
-        if any(len(t) > MAX_NOTE_TAG_LENGTH for t in tags):
-            return {"error": f"单个 tag 不能超过 {MAX_NOTE_TAG_LENGTH} 字符"}
-        source_hint = (source_hint or "").strip() or None
-        if source_hint and len(source_hint) > MAX_NOTE_SOURCE_HINT_LENGTH:
-            return {"error": f"source_hint 超过 {MAX_NOTE_SOURCE_HINT_LENGTH} 字符上限"}
-
-        now = int(time.time() * 1000)
-        try:
-            with self.write_guard():
-                with self._lock:
-                    # 完全相同的笔记直接复用，避免重复落盘与重复召回
-                    norm_tags = sorted(tags)
-                    for nid, nd in self.graph.graph.nodes(data=True):
-                        meta = nd.get("metadata") or {}
-                        if meta.get("channel") != "note":
-                            continue
-                        if (
-                            (meta.get("title") or "") == title
-                            and (nd.get("content") or "") == text
-                            and sorted(meta.get("tags") or []) == norm_tags
-                        ):
-                            return {
-                                "duplicate": True,
-                                "note_id": nid,
-                                "title": title,
-                                "message": "同标题、同正文、同 tags 的笔记已存在，未重复写入",
-                            }
-
-                    self._next_node_id = self._compute_next_id()
-                    nid = f"n{self._next_node_id}"
-                    self._next_node_id += 1
-
-                    meta = {
-                        "channel": "note",
-                        "title": title,
-                        "created_at": now,
-                        "observed_at": observed_at if observed_at is not None else now,
-                        "tags": tags,
-                    }
-                    if observed_at is None:
-                        meta["time_inferred"] = True
-                    if source_hint:
-                        meta["source_hint"] = source_hint
-                    if fidelity:
-                        meta["fidelity"] = fidelity
-
-                    self.graph.add_memory(nid, text, NodeType.THING, metadata=meta)
-                    # 用 THING：不新增节点类型（会牵动跳转轴权重与前端类型表）；
-                    # THING 已在重复巡检的默认排除类型里，笔记不会被当成“疑似重复事实”。
-                    self.graph.graph.nodes[nid]["timestamp"] = now
-                    if self.vector_store is not None:
-                        try:
-                            self.vector_store.add_memories([nid], [text])
-                        except Exception:
-                            self.graph.graph.remove_node(nid)
-                            raise
-                    self._save()
-        except Exception as e:
-            return {"error": str(e), "title": title}
-
-        return {
-            "note_id": nid,
-            "title": title,
-            "project_tags": tags,
-            "observed_at": meta["observed_at"],
-            "time_inferred": bool(meta.get("time_inferred")),
-            "created_at": now,
-        }
-
     def query_knowledge(self, query: str, top_k: int = NOTE_TOP_K) -> dict:
-        """知识层检索：关键词匹配（可选 rerank），返回不含 edge 的节点列表。"""
+        """关键词精确检索：对**全部**活跃节点做字面匹配（可选 rerank）。"""
         query = (query or "").strip()
         if not query:
             return {"error": "query 不能为空", "notes": []}
@@ -886,7 +775,7 @@ class DBAServer:
             "method": "keyword+rerank" if reranked else "keyword",
         }
 
-    def run_chain_trace(self, query: str, on_stage=None, rerank_k: int = 20) -> dict:
+    def run_chain_trace(self, query: str, on_stage=None) -> dict:
         """面板「调用测试」用：走同一条真实链路，但把每一段轨迹都带回来。
 
         与 query_memory 的差别**只在返回体**：那边是给 MCP 工具调用方的精简结果，
@@ -931,8 +820,6 @@ class DBAServer:
                     on_stage=on_stage, **self._story_kwargs(query),
                 )
             stories = result.get("stories", [])
-            if rerank_k > 0:
-                stories = stories[:rerank_k]
             # 「经过的节点」= PAR 每跳候选的并集（面板据此在图谱里做激活呈现）
             visited = []
             for hop in result.get("hop_history", []):
@@ -1015,8 +902,8 @@ class DBAServer:
     def review_sources(self, batch_id: str = None, max_batches: int = 3) -> dict:
         """溯源巡检：把"该批原文 + 该批产出的节点"交给 LLM 核对，**只报不改**。
 
-        依赖原文按批次落盘（`ARIADNE_SOURCE_STORE=1`）。仅读取 `sources/` 目录，
-        不写图谱；LLM 调用在锁外进行（持锁只做一次节点快照）。
+        依赖原文按批次落盘（默认开启；`ARIADNE_SOURCE_STORE=0` 会关闭）。仅读取
+        `sources/` 目录，不写图谱；LLM 调用在锁外进行（持锁只做一次节点快照）。
 
         与 review_graph 共用 `_review_running` 非阻塞互斥（该锁为 RLock：空闲巡检整轮
         持锁后再调用本方法，同线程重入必须放行）。这样两次手动调用、以及手动与自动
@@ -1036,8 +923,8 @@ class DBAServer:
         if not source_dir:
             return {
                 "error": "未开启原文存储，无法做溯源核对",
-                "hint": "设置环境变量 ARIADNE_SOURCE_STORE=1 后重启；"
-                        "注意这会落盘原始对话，请在确认隐私与体积可接受后再开。",
+                "hint": "原文存储默认开启；本次未启用说明 env 里显式设了 "
+                        "ARIADNE_SOURCE_STORE=0。确认隐私与体积可接受后删掉该项并重启。",
             }
         inference = getattr(self.retriever, "inference", None)
         if inference is None:
@@ -1150,31 +1037,51 @@ class DBAServer:
 
             isolated = []
             isolated_total = 0
-            if include_isolated:
-                with self._lock:
-                    for nid, nd in self.graph.graph.nodes(data=True):
-                        if (nd.get("deprecated") or nd.get("forgotten")
-                                or (nd.get("metadata") or {}).get("channel") == "note"):
-                            continue
-                        if self.graph.graph.in_degree(nid) + self.graph.graph.out_degree(nid):
-                            continue
-                        isolated_total += 1
-                        if len(isolated) < REVIEW_MAX_ISOLATED:
-                            isolated.append({
+            # 原文兜底节点（channel=raw）：抽取没产出时把原文落成的 THING。
+            # 它们天生没有边，**不能算孤立**（否则永远被报成待处理）；但也需要
+            # 主动浮出来——兜底只是"保证不丢"，不是"处理完了"，长期堆着会稀释检索。
+            raw_backlog = []
+            raw_total = 0
+            with self._lock:
+                for nid, nd in self.graph.graph.nodes(data=True):
+                    if nd.get("deprecated") or nd.get("forgotten"):
+                        continue
+                    channel = (nd.get("metadata") or {}).get("channel")
+                    if channel == "raw":
+                        raw_total += 1
+                        if len(raw_backlog) < REVIEW_MAX_ISOLATED:
+                            raw_backlog.append({
                                 "id": nid,
                                 "content": truncate_for_return(
                                     nd.get("content") or "", INSPECT_TEXT_LIMIT)[0],
+                                "timestamp": nd.get("timestamp"),
                             })
+                        continue
+                    if channel == "note" or not include_isolated:
+                        continue
+                    if self.graph.graph.in_degree(nid) + self.graph.graph.out_degree(nid):
+                        continue
+                    isolated_total += 1
+                    if len(isolated) < REVIEW_MAX_ISOLATED:
+                        isolated.append({
+                            "id": nid,
+                            "content": truncate_for_return(
+                                nd.get("content") or "", INSPECT_TEXT_LIMIT)[0],
+                        })
 
             return {
                 "scanned": len(active),
                 "duplicate_candidates": pairs,
                 "isolated_nodes": isolated,
                 "isolated_total": isolated_total,
+                "raw_backlog": raw_backlog,
+                "raw_total": raw_total,
                 "threshold": threshold,
                 "note": ("本报告只做候选发现，**未修改图谱**。确认后请用 dba_intervene "
                          "（update_node 合并内容 / delete_node 删除冗余）落盘；"
-                         "注意节点类型为 thing 的短内容（如日期锚点）已默认排除在比对之外。"),
+                         "注意节点类型为 thing 的短内容（如日期锚点）已默认排除在比对之外。"
+                         "raw_backlog 是抽取失败时的原文兜底节点：它们不进图结构、"
+                         "但会参与检索，确认后可整理成正常记忆或用 delete_node 删除。"),
             }
         finally:
             self._review_running.release()
@@ -1281,6 +1188,11 @@ class DBAServer:
                 # 空内容会建出脏节点（且会用空串做 embedding 污染向量库），在入口挡掉
                 if not isinstance(content, str) or not content.strip():
                     return {"error": "content 不能为空", "action": action}
+                # 与 update_node 同一口径：人工干预是绕过抽取层的旁路，
+                # 不设上限等于给了另一条"把超大文本固化进图"的通道。
+                if len(content) > MAX_NODE_CONTENT_LENGTH:
+                    return {"error": f"content 超过 {MAX_NODE_CONTENT_LENGTH} 字符上限",
+                            "action": action}
                 # 精确重复：直接拒绝（零误判）
                 for nid, nd in self.graph.graph.nodes(data=True):
                     if (nd.get("content") or "").strip() == content.strip():
@@ -1553,6 +1465,11 @@ class DBAServer:
                 1 for _, d in nodes
                 if (d.get("metadata") or {}).get("channel") == "note"
             )
+            # 抽取失败时的原文兜底节点：数量持续增长说明抽取在稳定失败，需要处理
+            raw_fallback = sum(
+                1 for _, d in nodes
+                if (d.get("metadata") or {}).get("channel") == "raw"
+            )
 
             return {
                 "total_nodes": len(nodes),
@@ -1561,6 +1478,7 @@ class DBAServer:
                 "forgotten": forgotten,
                 "active": len(nodes) - deprecated - forgotten,
                 "notes": notes,
+                "raw_fallback": raw_fallback,
                 "node_types": node_types,
             }
 
@@ -1589,6 +1507,7 @@ TOOL_SCHEMAS = [
             "properties": {
                 "conversation": {
                     "type": "string",
+                    "maxLength": MAX_CONVERSATION_LENGTH,
                     "description": (
                         "要记录的对话原话，每行一条「[昵称]（QQ 号码）原话」。"
                         "只包含实际说出的内容，不要追加旁白、解释、时间说明或总结。"
@@ -1604,13 +1523,14 @@ TOOL_SCHEMAS = [
         "name": "dba_query_memory",
         "description": (
             "在回答用户问题、给出建议或延续话题之前，先调用此工具检索与查询相关的"
-            "历史记忆，返回按因果链路整理好的故事片段，以便结合用户过去的上下文做出更贴合的回答。\n"
+            "历史记忆，返回按因果链路整理好的一段故事。\n"
             "故事里若出现「记录于 YYYY-MM-DD」，那是这条记忆**被记下**的时间，"
             "**不是事件发生时间**，不要据此断言事情发生在哪一天。\n"
             "适用范围（除了下面 dba_temporal_lookup 明确的【在某个时间发生了什么】之外，都用这个）：\n"
             "- 问原因/为什么（因果）、现状、整体看法、与谁/什么有关、偏爱、特性\n"
             "- 问某个具体事件发生在什么时候（事件→时间）、跨多个时期的完整经历（从高中到工作…）\n"
-            "- 需要跨节点联想/推理/先后顺序的记忆检索"
+            "- 需要跨节点联想/推理/先后顺序的记忆检索\n"
+            "返回的是一段完整叙事（重排与压缩由故事整理完成），不做条数截断。"
         ),
         "inputSchema": {
             "type": "object",
@@ -1619,60 +1539,22 @@ TOOL_SCHEMAS = [
                     "type": "string",
                     "description": "查询文本，用于联想检索相关的记忆",
                 },
-                "rerank_k": {
-                    "type": "integer",
-                    "description": "最多返回的故事片段数（默认 20，0 表示不截断）",
-                },
             },
             "required": ["query"],
         },
     },
     {
-        "name": "dba_add_note",
-        "description": (
-            "把一条项目事实、结论、约定或决策写成可检索笔记。\n"
-            "只记你读到的结论与关键片段，不要粘贴整篇文档；一条笔记只讲一件事，"
-            f"超过 {MAX_NOTE_LENGTH} 字请拆成多条。\n"
-            "项目归属用 tags 表达（如 project:alpha），不要编造未看到的内容。"
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "title": {"type": "string", "description": "笔记标题（必填，用于归档与检索）"},
-                "text": {"type": "string", "description": f"笔记正文，≤ {MAX_NOTE_LENGTH} 字"},
-                "observed_at": {
-                    "type": "integer",
-                    "description": "事件发生时间（Unix 毫秒）；省略则用写入时间并标记 time_inferred",
-                },
-                "source_hint": {
-                    "type": "string",
-                    "description": "来源提示（URL/文件名/章节）；系统不会抓取，只用于人工回溯",
-                },
-                "fidelity": {
-                    "type": "string",
-                    "enum": ["verbatim", "transcript", "summary"],
-                    "description": "保真度，由你自陈；系统不校验",
-                },
-                "tags": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "标签；项目归属写成 project:<name>",
-                },
-            },
-            "required": ["title", "text"],
-        },
-    },
-    {
         "name": "dba_query_knowledge",
         "description": (
-            "用关键词精确检索项目事实、约定、接口、错误码、配置项。\n"
-            "与 dba_query_memory 分开：那个负责用户经历与联想，这个负责字面精筛。"
-            "返回只含节点正文与出处，不含关系边；是否采纳由你判断。"
+            "用关键词对**全部记忆节点**做字面精筛（不经过向量/联想）。\n"
+            "适合找确切词：人名、地点、物品、时间表述、原文里出现过的短语；"
+            "与 dba_query_memory 互补——那个负责语义联想，这个负责字面命中。"
+            "返回只含节点正文，不含关系边；是否采纳由你判断。"
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "query": {"type": "string", "description": "查询词，尽量用接口名、错误码、项目名等确切词"},
+                "query": {"type": "string", "description": "查询词，尽量用原文里会出现的确切词（人名、地点、物品、短语）"},
                 "top_k": {
                     "type": "integer",
                     "description": f"返回条数（默认 {NOTE_TOP_K}，上限 {NOTE_MAX_TOP_K}）",
@@ -1789,14 +1671,18 @@ TOOL_SCHEMAS = [
             "properties": {
                 "save_dir": {
                     "type": "string",
-                    "description": "保存目录路径（默认为 yaml 文件所在目录）",
+                    "description": (
+                        "保存目录（相对路径按 yaml 所在目录解析）；省略时写到 "
+                        "<yaml 目录>/snapshots/latest。不能指向 yaml 目录本身"
+                        "（会覆盖正在使用的图谱）"
+                    ),
                 },
             },
         },
     },
     {
         "name": "dba_get_stats",
-        "description": "获取当前图谱的统计信息（节点数、边数、废弃节点数等）",
+        "description": "获取当前图谱的统计信息（节点数、边数、废弃节点数、raw 兜底节点数等）",
         "inputSchema": {
             "type": "object",
             "properties": {},
@@ -1811,6 +1697,9 @@ TOOL_SCHEMAS = [
             "- 语义去重只对「事实陈述」有意义：类型为 thing 的短内容（日期锚点这类）"
             "默认排除——否则「2026年9月7日」与「2026年8月31日」会大量误报。\n"
             "- 孤立节点会因连续多轮无人访问而被遗忘，报告里提前暴露，可按需连边或删除。\n"
+            "- raw_backlog：抽取失败时落下的**原文兜底节点**（channel=raw）。它们不进图结构、"
+            "但会参与检索；兜底只保证「不丢」，不代表「处理完」，因此单独列出来提醒处理"
+            "（整理成正常记忆，或用 delete_node 删除）。\n"
             "- 确认某对确实是同一条事实后，用 dba_intervene 落盘："
             "update_node 把内容合并到保留的那条，delete_node 删掉冗余的那条。"
         ),
@@ -1840,8 +1729,10 @@ TOOL_SCHEMAS = [
             "- missing：原文里有、但没抽出来的关键事实，重点是「为什么做某个选择」"
             "（被放弃的选项、取舍依据）；\n"
             "- granularity：粒度不对（相对时间表述被独立成节点、多件事被合并成一条）。\n"
-            "需要服务端开启原文存储（环境变量 ARIADNE_SOURCE_STORE=1）才能用；"
-            "未开启时会返回提示。不传 batch_id 则核对最近几批。\n"
+            "**只核对节点**：边不参与原文核对——边没有独立的原文依据（它由两端节点推导），"
+            "连错或多余应通过 delete_edge + create_edge 重新连边来修正，而不是对着原文判真假。\n"
+            "原文存储默认开启（`ARIADNE_SOURCE_STORE=0` 会关闭）；"
+            "关闭时本工具返回提示。不传 batch_id 则核对最近几批。\n"
             "报告只是建议：确认后用 dba_intervene 落盘（无据节点 deprecate/delete_node，"
             "漏抽的用 create_node 补）。原文落盘时已做标识脱敏，个别片段可能带 ***。"
         ),
@@ -1878,7 +1769,7 @@ def _build_tool_list() -> list:
 # 与 source_store「原文落盘需 opt-in」的姿态保持一致
 _OPLOG_REDACT_TOOLS = {
     "dba_add_conversation", "dba_query_memory", "dba_temporal_lookup",
-    "dba_add_note", "dba_query_knowledge",
+    "dba_query_knowledge",
 }
 
 
@@ -1962,8 +1853,6 @@ def create_mcp_server(dba: DBAServer) -> "Server":
                 result = await run_in_threadpool(dba.add_conversation, **arguments)
             elif name == "dba_query_memory":
                 result = await run_in_threadpool(dba.query_memory, **arguments)
-            elif name == "dba_add_note":
-                result = await run_in_threadpool(dba.add_note, **arguments)
             elif name == "dba_query_knowledge":
                 result = await run_in_threadpool(dba.query_knowledge, **arguments)
             elif name == "dba_temporal_lookup":
@@ -1988,7 +1877,28 @@ def create_mcp_server(dba: DBAServer) -> "Server":
                     )],
                     isError=True,
                 )
-        except Exception:
+        except Exception as e:
+            # 参数不匹配单独上报：工具分发用 `**arguments` 直调，参数名拼错 / 多传
+            # 未知字段抛的是 TypeError；若与真正的服务端故障混在一起，调用方会误判
+            # 成「服务挂了」。只按消息特征识别，其它 TypeError 仍按内部错误处理。
+            text = str(e)
+            if isinstance(e, TypeError) and (
+                "unexpected keyword argument" in text
+                or "required positional argument" in text
+                or ("missing" in text and "argument" in text)
+            ):
+                oplog.log_operation("llm", op=name, request=_oplog_request(name, arguments),
+                                    result=_oplog_result(name, {"status": "bad_arguments",
+                                                                "error": text}),
+                                    actor=actor, tool=name, path=log_path)
+                return CallToolResult(
+                    content=[TextContent(
+                        type="text",
+                        text=json.dumps({"error": f"参数不匹配: {text}"},
+                                        ensure_ascii=False, indent=2),
+                    )],
+                    isError=True,
+                )
             # 与 ALM 侧同口径：原始异常可能带文件路径、上游响应片段甚至记忆正文，
             # 只回一个可对账的 error_id，明细留在服务端日志。
             error_id = uuid.uuid4().hex[:8]
@@ -2010,8 +1920,12 @@ def create_mcp_server(dba: DBAServer) -> "Server":
         oplog.log_operation("llm", op=name, request=_oplog_request(name, arguments),
                             result=_oplog_result(name, result),
                             actor=actor, tool=name, path=log_path)
+        # 业务失败（工具自身返回 {"error": ...}）必须带 isError=true：
+        # 否则调用方只能从正文里"猜"这次是失败还是成功但为空。
+        failed = isinstance(result, dict) and bool(result.get("error"))
         return CallToolResult(
-            content=[TextContent(type="text", text=json.dumps(result, ensure_ascii=False, indent=2))]
+            content=[TextContent(type="text", text=json.dumps(result, ensure_ascii=False, indent=2))],
+            isError=failed,
         )
 
     server.add_request_handler("tools/list", PaginatedRequestParams, handle_list_tools)
@@ -2141,6 +2055,38 @@ def _env_flag(name: str) -> bool:
     return value is not None and value.strip().lower() in ("1", "true", "yes", "on")
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    """带默认值的布尔环境变量：缺失或空串时返回 default，而不是 False。"""
+    value = os.environ.get(name)
+    if value is None or not value.strip():
+        return default
+    return value.strip().lower() in ("1", "true", "yes", "on")
+
+
+def _env_int(name: str, default: int) -> int:
+    """整数环境变量；缺失或非法时告警并退回默认值。"""
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        logging.getLogger("mcp").warning("%s=%r 不是整数，改用默认值 %s", name, raw, default)
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    """浮点环境变量；缺失或非法时告警并退回默认值。"""
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        logging.getLogger("mcp").warning("%s=%r 不是数值，改用默认值 %s", name, raw, default)
+        return default
+
+
 def _local_embeddings_available() -> bool:
     """检测 sentence-transformers 是否已安装（EMBEDDING_LOCAL=true 时需要）"""
     try:
@@ -2169,7 +2115,7 @@ def _print_status(graph, dba, retriever, vector_ready, args) -> None:
     print(f"  向量索引   : {'已就绪' if vector_ready else '未启用'}", file=sys.stderr)
     print(f"  传输模式   : {transport}", file=sys.stderr)
     print(f"  图谱规模   : {graph.node_count} 节点 / {graph.edge_count} 边", file=sys.stderr)
-    print("  工具        : dba_add_conversation / dba_query_memory / dba_add_note / "
+    print("  工具        : dba_add_conversation / dba_query_memory / "
           "dba_query_knowledge / dba_temporal_lookup / "
           "dba_inspect_graph / dba_intervene / dba_review_graph / dba_review_sources / "
           "dba_checkpoint / dba_get_stats", file=sys.stderr)
@@ -2294,8 +2240,13 @@ def main():
                 if os.path.exists(args.vector_index):
                     vector_store.load(args.vector_index, embeddings=embeddings)
 
-            # GraphBuilder
-            builder = GraphBuilder(graph=graph, vector_store=vector_store, lock=graph_lock)
+            # GraphBuilder：与论文附录 D 的**生产**配置对齐（去重 0.92、孤立遗忘关闭）。
+            # 构造函数默认 0.85 / 3 是论文里的「原型」值，直接沿用会让 MCP 比论文更
+            # 激进地去重、更快遗忘孤立节点，自动图统计也就不可比。
+            builder = GraphBuilder(
+                graph=graph, vector_store=vector_store, lock=graph_lock,
+                dedup_threshold=0.92, orphan_threshold=10 ** 9,
+            )
 
             # LLM：远程 API 必须显式配置 key；本地模型（自定义 base_url）才用占位符
             if not args.llm_api_key and not args.llm_base_url:
@@ -2325,14 +2276,28 @@ def main():
                 # 每条节点附带 evidence（原文支撑片段），供核查与后续溯源巡检使用；
                 # 不进检索/叙事，仅在 inspect_graph 可见，且受子串校验兜底。
                 enable_evidence=True,
-                # 原文按批次落盘（溯源巡检的前提）。**默认关闭**：存的是原始对话，
-                # 需显式设 ARIADNE_SOURCE_STORE=1 才开；落盘时做标识脱敏 + 30 天 TTL。
+                # 原文按批次落盘（溯源巡检的前提）。**默认开启**（置 0 关闭）：
+                # 没有原文，`dba_review_sources` 无法核对节点是不是幻觉。落盘时做
+                # 标识脱敏 + 30 天 TTL，故默认开启不改变抽取输入。
                 enable_source_store=source_store_enabled(),
                 source_dir=default_source_dir(args.yaml) if source_store_enabled() else None,
+                # 维护判断前置开关：**默认关闭**。MCP 的写入由 agent 主动发起，
+                # 它在调工具前已经判断过一次「这条值不值得记」；再 triage 一次既是
+                # 重复判断，判 SKIP 后还要走 store_raw 建 raw 节点（多一次 embedding，
+                # 且低信息量节点会进入检索候选）。ALM 侧相反：写入来自聊天流、
+                # 不由 agent 判断，那里才是 triage 的主场。需要时置 1 打开。
+                triage_enabled=_env_bool("ARIADNE_MCP_TRIAGE", False),
             )
 
-            # Scheduler（异步批量维护）
-            config = ScheduleConfig()
+            # Scheduler（异步批量维护）：批大小与触发阈值均可调，避免把调好的
+            # 数字写死在启动处（此前 `ScheduleConfig()` 无参，改配置只能改代码）。
+            config = ScheduleConfig(
+                idle_timeout=_env_float("ARIADNE_MCP_IDLE_TIMEOUT", 90.0),
+                max_batch_rounds=_env_int("ARIADNE_MCP_MAX_BATCH_ROUNDS", 10),
+                proactive_entry_threshold=_env_int("ARIADNE_MCP_PROACTIVE_ENTRY", 3),
+                proactive_batch_size=_env_int("ARIADNE_MCP_PROACTIVE_BATCH", 6),
+                auto_skip_threshold=_env_int("ARIADNE_MCP_AUTO_SKIP", 5),
+            )
             scheduler_instance = MaintenanceScheduler(
                 dba=dba_instance,
                 config=config,
@@ -2363,6 +2328,9 @@ def main():
                         vector_store=vector_store,
                         inference=inference,
                         path_tracker=path_tracker,
+                        # 论文 Alg.1 第 10–11 步：μ_h 超过峰值后 h−h* > patience 即停。
+                        # 旧实现的 min_delta + 回升重置会让停止点比论文晚。
+                        peak_strict=True,
                     )
                     vector_ready = vector_store.store is not None
                 except Exception as e:
@@ -2459,8 +2427,10 @@ def main():
         def _on_review(report):
             if report.get("skipped") or report.get("aborted"):
                 return
-            summary = (report.get("graph") or {}).get("duplicate_candidates")
+            graph_report = report.get("graph") or {}
+            summary = graph_report.get("duplicate_candidates")
             print(f"[DBA MCP] 空闲巡检完成: 候选重复对 {len(summary or [])} 组, "
+                  f"raw 兜底待处理 {graph_report.get('raw_total', 0)} 个, "
                   f"核对批次 {len(report.get('sources') or [])} 批; 报告见 {review_scheduler.review_dir}",
                   file=sys.stderr)
 
@@ -2471,8 +2441,7 @@ def main():
               f"最小间隔 {review_cfg.min_interval:.0f}s, 每轮核对 {review_cfg.max_batches} 批原文",
               file=sys.stderr)
     else:
-        print("[DBA MCP] 空闲巡检未启动（设 ARIADNE_REVIEW_IDLE=<秒> 开启；"
-              "它会消耗 LLM 额度，故默认关闭）", file=sys.stderr)
+        print("[DBA MCP] 空闲巡检已关闭（ARIADNE_REVIEW_IDLE=0）", file=sys.stderr)
 
     # 图谱切换监听：面板把「切到某图谱」写进共享指针文件，这里轮询并自切换
     switch_watcher = GraphSwitchWatcher(

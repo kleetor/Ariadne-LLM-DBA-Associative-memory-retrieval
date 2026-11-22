@@ -8,7 +8,7 @@
 
 用法（在仓库根执行）：
     python examples/quickstart_mcp.py
-    python examples/quickstart_mcp.py --query "我最近的压力来自哪里？" --rerank-k 10
+    python examples/quickstart_mcp.py --query "我最近的压力来自哪里？"
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ from mcp.client.stdio import stdio_client
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
-async def run(query: str, rerank_k: int, yaml_path: str) -> None:
+async def run(query: str, yaml_path: str) -> None:
     params = StdioServerParameters(
         command=sys.executable,
         args=["-m", "dba_pipeline.mcp_server", "--yaml", yaml_path],
@@ -40,7 +40,7 @@ async def run(query: str, rerank_k: int, yaml_path: str) -> None:
 
             result = await session.call_tool(
                 "dba_query_memory",
-                {"query": query, "rerank_k": rerank_k},
+                {"query": query},
             )
             for item in result.content:
                 text = getattr(item, "text", None)
@@ -51,14 +51,13 @@ async def run(query: str, rerank_k: int, yaml_path: str) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="MCP stdio 快速开始")
     parser.add_argument("--query", default="我最近在做什么项目？")
-    parser.add_argument("--rerank-k", type=int, default=5)
     parser.add_argument(
         "--yaml",
         default=str(REPO_ROOT / "data" / "memory_graph.yaml"),
         help="图谱 YAML 路径",
     )
     args = parser.parse_args()
-    asyncio.run(run(args.query, args.rerank_k, args.yaml))
+    asyncio.run(run(args.query, args.yaml))
 
 
 if __name__ == "__main__":

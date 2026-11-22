@@ -27,6 +27,10 @@ LLM / Embedding 配置除命令行传参外，也可写入项目根 `.env`（或
 | `--embedding-base-url` | `EMBEDDING_API_BASE` |
 | `--embedding-local`    | `EMBEDDING_LOCAL`    |
 
+维护批量（`ARIADNE_MCP_IDLE_TIMEOUT` / `MAX_BATCH_ROUNDS` / `PROACTIVE_*` / `AUTO_SKIP`）、
+`ARIADNE_MCP_TRIAGE`、原文存储（`ARIADNE_SOURCE_STORE`）与空闲巡检（`ARIADNE_REVIEW_*`）
+等运行开关的默认值与说明，见根目录 `.env.example` 的「MCP 维护 / 检索开关」与「记忆保真」两节。
+
 ```bash
 # 项目根 .env 示例
 OPENAI_API_KEY=sk-xxx
@@ -141,40 +145,35 @@ query，用于把类型偏好限制在当前情节内（对应论文 E11 的 `a0
 约 19%、gold recall 降 0.8pp（论文 Limitations 与 `eval/outputs/mechanism/peak_stop_real.json`）。
 默认保持关闭，与论文主表口径一致。
 
-### 11 个 Tool
+### 10 个 Tool
 
 | Tool                   | 说明                             |
 | ---------------------- | ------------------------------ |
 | `dba_add_conversation` | 追加对话，优先进入调度器批量累积，达阈值后异步维护 |
 | `dba_query_memory`     | 目的驱动联想检索（PAR 链路：跳转轴 + 目的回归 + 寻峰） |
-| `dba_add_note`         | 写入一条项目笔记（普通节点，可被记忆层召回） |
-| `dba_query_knowledge`  | 关键词精确检索项目事实/约定/接口/错误码，返回不含关系边 |
+| `dba_query_knowledge`  | 关键词字面精筛：对全部活跃节点做精确词匹配，返回不含关系边 |
 | `dba_temporal_lookup`  | 独立单跳时序查询（仅"时间→事件"反向），用于定位某时间点发生的事 |
 | `dba_inspect_graph`    | 展开节点 1-hop 邻居                  |
 | `dba_intervene`        | 人工 CRUD 节点和边                   |
 | `dba_checkpoint`       | 保存完整检查点                        |
-| `dba_get_stats`        | 图谱统计信息（含 notes 计数）           |
-| `dba_review_graph`     | 图谱体检（只读）：报出疑似重复节点对与孤立节点，不改图 |
-| `dba_review_sources`   | 溯源巡检（只读）：用原始对话核对抽取质量，需 `ARIADNE_SOURCE_STORE=1` |
+| `dba_get_stats`        | 图谱统计信息（含 raw 兜底节点计数）      |
+| `dba_review_graph`     | 图谱体检（只读）：报出疑似重复对、孤立节点与 raw 兜底待处理项，不改图 |
+| `dba_review_sources`   | 溯源巡检（只读）：用原始对话核对**节点**抽取质量；边不参与原文核对（靠重新连边/删边修正）。原文存储默认开启，`ARIADNE_SOURCE_STORE=0` 可关 |
 
-### 笔记与知识检索（`dba_add_note` / `dba_query_knowledge`）
+### 关键词检索（`dba_query_knowledge`）
 
-- 笔记就是普通节点：`metadata.channel="note"`，进向量索引，可被 PAR 当种子；它不是独立存储。
-- `dba_add_note(title, text, observed_at?, source_hint?, fidelity?, tags?)`
-  - `title` 必填；`text` ≤ 4000 字，超限拒绝并要求拆分；
-  - `tags` 用来表达项目归属（如 `project:alpha`），系统不做项目过滤；
-  - `source_hint` 只作提示，服务端不会抓取；
-  - 完全相同的 `title + text + tags` 返回已有节点（`duplicate=true`）。
+- 索引对象是**全部活跃节点**（对话抽取出的节点、raw 兜底节点都在内），不是独立的知识库。
 - `dba_query_knowledge(query, top_k?)`
-  - 关键词匹配：ASCII 词元 + 中文二元组；`title/tags/text` 权重 3/2/1；
-  - 返回 `node_id / text / score / observed_at / source_hint / fidelity`，**不含 edge**；
+  - 关键词匹配：ASCII 词元 + 中文二元组；
+  - 返回 `node_id / text / score`，**不含 edge**；
   - 不设阈值、不拒答；无命中返回空列表。
-- `ARIADNE_MCP_RERANK=1` 可开启知识层重排，独立于 `ALM_RERANK`；失败静默回退关键词序。
+- `ARIADNE_MCP_RERANK=1` 可开启关键词结果重排，独立于 `ALM_RERANK`；失败静默回退关键词序。
+- 历史数据里可能仍有 `metadata.channel="note"` 的节点（早期项目笔记），面板可按该标记过滤；写入入口已移除。
 
 ### 检索说明（`dba_query_memory`）
 
 - 走完整 PAR 链路：跳转轴有向扩展 + 目的回归过滤 + 寻峰终止。
-- `rerank_k` 控制返回条数上限（rank-k，默认 20）；`total_matched` 是真实候选总数，`returned` 是本次实际返回数。若 `total_matched > returned`，可调大 `rerank_k` 取回剩余记忆。
+- 重排与压缩由 StoryRank 故事化完成，返回**一段**叙事，不做条数截断；`total_matched` 是 PAR 真实候选总数，`returned` 是返回的叙事段数（恒为 0 或 1）。
 - 已废弃/遗忘的节点会被过滤，不出现在结果中。
 
 ### Agent 接入配置

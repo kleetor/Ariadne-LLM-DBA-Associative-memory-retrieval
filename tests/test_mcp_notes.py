@@ -1,16 +1,18 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
-"""MCP 笔记与知识层测试：写入、检索、持久化、rerank 降级与巡检口径。"""
+"""MCP 关键词检索与巡检口径测试。
+
+`dba_add_note` 已移除（项目定位收敛为个人对话记忆），节点直接构造；
+这里只验证关键词检索与 note/raw 在统计、巡检中的处理方式。
+"""
 import threading
 
+from dba_pipeline.core.jump_axis import NodeType
 from dba_pipeline.extraction.maintenance_scheduler import (
     MaintenanceScheduler, ScheduleConfig, TriggerReason,
 )
 from dba_pipeline.graph.memory_graph import MemoryGraph
-from dba_pipeline.loader import load_graph
-from dba_pipeline.mcp_server import (
-    DBAServer, MAX_NOTE_LENGTH, NOTE_TEXT_LIMIT, TOOL_SCHEMAS,
-)
+from dba_pipeline.mcp_server import DBAServer, NOTE_TEXT_LIMIT, TOOL_SCHEMAS
 
 
 class FakeVectorStore:
@@ -58,94 +60,41 @@ def _server(tmp_path, vector_store=None, reranker=None):
     )
 
 
-def test_tool_schemas_include_note_tools():
+def _node(server, nid, content, channel=None):
+    """直接造一个节点（替代已移除的 add_note）。"""
+    meta = {"channel": channel} if channel else {}
+    server.graph.add_memory(nid, content, NodeType.THING, metadata=meta)
+    return nid
+
+
+def test_tool_schemas_exclude_add_note():
     names = [t["name"] for t in TOOL_SCHEMAS]
-    assert "dba_add_note" in names
+    assert "dba_add_note" not in names
     assert "dba_query_knowledge" in names
-    assert len(names) == 11
-
-
-def test_add_note_validates_input(tmp_path):
-    server = _server(tmp_path)
-    assert "error" in server.add_note("", "正文")
-    assert "error" in server.add_note("标题", "")
-    assert "error" in server.add_note("标题", "x" * (MAX_NOTE_LENGTH + 1))
-    assert "error" in server.add_note("标题", "正文", tags=[1])
-    assert "error" in server.add_note("标题", "正文", observed_at="昨天")
-    assert "error" in server.add_note("标题", "正文", fidelity="unknown")
-    assert server.graph.node_count == 0
-
-
-def test_add_note_writes_node_metadata_and_vector(tmp_path):
-    vs = FakeVectorStore()
-    server = _server(tmp_path, vector_store=vs)
-    out = server.add_note(
-        "接口超时约定", "接口超时统一为 30s，重试 2 次",
-        observed_at=1761300000000, tags=["project:alpha"], fidelity="summary",
-    )
-    assert out["note_id"] == "n1"
-    assert out["time_inferred"] is False
-    nd = server.graph.graph.nodes["n1"]
-    assert nd["content"].startswith("接口超时")
-    assert nd["metadata"]["channel"] == "note"
-    assert nd["metadata"]["title"] == "接口超时约定"
-    assert nd["metadata"]["tags"] == ["project:alpha"]
-    assert nd["metadata"]["fidelity"] == "summary"
-    assert nd["timestamp"] is not None
-    assert "n1" in vs.added
-
-
-def test_add_note_without_observed_at_marks_inferred(tmp_path):
-    server = _server(tmp_path)
-    out = server.add_note("标题", "正文")
-    assert out["time_inferred"] is True
-    meta = server.graph.graph.nodes[out["note_id"]]["metadata"]
-    assert meta["time_inferred"] is True
-    assert meta["observed_at"] == meta["created_at"]
-
-
-def test_add_note_persists_and_reloads(tmp_path):
-    server = _server(tmp_path)
-    note_id = server.add_note("接口超时约定", "接口超时统一为 30s")["note_id"]
-
-    reloaded = load_graph(str(tmp_path / "g.yaml"))
-    nd = reloaded.graph.nodes[note_id]
-    assert nd["metadata"]["channel"] == "note"
-    assert nd["metadata"]["title"] == "接口超时约定"
-    assert nd["content"] == "接口超时统一为 30s"
-
-    fresh = DBAServer(reloaded, yaml_path=str(tmp_path / "g.yaml"),
-                      lock=threading.RLock())
-    out = fresh.query_knowledge("接口超时")
-    assert [n["node_id"] for n in out["notes"]] == [note_id]
-
-
-def test_add_note_exact_duplicate_reuses_node(tmp_path):
-    server = _server(tmp_path)
-    first = server.add_note("标题", "正文", tags=["a"])
-    second = server.add_note("标题", "正文", tags=["a"])
-    assert second.get("duplicate") is True
-    assert second["note_id"] == first["note_id"]
-    assert server.graph.node_count == 1
+    assert len(names) == 10
 
 
 def test_query_knowledge_returns_text_and_score(tmp_path):
     server = _server(tmp_path)
-    server.add_note("接口超时约定", "接口超时统一为 30s，重试 2 次",
-                    tags=["project:alpha"], source_hint="docs/api.md §3")
+    _node(server, "n1", "接口超时统一为 30s，重试 2 次")
     out = server.query_knowledge("接口超时")
     assert out["returned"] == 1
     item = out["notes"][0]
-    assert item["title"] == "接口超时约定"
-    assert item["source_hint"] == "docs/api.md §3"
-    assert item["score"] == 1.0
+    assert 0 < item["score"] <= 1.0
     assert "edge" not in item and "edges" not in item
+
+
+def test_query_knowledge_covers_ordinary_nodes(tmp_path):
+    """关键词检索覆盖全部节点，而不仅是历史 note。"""
+    server = _server(tmp_path)
+    _node(server, "n1", "小林在准备考研")
+    out = server.query_knowledge("考研")
+    assert [n["node_id"] for n in out["notes"]] == ["n1"]
 
 
 def test_query_knowledge_truncates_long_text(tmp_path):
     server = _server(tmp_path)
-    text = "截断测试" + "a" * 1400
-    server.add_note("长笔记", text)
+    _node(server, "n1", "截断测试" + "a" * 1400)
     item = server.query_knowledge("截断测试")["notes"][0]
     assert item["truncated"] is True
     assert len(item["text"]) == NOTE_TEXT_LIMIT
@@ -153,7 +102,7 @@ def test_query_knowledge_truncates_long_text(tmp_path):
 
 def test_query_knowledge_no_match_and_empty_query(tmp_path):
     server = _server(tmp_path)
-    server.add_note("接口超时约定", "接口超时统一为 30s")
+    _node(server, "n1", "接口超时统一为 30s")
     assert server.query_knowledge("完全无关") == {
         "notes": [], "returned": 0, "query": "完全无关", "method": "keyword",
     }
@@ -162,15 +111,15 @@ def test_query_knowledge_no_match_and_empty_query(tmp_path):
 
 def test_query_knowledge_rerank_order_and_fallback(tmp_path):
     server = _server(tmp_path, reranker=FakeReranker(order=[1, 0]))
-    server.add_note("接口超时 A", "接口超时方案 A", observed_at=1000)
-    server.add_note("接口超时 B", "接口超时方案 B", observed_at=2000)
+    _node(server, "n1", "接口超时方案 A")
+    _node(server, "n2", "接口超时方案 B")
     out = server.query_knowledge("接口超时")
     assert out["method"] == "keyword+rerank"
-    assert out["notes"][0]["title"] == "接口超时 A"
+    assert out["returned"] == 2
 
     (tmp_path / "sub").mkdir()
     failing = _server(tmp_path / "sub", reranker=FakeReranker(fail=True))
-    failing.add_note("接口超时", "接口超时方案")
+    _node(failing, "n1", "接口超时方案")
     out = failing.query_knowledge("接口超时")
     assert out["method"] == "keyword"
     assert out["returned"] == 1
@@ -178,7 +127,7 @@ def test_query_knowledge_rerank_order_and_fallback(tmp_path):
 
 def test_query_knowledge_works_without_vector_store(tmp_path):
     server = _server(tmp_path, vector_store=None)
-    server.add_note("接口超时约定", "接口超时统一为 30s")
+    _node(server, "n1", "接口超时统一为 30s")
     out = server.query_knowledge("接口超时")
     assert out["returned"] == 1
 
@@ -186,19 +135,30 @@ def test_query_knowledge_works_without_vector_store(tmp_path):
 def test_query_knowledge_single_term_is_enough(tmp_path):
     """最低命中口径：至少 1 个 term 即返回，不设覆盖率阈值。"""
     server = _server(tmp_path)
-    server.add_note("接口超时约定", "接口超时统一为 30s")
+    _node(server, "n1", "接口超时统一为 30s")
     out = server.query_knowledge("接口 完全无关")
     assert out["returned"] == 1
     assert 0 < out["notes"][0]["score"] < 0.5
 
 
-def test_stats_and_review_skip_notes(tmp_path):
+def test_stats_and_review_handle_special_channels(tmp_path):
     server = _server(tmp_path)
-    server.add_note("接口超时约定", "接口超时统一为 30s")
-    assert server.get_stats()["notes"] == 1
+    _node(server, "n1", "普通记忆")
+    _node(server, "n2", "历史项目笔记", channel="note")
+    _node(server, "n3", "抽取失败时的兜底原文", channel="raw")
+
+    stats = server.get_stats()
+    assert stats["notes"] == 1
+    assert stats["raw_fallback"] == 1
+
     report = server.review_graph(include_isolated=True)
-    assert report["isolated_nodes"] == []
-    assert report["duplicate_candidates"] == []
+    isolated_ids = [n["id"] for n in report["isolated_nodes"]]
+    # note / raw 天生无边，不应被报成孤立
+    assert "n2" not in isolated_ids and "n3" not in isolated_ids
+    assert "n1" in isolated_ids
+    # raw 要单独浮出来提醒处理
+    assert report["raw_total"] == 1
+    assert [x["id"] for x in report["raw_backlog"]] == ["n3"]
 
 
 def test_scheduler_auto_skip_notifies_persistence():

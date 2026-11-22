@@ -175,7 +175,7 @@ def main() -> None:
     print("\n===== ② dba_query_memory（PAR + StoryRank）=====")
     consistency_warn = []
     for q in MEMORY_QUERIES:
-        res = call_tool(handlers, "dba_query_memory", {"query": q, "rerank_k": 5})
+        res = call_tool(handlers, "dba_query_memory", {"query": q})
         print(f"\n  query={q!r}")
         print(f"  purpose={res.get('purpose')} total_matched={res.get('total_matched')} returned={res.get('returned')}")
         _print_stories(res)

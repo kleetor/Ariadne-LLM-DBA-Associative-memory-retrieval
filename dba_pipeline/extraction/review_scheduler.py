@@ -18,8 +18,8 @@
    （维护是在空闲后 90s 触发的，巡检若也用 90s 就会同时开跑）；
 5. **不写图**：只读 `review_*`，报告落 `<图谱目录>/reviews/`，落盘仍由上层用 `dba_intervene`。
 
-默认**关闭**（`ARIADNE_REVIEW_IDLE` 未设置时不启动）——自动巡检会消耗 LLM 额度，
-是否开启属于部署决策。
+默认**开启**（`ARIADNE_REVIEW_IDLE` 未设置时按 300s 启动；置 0 关闭）——巡检只
+在空闲时段跑、逐批核对且一有活动就让路，但确实会消耗 LLM 额度，不需要的部署可关。
 """
 
 import json
@@ -33,11 +33,11 @@ from typing import Callable, Optional
 
 logger = logging.getLogger(__name__)
 
-# 环境变量：距最后活动多少秒算空闲（0/未设 = 关闭自动巡检）
+# 环境变量：距最后活动多少秒算空闲（未设 = 300s 默认开启；0 = 关闭自动巡检）
 IDLE_ENV = "ARIADNE_REVIEW_IDLE"
 # 环境变量：两次自动巡检的最小间隔（秒）
 INTERVAL_ENV = "ARIADNE_REVIEW_INTERVAL"
-# 环境变量：单次巡检最多核对多少批原文（0 = 只做确定性体检，不调 LLM）
+# 环境变量：单次巡检最多核对多少批原文（0 = 只做确定性体检，不调 LLM；默认 0）
 SOURCES_ENV = "ARIADNE_REVIEW_SOURCES"
 # 保留的报告份数
 KEEP_REPORTS = 20
@@ -55,14 +55,22 @@ class ReviewConfig:
     # 轮询周期
     poll_seconds: float = 30.0
     # 单次巡检最多核对多少批原文；0 = 只做确定性体检（dba_review_graph），不调 LLM
-    max_batches: int = 3
+    # **默认 0**：空闲巡检验证按时间自动跑，若每轮都调 LLM 核对原文，成本会随挂机
+    # 时长无意义增长。需要 LLM 核对时手动调 `dba_review_sources`，或显式设
+    # `ARIADNE_REVIEW_SOURCES>0` 承担这份成本。
+    max_batches: int = 0
 
     @classmethod
     def from_env(cls, maintenance_idle_timeout: Optional[float] = None) -> Optional["ReviewConfig"]:
-        """从环境变量构造；未开启返回 None"""
-        raw = os.environ.get(IDLE_ENV, "").strip()
-        if not raw:
-            return None
+        """从环境变量构造；置 0 返回 None（关闭）。
+
+        未设置时按 300s **默认开启**：巡检只读、只在空闲时跑、一有活动就让路，
+        不开启等于把 `dba_review_sources` 永远晾着（原文存了却没人核对）。
+        """
+        raw = os.environ.get(IDLE_ENV)
+        if raw is None or not raw.strip():
+            raw = "300"
+        raw = raw.strip()
         try:
             idle = float(raw)
         except ValueError:
@@ -82,9 +90,9 @@ class ReviewConfig:
         except ValueError:
             interval = 1800.0
         try:
-            batches = int(os.environ.get(SOURCES_ENV, "3"))
+            batches = int(os.environ.get(SOURCES_ENV, "0"))
         except ValueError:
-            batches = 3
+            batches = 0
         return cls(idle_seconds=idle, min_interval=max(interval, 60.0), max_batches=max(batches, 0))
 
 

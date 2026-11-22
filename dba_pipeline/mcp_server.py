@@ -401,14 +401,16 @@ class DBAServer:
             vector_stats = {"rebuilt": False}
             if self.vector_store is not None:
                 desired = self._graph_contents()
+                # 换图后旧向量与新图毫无关系：**即使新图是空的也要先清空**。
+                # 这与 `reconcile_vectors` 的"空图不清空"不同——那里是防止
+                # --yaml 指错时误删索引；这里是用户明确的切图动作，保留旧图的
+                # 向量只会让索引与当前图谱不一致（空图谱也会"继承"上一张图的索引）。
+                self.vector_store.clear_vectors()
                 if desired:
-                    # 换图后旧向量与新图毫无关系，增量对账在这里不适用，必须清空重建
-                    self.vector_store.clear_vectors()
                     vector_stats = dict(self.vector_store.reconcile(desired))
                     vector_stats["rebuilt"] = True
                 else:
-                    # 与 reconcile_vectors 的处理保持一致：空图谱不清空既有索引，避免误删
-                    vector_stats["reason"] = "图谱为空，保留既有向量索引"
+                    vector_stats = {"rebuilt": True, "reason": "新图谱为空，已清空向量索引"}
                 self._vector_mtime = self._yaml_mtime()
 
         return {

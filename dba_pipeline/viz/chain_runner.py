@@ -110,6 +110,10 @@ class ChainRunner:
             enable_evidence=True,
             enable_source_store=False,   # 面板测试不落原文
             source_dir=None,
+            # triage 在 MCP 侧默认关闭（agent 调工具前已判断价值）；面板测试要走
+            # 同一条链路，因此读同一个开关，缺省同样为 False，避免"面板通过、线上失败"。
+            triage_enabled=os.environ.get("ARIADNE_MCP_TRIAGE", "").strip().lower()
+            in ("1", "true", "yes", "on"),
         )
         retriever = PurposeDrivenRetriever(
             llm=llm, embeddings=embeddings, graph=graph, vector_store=vector_store,

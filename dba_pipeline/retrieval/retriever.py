@@ -264,6 +264,7 @@ class PurposeDrivenRetriever:
         purpose_filter_sigma: float = 0.0,
         peak_tolerance: float = 0.10,
         peak_tolerance_ratio: float = 0.0,
+        peak_strict: bool = False,
         path_tracker=None,
     ):
         self.llm = llm
@@ -278,7 +279,8 @@ class PurposeDrivenRetriever:
         # `peak_tolerance_ratio > 0`（见 core.peak_find.resolve_peak_tolerance）。
         # 默认值与旧行为逐字一致：absolute=0.10、ratio=0（走绝对模式）。
         self.peak_finder = PeakFinder(
-            patience=2, min_delta=0.015, peak_tolerance=peak_tolerance
+            patience=2, min_delta=0.015, peak_tolerance=peak_tolerance,
+            paper_strict=peak_strict,
         )
         self.peak_tolerance_ratio = peak_tolerance_ratio
         # 观测（只读，来自最近一次 retrieve）；由 _build_result 透出给上层日志
@@ -560,7 +562,7 @@ class PurposeDrivenRetriever:
             query: 用户查询
             seed_k: 种子数量
             max_hops: 最大跳数
-            expand_k: 每轮扩展数（默认=seed_k）
+            expand_k: 每轮进入下一跳的候选上限（None / 0 = 不截断，论文 Alg.1 口径）
             purpose: 可选，调用方（主聊天 LLM/agent）注入的目的列表。
                      提供时跳过独立的目的推断（infer_purpose），检索意图由主 LLM
                      在对话上下文理解中给出；None 时退化到系统内部推断。
@@ -629,64 +631,33 @@ class PurposeDrivenRetriever:
         # 种子余弦下限（可选，`seed_cos_min`）：在多主体/大图上，全局 top-k 会把无关主体
         # 直接选进来，后续几十个节点都围绕它扩展（E10-D 实测跨主体混入的主因）。
         # 不足 seed_k 时**不补齐**——宁可少给种子，也不要为凑数引入无关起点。
-        def _seed_floor(pairs):
+        def _seed_floor(pairs, *, distance=False):
             # `search*` 返回的是元组（id 在第 0 位、相似度在第 1 位，后续可能还有内容），
             # 故按位取分数、**原样保留元组**，不拆包（拆包会在字段更多时直接报错）。
+            #
+            # 两个通道的分数**不是同一把尺**：`VectorStore.search()` 返回 FAISS 的
+            # 平方 L2 距离（越小越近），`search_by_vector()` 返回真余弦（越大越近）。
+            # 阈值 `seed_cos_min` 是余弦，直接拿它比距离会**筛掉最相近的种子**。
+            # 归一化向量下 `d = 2 − 2cos`，故按 `cos = 1 − d/2` 换算后再比较。
             if seed_cos_min is None:
                 return pairs
-            return [r for r in pairs if float(r[1]) >= seed_cos_min]
+            def _cos(r):
+                value = float(r[1])
+                return 1.0 - max(0.0, value) / 2.0 if distance else value
+            return [r for r in pairs if _cos(r) >= seed_cos_min]
 
-        if purpose_blind:
-            # 只用文本通道（原来的一半文本 + 一半目的）
-            text_seeds = _seed_floor(self.vector_store.search(query, k=seed_k))
-            purpose_seeds = []
-            seed_ids = []
-            for r in text_seeds:
-                if r[0] not in seed_ids and self._is_active(r[0]):
-                    seed_ids.append(r[0])
-                if len(seed_ids) >= seed_k:
-                    break
-        else:
-            half_k = max(1, seed_k // 2)
-            purpose_slots = max(1, seed_k - half_k)
-            text_seeds = _seed_floor(self.vector_store.search(query, k=half_k))
-            if frame is None:
-                purpose_seeds = _seed_floor(
-                    self.vector_store.search_by_vector(purpose_vec, k=purpose_slots))
-            else:
-                # 目的种子按帧重排：向量搜索只能表达"话题近"，表达不了"要哪一类节点"。
-                # 先取更大的候选池（4× 槽位），再用帧亲和重排，只保留前 purpose_slots 条。
-                pool = _seed_floor(self.vector_store.search_by_vector(
-                    purpose_vec, k=max(purpose_slots * 4, purpose_slots)))
-                pool_ids = [r[0] for r in pool]
-                pool_vecs = self.vector_store.get_content_vectors(pool_ids)
-                pool_emb = self.purpose_model.compute_purpose_score_from_vectors(
-                    pool_vecs, purpose_vec)
-                pool_q = (self.purpose_model.compute_purpose_score_from_vectors(
-                    pool_vecs, query_vec) if query_vec is not None else None)
-                pool_sc = self._frame_scores(pool_ids, pool_emb, frame, frame_weights,
-                                             anchor_scores=pool_q, anchor=frame_anchor)
-                order = np.argsort(-pool_sc)[:purpose_slots]
-                purpose_seeds = [(pool_ids[i], float(pool_sc[i])) for i in order]
-
-            # 合并去重，保持 text 种子优先顺序，purpose 种子补充；跳过废弃/遗忘节点
-            seen = set()
-            seed_ids = []
-            for r in text_seeds:
-                if r[0] not in seen and self._is_active(r[0]):
-                    seen.add(r[0])
-                    seed_ids.append(r[0])
-            for r in purpose_seeds:
-                if r[0] not in seen and len(seed_ids) < seed_k and self._is_active(r[0]):
-                    seen.add(r[0])
-                    seed_ids.append(r[0])
-            # 不足时用更多 text 种子补齐
-            if len(seed_ids) < seed_k:
-                extra = self.vector_store.search(query, k=seed_k * 2)
-                for r in extra:
-                    if r[0] not in seen and len(seed_ids) < seed_k and self._is_active(r[0]):
-                        seen.add(r[0])
-                        seed_ids.append(r[0])
+        # 论文 Alg.1 第 2 步：M_0 ← TopK VectorSearch(q, k)。
+        # 种子**只来自 query 向量**：目的通道的作用在过滤（第 6 步）与排序（第 8 步），
+        # 不参与入口选取。此前把一半槽位分给目的向量，会让 M_0 偏离论文口径。
+        text_seeds = _seed_floor(
+            self.vector_store.search(query, k=seed_k), distance=True)
+        purpose_seeds: List[tuple] = []
+        seed_ids = []
+        for r in text_seeds:
+            if r[0] not in seed_ids and self._is_active(r[0]):
+                seed_ids.append(r[0])
+            if len(seed_ids) >= seed_k:
+                break
         # 计算种子轮目的关联度（使用预缓存向量，无 API 调用）
         if purpose_blind:
             seed_scores = np.zeros(len(seed_ids))
@@ -880,16 +851,21 @@ class PurposeDrivenRetriever:
                 result_ids = self._collect_peak_tolerance(hop_history, max_peak_nodes)
                 break
 
-            # 当前轮候选用作下一轮扩展
-            top_k = expand_k if expand_k is not None else seed_k
+            # 论文 Alg.1 第 5 步：C_h ← Expand(M_{h-1})，本轮过滤后的**全部**候选
+            # 都是下一跳的前沿。`expand_k` 只作为可选的显式上限（>0 才截断），
+            # 默认不截断——此前默认值等于 seed_k，会让宽跳只能保留 5 个节点继续，
+            # 长链在扩展途中被无声切断。
             current_ids = [
                 c["id"]
                 for c in sorted(
                     combined.values(),
                     key=lambda x: x["combined_score"],
                     reverse=True,
-                )[:top_k]
+                )
             ]
+            if expand_k:
+                current_ids = current_ids[:expand_k]
+
 
         else:
             # 达到 max_hops 仍未找到峰值，用峰值容忍带
@@ -1040,7 +1016,7 @@ class PurposeDrivenRetriever:
         # 按 combined_score 降序排列（作为 LLM rerank 前的默认排序）
         memories.sort(key=lambda x: id_score.get(x[0], 0), reverse=True)
         # 真实候选总数 = 每跳候选的并集；此前这里写的是 `len(memories)`（**峰值条数**），
-        # 被 MCP 当作 `total_matched` 返回，会让调用方误判是否被 rerank_k 截断。
+        # 被 MCP 当作 `total_matched` 返回，会让调用方误判是否被峰值上限截断。
         candidate_ids = {
             c.get("id")
             for h in hop_history

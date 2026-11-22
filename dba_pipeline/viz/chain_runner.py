@@ -97,7 +97,12 @@ class ChainRunner:
         graph = load_graph(self.yaml_path)
         lock = threading.RLock()
         vector_store = VectorStore(embeddings=embeddings, backend="faiss", persist_dir=None)
-        builder = GraphBuilder(graph=graph, vector_store=vector_store, lock=lock)
+        # 与 mcp_server 的装配保持同构（论文附录 D 生产配置）：调用测试看到的行为
+        # 必须就是真实链路的行为，否则面板上的"调用测试"会与线上不一致。
+        builder = GraphBuilder(
+            graph=graph, vector_store=vector_store, lock=lock,
+            dedup_threshold=0.92, orphan_threshold=10 ** 9,
+        )
         dba = MemoryDBA(
             llm=llm, graph=graph, vector_store=vector_store, graph_builder=builder,
             # 与 mcp_server 一致；调用测试只走检索，不触发抽取，这几项仅保持装配同构
@@ -109,6 +114,7 @@ class ChainRunner:
         retriever = PurposeDrivenRetriever(
             llm=llm, embeddings=embeddings, graph=graph, vector_store=vector_store,
             inference=InferenceEngine(llm), path_tracker=PathTracker(),
+            peak_strict=True,   # 论文 Alg.1 的停峰判据，与 mcp_server 一致
         )
         return DBAServer(
             graph, yaml_path=self.yaml_path, dba=dba, retriever=retriever,

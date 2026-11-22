@@ -56,7 +56,8 @@ class PeakFinder:
     """
 
     def __init__(self, patience: int = 2, min_delta: float = 0.015,
-                 peak_tolerance: float = 0.10, first_peak: bool = False):
+                 peak_tolerance: float = 0.10, first_peak: bool = False,
+                 paper_strict: bool = False):
         """
         Args:
             patience: 首次下降后允许额外探索的轮数（默认 2 轮）
@@ -69,11 +70,16 @@ class PeakFinder:
                 （近义节点互连，不同种子的链会交叉、闭合），而覆盖面的缺口可以由
                 **其他种子的第一个峰**补上。故"首峰即停"是一个刻意的取舍：
                 **宁可浅、不可深；覆盖面靠多种子互补，而不是靠单链走到底。**
+            paper_strict: **按论文 Alg.1 第 10–11 步判定**（默认 False，保留旧行为）。
+                True 时忽略 `min_delta` 与"回升重置"：每轮只在 μ 超过历史峰值时更新
+                `peak_index`，然后 `h − h* > patience` 即停止。旧实现的回升重置会让
+                实际停止点比论文晚，窄分布下多走 1–2 跳。
         """
         self.patience = patience
         self.min_delta = min_delta
         self.peak_tolerance = peak_tolerance
         self.first_peak = first_peak
+        self.paper_strict = paper_strict
         self.history: List[float] = []
         self.peak_index: int = 0
         self.seen_decline: bool = False
@@ -82,6 +88,17 @@ class PeakFinder:
     def add_round(self, mean_score: float) -> str:
         """记录本轮得分，返回 'continue' 或 'peak_found'"""
         self.history.append(mean_score)
+
+        if self.paper_strict:
+            # 论文 Alg.1：`if μ_h > peak: peak ← μ_h; h* ← h`，
+            # 再接 `if h − h* > patience: break`。无 min_delta、无回升重置。
+            if len(self.history) == 1:
+                return "continue"
+            if mean_score > self.history[self.peak_index]:
+                self.peak_index = len(self.history) - 1
+            if (len(self.history) - 1) - self.peak_index > self.patience:
+                return "peak_found"
+            return "continue"
 
         if len(self.history) == 1:
             return "continue"

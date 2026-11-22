@@ -35,7 +35,8 @@ PARAMS_FILENAME = "retrieval_params.yaml"
 PARAM_SPEC = [
     ("seed_k", "retrieval", "种子数量", "int", 1, 50, 1, "向量检索进入联想扩张的初始种子数"),
     ("max_hops", "retrieval", "最大跳数", "int", 1, 10, 1, "联想扩张的最大跳数"),
-    ("expand_k", "retrieval", "每轮扩展数", "int", 0, 50, 1, "0 表示与「种子数量」相同"),
+    ("expand_k", "retrieval", "每轮扩展数", "int", 0, 50, 1,
+     "0 表示不截断（论文口径：整轮候选都进入下一跳）；>0 才限制每轮前沿规模"),
     ("max_peak_nodes", "retrieval", "峰值带输出上限", "int", 0, 2000, 1,
      "0 表示不限制；作用在检索侧，早于连通性粗筛"),
     ("seed_cos_min", "retrieval", "种子余弦下限", "float", 0.0, 1.0, 0.01,
@@ -93,7 +94,7 @@ NODE_TYPE_LABELS = {
 _SCALAR_DEFAULTS = {
     "seed_k": 5,                      # retrieve(seed_k=5)
     "max_hops": 5,                    # retrieve(max_hops=5)
-    "expand_k": 0,                    # None → 用 seed_k；此处 0 表示同 seed_k
+    "expand_k": 0,                    # 0 → 不截断（论文口径）
     "max_peak_nodes": 0,              # 0 → None，不限制
     "seed_cos_min": 0.0,              # 0 → None，不设种子余弦下限
     "temporal_k_seed": 8,             # temporal_lookup(k_seed=8)

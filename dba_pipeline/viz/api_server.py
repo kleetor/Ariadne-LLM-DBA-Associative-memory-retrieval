@@ -23,7 +23,8 @@
 - ``GET  /api/config``              服务端配置（只读，敏感项脱敏）
 - ``GET  /api/export/yaml``         导出图谱 YAML
 - ``GET  /api/export/oplog``        导出操作日志
-- ``POST /api/import/yaml``         导入图谱 YAML（校验后落盘并热加载）
+- ``GET  /api/export/applog``       导出服务运行日志
+- ``GET  /api/export/chaintests``   导出调用测试记录（JSONL）
 
 Usage:
     python -m dba_pipeline.viz.api_server --yaml your_memory_graph.yaml --port 8765
@@ -38,7 +39,6 @@ import json
 import logging
 import os
 import platform
-import shutil
 import sys
 import tempfile
 import threading
@@ -320,12 +320,17 @@ class MemoryGraphAPI:
             orphans = sum(1 for nid, d in graph.nodes(data=True) if graph.degree(nid) == 0)
             n, e = graph.number_of_nodes(), graph.number_of_edges()
             density = (e / (n * (n - 1))) if n > 1 else 0.0
+            raw_fallback = sum(
+                1 for _, d in graph.nodes(data=True)
+                if (d.get("metadata") or {}).get("channel") == "raw"
+            )
             return {
                 "nodes": n,
                 "edges": e,
                 "deprecated": deprecated,
                 "forgotten": forgotten,
                 "orphans": orphans,
+                "raw_fallback": raw_fallback,
                 "density": round(density, 6),
             }
 
@@ -522,35 +527,6 @@ class MemoryGraphAPI:
             "edges": graph.edge_count,
         }
 
-    @_guarded_write
-    def import_yaml(self, text: str) -> dict:
-        """校验并导入 YAML（先备份现有文件，成功后热加载）"""
-        graph = _parse_graph_yaml(text)
-
-        with self._lock:
-            if self.yaml_path:
-                if os.path.exists(self.yaml_path):
-                    shutil.copy2(self.yaml_path, self.yaml_path + ".bak")
-                dir_name = os.path.dirname(os.path.abspath(self.yaml_path)) or "."
-                fd, tmp_path = tempfile.mkstemp(dir=dir_name, suffix=".tmp")
-                try:
-                    with os.fdopen(fd, "w", encoding="utf-8") as f:
-                        f.write(text)
-                    os.replace(tmp_path, self.yaml_path)
-                except Exception:
-                    try:
-                        os.unlink(tmp_path)
-                    except OSError:
-                        pass
-                    raise
-                self._last_mtime = self._yaml_mtime()
-            self.graph = graph
-            self._next_node_id = self._compute_next_id()
-
-        result = {"nodes": graph.node_count, "edges": graph.edge_count}
-        self._log("import_yaml", request={"bytes": len(text.encode("utf-8"))}, result=result)
-        return result
-
 
 # ---------------------------------------------------------------------------
 # 中间件
@@ -731,18 +707,36 @@ def _probe_mcp(host: str, port: int, timeout: float = 0.8) -> dict:
 
 
 def _mcp_snippets(url: str, yaml_path: str) -> dict:
-    """客户端接入片段。
+    """客户端接入片段：端点与 stdio 命令按当前运行环境生成。
 
-    只放占位符：真实 token / 密码绝不进页面或接口响应。
+    安全：真实 token / 密码绝不进页面或接口响应，只给占位符。
+    stdio 的命令分两种环境：
+      · 面板跑在容器里 → 客户端在宿主机 / 另一台机器上，容器路径（/app/...）
+        对它无意义，因此给 uvx 一行命令 + 占位路径；
+      · 面板跑在本机 → 直接给仓库内 python 命令与真实图谱路径。
     """
     def dump(obj):
         return json.dumps(obj, ensure_ascii=False, indent=2)
 
-    package_root = str(Path(__file__).resolve().parents[2])
+    in_container = os.path.exists("/.dockerenv")
+    if in_container:
+        stdio = {
+            "command": "uvx",
+            "args": ["--from", "ariadne-mcp-server", "ariadne-mcp",
+                     "--yaml", "<你本机上的图谱 yaml 路径>"],
+        }
+    else:
+        stdio = {
+            "command": "python",
+            "cwd": str(Path(__file__).resolve().parents[2]),
+            "args": ["-m", "dba_pipeline.mcp_server", "--yaml", yaml_path],
+        }
+
     return {
         "bearer": dump({"mcpServers": {"ariadne": {
             "url": url,
-            "headers": {"Authorization": "Bearer <ARIADNE_MCP_TOKEN>"},
+            # 不回显实际 token；占位符写清"填什么"，避免被误当成环境变量名
+            "headers": {"Authorization": "Bearer 把 .env 里 ARIADNE_MCP_TOKEN 的值填在这里"},
         }}}),
         "basic": dump({"mcpServers": {"ariadne": {
             "url": url,
@@ -751,11 +745,7 @@ def _mcp_snippets(url: str, yaml_path: str) -> dict:
             "headers": {"Authorization": "Basic 粘贴 base64(用户名:密码) 的输出，"
                                           "生成：printf '用户名:密码' | base64 -w0"},
         }}}),
-        "stdio": dump({"mcpServers": {"ariadne": {
-            "command": "python",
-            "cwd": package_root,
-            "args": ["-m", "dba_pipeline.mcp_server", "--yaml", yaml_path],
-        }}}),
+        "stdio": dump({"mcpServers": {"ariadne": stdio}}),
     }
 
 
@@ -907,7 +897,7 @@ def create_app(api: MemoryGraphAPI, config: VizConfig,
         return JSONResponse(await asyncio.to_thread(api.get_graph_data))
 
     async def knowledge_search(request: Request) -> JSONResponse:
-        """关键词检索：扫全图节点（笔记 + 普通节点），按命中打分排序。"""
+        """关键词检索：扫全图活跃节点（抽取节点 + raw 兜底 + 历史 note），按命中打分排序。"""
         q = (request.query_params.get("q") or "").strip()
         if not q:
             return JSONResponse({"query": "", "total": 0, "items": []})
@@ -1170,10 +1160,29 @@ def create_app(api: MemoryGraphAPI, config: VizConfig,
             headers={"Content-Disposition": "attachment; filename=operations.log"},
         )
 
-    async def import_yaml(request: Request) -> JSONResponse:
-        body = await _json_body(request)
-        result = await asyncio.to_thread(api.import_yaml, body.get("yaml", ""))
-        return JSONResponse(result)
+    async def export_applog(request: Request) -> Response:
+        """导出服务运行日志（ariadne.log：MCP / 面板 / 巡检写入）。"""
+        try:
+            data = Path(config.log_file_path).read_bytes()
+        except OSError:
+            data = b""
+        return Response(
+            data, media_type="text/plain; charset=utf-8",
+            headers={"Content-Disposition": "attachment; filename=ariadne.log"},
+        )
+
+    async def export_chaintests(request: Request) -> Response:
+        """导出「调用测试」记录（JSONL，每行一次完整结果）。"""
+        directory = os.path.dirname(os.path.abspath(config.yaml_path)) or "."
+        path = os.path.join(directory, "chain_tests.jsonl")
+        try:
+            data = Path(path).read_bytes()
+        except OSError:
+            data = b""
+        return Response(
+            data, media_type="application/x-ndjson; charset=utf-8",
+            headers={"Content-Disposition": "attachment; filename=chain_tests.jsonl"},
+        )
 
     # ---- 运行时检索参数（权重矩阵 / 种子 / 目的回归）----
     # 与 MCP 共用一份 YAML：面板写入后，MCP 在下一次读写时按 mtime 自动生效。
@@ -1237,6 +1246,7 @@ def create_app(api: MemoryGraphAPI, config: VizConfig,
             "adopted": result.get("story_used", 0),
             "hops": len(result.get("hop_history", [])),
         })
+        _record_chain_test(config.yaml_path, query, result)
         return JSONResponse(result)
 
     # ---- 图谱库：面板内切换 / 管理（不涉及 MCP）----
@@ -1348,7 +1358,8 @@ def create_app(api: MemoryGraphAPI, config: VizConfig,
         Route("/api/params/reset", params_reset, methods=["POST"]),
         Route("/api/export/yaml", export_yaml, methods=["GET"]),
         Route("/api/export/oplog", export_oplog, methods=["GET"]),
-        Route("/api/import/yaml", import_yaml, methods=["POST"]),
+        Route("/api/export/applog", export_applog, methods=["GET"]),
+        Route("/api/export/chaintests", export_chaintests, methods=["GET"]),
         Route("/api/chain/test", chain_test, methods=["POST"]),
     ]
 
@@ -1421,6 +1432,29 @@ def _write_text_atomic(path: str, text: str) -> None:
         except OSError:
             pass
         raise
+
+
+def _record_chain_test(yaml_path: str, query: str, result: dict) -> None:
+    """把一次「调用测试」的完整结果追加到 <图谱目录>/chain_tests.jsonl。
+
+    只用于本地排查与导出：内容包含检索出的记忆正文，故与图谱同目录保存，
+    不写进共享操作日志（oplog 对 query 只记长度）。超过 5MB 轮转一份 `.1`，
+    避免长期使用后无限增长。
+    """
+    directory = os.path.dirname(os.path.abspath(yaml_path)) or "."
+    path = os.path.join(directory, "chain_tests.jsonl")
+    record = {
+        "ts": datetime.now().isoformat(timespec="seconds"),
+        "query": query,
+        "result": result,
+    }
+    try:
+        if os.path.exists(path) and os.path.getsize(path) > 5 * 1024 * 1024:
+            os.replace(path, path + ".1")
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except OSError:
+        logging.getLogger("viz").warning("调用测试日志写入失败（忽略）", exc_info=True)
 
 
 def _content_disposition(filename: str) -> str:

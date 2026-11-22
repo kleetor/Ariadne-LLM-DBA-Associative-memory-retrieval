@@ -295,9 +295,6 @@ select.input option { background: var(--surface-solid); color: var(--text); }
 .field.inline input[type=range] { flex: 1; accent-color: var(--te1); }
 .field.inline .range-value { width: 40px; text-align: right; font-size: 11px; color: var(--text-dim); }
 
-.preset-row { display: flex; gap: 6px; align-items: center; }
-.preset-row select { flex: 1; }
-
 .hint { color: var(--text-dim); font-size: 12px; line-height: 1.75; padding: 4px 0; }
 .hint.error { color: var(--rose); }
 .hint.note-hint { color: var(--note-text); }
@@ -610,10 +607,6 @@ body[data-tab="settings"] #drawer-backdrop { opacity: 1; pointer-events: auto; }
 }
 .settings-title { display: flex; align-items: baseline; gap: 10px; padding: 13px 16px; border-bottom: 1px solid var(--line); font-size: 13px; font-weight: 600; letter-spacing: 0.04em; }
 .settings-body { padding: 14px 16px; }
-
-.preset-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
-.preset-item { display: flex; align-items: center; gap: 10px; padding: 7px 11px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-soft); }
-.preset-item .preset-name { flex: 1; }
 
 /* ---- 运行时参数页 ---- */
 

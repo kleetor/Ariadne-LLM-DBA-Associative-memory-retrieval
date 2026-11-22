@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: AGPL-3.0-only */
-/* 常量 + 本地设置/过滤预设持久化 */
+/* 常量 + 本地设置持久化 */
 (function () {
   const A = (window.Ariadne = window.Ariadne || {});
 
@@ -65,7 +65,6 @@
   };
 
   const SETTINGS_KEY = 'ariadne.settings.v1';
-  const PRESETS_KEY = 'ariadne.presets.v1';
 
   function deepMerge(base, patch) {
     const out = Array.isArray(base) ? base.slice() : Object.assign({}, base);
@@ -113,24 +112,6 @@
     save();
   }
 
-  // ---- 过滤预设 ----
-
-  function listPresets() {
-    return readJson(PRESETS_KEY) || [];
-  }
-
-  function savePreset(name, state) {
-    const presets = listPresets();
-    const preset = { id: 'p' + Date.now().toString(36), name: name, savedAt: new Date().toISOString(), state: state };
-    presets.push(preset);
-    writeJson(PRESETS_KEY, presets);
-    return preset;
-  }
-
-  function deletePreset(id) {
-    writeJson(PRESETS_KEY, listPresets().filter(function (p) { return p.id !== id; }));
-  }
-
   A.const = {
     NODE_TYPES: NODE_TYPES, EDGE_TYPES: EDGE_TYPES,
     NODE_COLORS: NODE_COLORS, EDGE_COLORS: EDGE_COLORS,
@@ -143,8 +124,5 @@
     save: save,
     update: update,
     reset: reset,
-    listPresets: listPresets,
-    savePreset: savePreset,
-    deletePreset: deletePreset,
   };
 })();

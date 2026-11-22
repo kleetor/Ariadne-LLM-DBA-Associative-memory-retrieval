@@ -252,6 +252,7 @@
     setStatus('stat-edges', stats.visibleEdges + (stats.visibleEdges !== stats.totalEdges ? ' / ' + stats.totalEdges : ''));
     // 与节点/边同口径：被过滤掉时显示「可见 / 总数」
     setStatus('stat-notes', (stats.visibleNotes || 0) + ((stats.visibleNotes || 0) !== (stats.notes || 0) ? ' / ' + (stats.notes || 0) : ''));
+    setStatus('stat-raw', stats.raw || 0);
     setStatus('stat-deprecated', stats.deprecated);
     setStatus('stat-forgotten', stats.forgotten);
     setStatus('stat-orphans', stats.orphans);
@@ -332,18 +333,6 @@
       row.appendChild(el('button', { class: 'btn', text: '重置过滤', onclick: function () { resetFilters(); } }));
       body.appendChild(row);
 
-      // 预设
-      body.appendChild(el('div', { class: 'divider' }));
-      body.appendChild(el('div', { class: 'group-label', text: '过滤预设' }));
-      const presetRow = el('div', { class: 'preset-row' });
-      const select = el('select', { class: 'input', id: 'preset-select' });
-      presetRow.appendChild(select);
-      presetRow.appendChild(el('button', { class: 'btn', text: '应用', onclick: function () { applySelectedPreset(select.value); } }));
-      presetRow.appendChild(el('button', { class: 'btn', text: '保存', onclick: function () { saveCurrentPreset(); } }));
-      presetRow.appendChild(el('button', { class: 'btn danger', text: '删除', onclick: function () { deleteSelectedPreset(select.value); } }));
-      body.appendChild(presetRow);
-
-      refreshPresetSelect();
       this.inputs = {
         nodeType: nodeWrap, edgeType: edgeWrap,
       };
@@ -385,45 +374,6 @@
     C.EDGE_TYPES.forEach(function (t) { if (f.edgeTypes[t.key] === undefined) f.edgeTypes[t.key] = true; });
     A.graph.setFilter(f);
     filtersPanel.sync(A.graph.getFilter());
-  }
-
-  function refreshPresetSelect() {
-    const select = $('preset-select');
-    if (!select) return;
-    const presets = A.store.listPresets();
-    select.innerHTML = '<option value="">— 选择预设 —</option>' +
-      presets.map(function (p) { return '<option value="' + p.id + '">' + U.escapeHtml(p.name) + '</option>'; }).join('');
-  }
-
-  function currentFilterState() {
-    return JSON.parse(JSON.stringify(A.graph.getFilter()));
-  }
-
-  function saveCurrentPreset() {
-    const name = window.prompt('预设名称', '预设 ' + new Date().toLocaleTimeString());
-    if (!name) return;
-    A.store.savePreset(name, currentFilterState());
-    refreshPresetSelect();
-    settingsPanel.refreshPresets();
-    U.toast('已保存预设：' + name, 'ok');
-  }
-
-  function applySelectedPreset(id) {
-    if (!id) { U.toast('请先选择预设', 'warn'); return; }
-    const preset = A.store.listPresets().filter(function (p) { return p.id === id; })[0];
-    if (!preset) return;
-    A.graph.setFilter(preset.state);
-    filtersPanel.sync(A.graph.getFilter());
-    U.toast('已应用预设：' + preset.name, 'ok');
-  }
-
-  async function deleteSelectedPreset(id) {
-    if (!id) { U.toast('请先选择预设', 'warn'); return; }
-    const ok = await confirmDialog('删除预设', '删除该预设？', { danger: true, confirmText: '删除' });
-    if (!ok) return;
-    A.store.deletePreset(id);
-    refreshPresetSelect();
-    settingsPanel.refreshPresets();
   }
 
   // =========================================================
@@ -1339,7 +1289,7 @@
         chainKv('StoryRank 正文覆盖', (r.story_used || 0) + ' 个节点' +
           (r.story_degraded ? '（降级拼接）' : '')) +
         chainKv('跳数 / 参数', hops.length + ' 跳　·　seed_k=' + (pr.seed_k || '-') +
-          ' max_hops=' + (pr.max_hops || '-') + ' expand_k=' + (pr.expand_k || '默认')) +
+          ' max_hops=' + (pr.max_hops || '-') + ' expand_k=' + (pr.expand_k || '不截断')) +
         '</div>';
 
       const story = (r.stories || []).join('\n\n');
@@ -1793,26 +1743,14 @@
       uiSection.body.appendChild(helpRow);
       host.appendChild(uiSection.root);
 
-      // 3. 过滤预设
-      const presetSection = section('过滤预设', '把节点/边过滤组合保存为命名方案');
-      const presetList = el('div', { class: 'preset-list', id: 'settings-preset-list' });
-      presetSection.body.appendChild(presetList);
-      const presetActions = el('div', { class: 'btn-row' });
-      presetActions.appendChild(el('button', { class: 'btn', text: '保存当前过滤为预设', onclick: function () { saveCurrentPreset(); } }));
-      presetActions.appendChild(el('button', { class: 'btn', text: '导出预设 JSON', onclick: function () { U.download('ariadne_filter_presets.json', JSON.stringify(A.store.listPresets(), null, 2), 'application/json'); } }));
-      presetActions.appendChild(el('button', { class: 'btn', text: '导入预设', onclick: function () { importPresets(); } }));
-      presetSection.body.appendChild(presetActions);
-      host.appendChild(presetSection.root);
-      this.refreshPresets();
-
-      // 4. 服务端配置
+      // 3. 服务端配置
       const configSection = section('服务端配置', '只读；密钥类环境变量已脱敏');
       configSection.body.appendChild(el('div', { class: 'config-box', id: 'config-box' }, [
         el('div', { class: 'hint', text: A.api.isLive ? '加载中…' : '离线 HTML 模式：无服务端配置。' }),
       ]));
       host.appendChild(configSection.root);
 
-      // 5. MCP 连接（端点 / 鉴权 / 探活 / 客户端接入片段）
+      // 4. MCP 连接（端点 / 鉴权 / 探活 / 客户端接入片段）
       const mcpSection = section('MCP 连接', 'MCP 与面板是两个进程；这里显示接入端点、鉴权方式与探活情况');
       const mcpActions = el('div', { class: 'btn-row' });
       mcpActions.appendChild(el('button', {
@@ -1827,25 +1765,20 @@
       host.appendChild(mcpSection.root);
       if (A.api.isLive) mcpStatus.load();
 
-      // 6. 数据导入/导出
-      const dataSection = section('数据导入 / 导出', '导入前会校验并自动备份现有 YAML（.bak）');
+      // 5. 日志（图谱文件的导入/导出统一在图谱库，避免两处重复）
+      const logSection = section('日志', '操作日志 / 服务运行日志 / 调用测试记录');
       if (A.api.isLive) {
         const row = el('div', { class: 'btn-row' });
-        row.appendChild(el('a', { class: 'btn', href: A.api.exportYamlUrl(), download: '', text: '导出图谱 YAML' }));
         row.appendChild(el('a', { class: 'btn', href: A.api.exportOplogUrl(), download: '', text: '导出操作日志' }));
-        dataSection.body.appendChild(row);
-        const file = el('input', { type: 'file', accept: '.yaml,.yml', class: 'input' });
-        file.addEventListener('change', function () {
-          importYamlFile(file.files[0]);
-          file.value = '';   // 清空后才能再次选中同一个文件（否则不会再触发 change）
-        });
-        dataSection.body.appendChild(el('label', { class: 'field' }, [el('span', { text: '导入图谱 YAML' }), file]));
+        row.appendChild(el('a', { class: 'btn', href: A.api.exportApplogUrl(), download: '', text: '导出运行日志' }));
+        row.appendChild(el('a', { class: 'btn', href: A.api.exportChainTestsUrl(), download: '', text: '导出调用测试日志' }));
+        logSection.body.appendChild(row);
       } else {
-        dataSection.body.appendChild(el('div', { class: 'hint', text: '离线 HTML 模式：数据操作不可用。' }));
+        logSection.body.appendChild(el('div', { class: 'hint', text: '离线 HTML 模式：数据操作不可用。' }));
       }
-      host.appendChild(dataSection.root);
+      host.appendChild(logSection.root);
 
-      // 7. 图谱库：管理图谱目录下的多份图谱；「载入 MCP」是独立动作，不自动跟随
+      // 6. 图谱库：管理图谱目录下的多份图谱；「载入 MCP」是独立动作，不自动跟随
       const libSection = section('图谱库', '图谱目录下的所有 YAML：可切换、导入、导出、删除');
       if (A.api.isLive) {
         const bar = el('div', { class: 'btn-row' });
@@ -1854,6 +1787,9 @@
         }));
         bar.appendChild(el('button', {
           class: 'btn small', text: '导入为新图谱…', onclick: importGraphFile,
+        }));
+        bar.appendChild(el('button', {
+          class: 'btn small', text: '新增空图谱…', onclick: createEmptyGraph,
         }));
         libSection.body.appendChild(bar);
         libSection.body.appendChild(el('div', { class: 'graph-lib', id: 'graph-lib' }, [
@@ -1865,28 +1801,6 @@
       }
       host.appendChild(libSection.root);
       if (A.api.isLive) graphLib.load();
-    },
-
-    refreshPresets() {
-      const list = $('settings-preset-list');
-      if (!list) return;
-      const presets = A.store.listPresets();
-      if (!presets.length) { list.innerHTML = '<div class="hint">暂无预设</div>'; return; }
-      list.innerHTML = '';
-      presets.forEach(function (p) {
-        const row = el('div', { class: 'preset-item' });
-        row.appendChild(el('span', { class: 'preset-name', text: p.name }));
-        row.appendChild(el('span', { class: 'muted', text: U.fmtTime(p.savedAt) }));
-        row.appendChild(el('button', {
-          class: 'btn small', text: '应用',
-          onclick: function () { A.graph.setFilter(p.state); filtersPanel.sync(A.graph.getFilter()); U.toast('已应用：' + p.name, 'ok'); },
-        }));
-        row.appendChild(el('button', {
-          class: 'btn small danger', text: '删除',
-          onclick: function () { A.store.deletePreset(p.id); settingsPanel.refreshPresets(); refreshPresetSelect(); },
-        }));
-        list.appendChild(row);
-      });
     },
 
     async loadConfig() {
@@ -2001,7 +1915,7 @@
     const host = $('mcp-snippets');
     if (!host || !data || !data.snippets) return;
     const items = [
-      ['客户端接入 · Bearer（推荐）', 'bearer'],
+      ['客户端接入 · Bearer（推荐）' + (data.bearer_configured ? ' · 已配置' : ' · 未配置'), 'bearer'],
       ['客户端接入 · Basic', 'basic'],
       ['本地 stdio（Claude Desktop / IDE）', 'stdio'],
     ];
@@ -2009,7 +1923,9 @@
       return '<div class="snippet"><div class="snippet-head"><span>' + U.escapeHtml(it[0]) +
         '</span><button class="btn small" data-copy="' + it[1] + '">复制</button></div>' +
         '<pre>' + U.escapeHtml(data.snippets[it[1]] || '') + '</pre></div>';
-    }).join('');
+    }).join('') +
+      '<div class="hint">Bearer 的值就是服务端 .env 里的 ARIADNE_MCP_TOKEN（页面不会回显）；' +
+      'Basic 用面板登录用户名/密码；stdio 片段里的图谱路径按客户端所在机器填写。</div>';
     U.$$('#mcp-snippets [data-copy]').forEach(function (btn) {
       btn.addEventListener('click', function () {
         const s = mcpStatus.data && mcpStatus.data.snippets;
@@ -2397,42 +2313,19 @@
     A.graph.applySettings(A.store.settings);
   }
 
-  function importPresets() {
-    const file = el('input', { type: 'file', accept: '.json' });
-    file.addEventListener('change', function () {
-      const f = file.files[0];
-      if (!f) return;
-      const reader = new FileReader();
-      reader.onload = function () {
-        try {
-          const presets = JSON.parse(reader.result);
-          if (!Array.isArray(presets)) throw new Error('格式错误');
-          presets.forEach(function (p) {
-            if (p && p.name && p.state) A.store.savePreset(p.name, p.state);
-          });
-          refreshPresetSelect();
-          settingsPanel.refreshPresets();
-          U.toast('已导入 ' + presets.length + ' 个预设', 'ok');
-        } catch (e) { U.toast('导入预设失败：' + e.message, 'error'); }
-      };
-      reader.readAsText(f);
-    });
-    file.click();
-  }
-
-  function importYamlFile(file) {
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = async function () {
-      if (!(await confirmDialog('导入图谱', '导入将覆盖当前图谱（自动备份为 .bak），确认继续？', { danger: true, confirmText: '导入' }))) return;
-      try {
-        const result = await A.api.importYaml(reader.result);
-        U.toast('导入成功：' + result.nodes + ' 节点 / ' + result.edges + ' 边', 'ok');
-        A.graph.select(null);
-        await ctx.reloadGraph(null);
-      } catch (e) { U.toast('导入失败：' + e.message, 'error'); }
-    };
-    reader.readAsText(file);
+  async function createEmptyGraph() {
+    const stamp = new Date().toISOString().slice(0, 10);
+    const name = window.prompt('新图谱文件名（需以 .yaml 结尾）', 'graph-' + stamp + '.yaml');
+    if (!name) return;
+    // 空图谱必须写成合法结构：MCP 载入时按 nodes/edges 解析，空 YAML 会被拒绝
+    const yaml = 'nodes: []\nedges: []\n';
+    try {
+      const res = await A.api.createGraph(name, yaml);
+      U.toast('已创建空图谱 ' + res.name, 'ok');
+      await graphLib.load();
+    } catch (e) {
+      U.toast('创建失败：' + e.message, 'error');
+    }
   }
 
   // =========================================================

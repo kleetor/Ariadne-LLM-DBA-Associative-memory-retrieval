@@ -223,6 +223,8 @@
       totalEdges: state.links.length,
       notes: state.nodes.filter(isNoteNode).length,
       visibleNotes: sets.nodes.filter(isNoteNode).length,
+      // 原文兜底节点：默认隐藏，但状态栏要能看到有多少待处理
+      raw: state.nodes.filter(isRawNode).length,
       deprecated: state.nodes.filter(function (n) { return n.deprecated; }).length,
       forgotten: state.nodes.filter(function (n) { return n.forgotten; }).length,
       orphans: state.nodes.filter(function (n) {

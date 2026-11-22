@@ -164,7 +164,8 @@
 
     exportYamlUrl: function () { return BASE + '/api/export/yaml'; },
     exportOplogUrl: function () { return BASE + '/api/export/oplog'; },
-    importYaml: function (text) { return request('POST', '/api/import/yaml', { yaml: text }); },
+    exportApplogUrl: function () { return BASE + '/api/export/applog'; },
+    exportChainTestsUrl: function () { return BASE + '/api/export/chaintests'; },
 
     // ---- 实时流 ----
     connectStream: function (onEvent, onState) {

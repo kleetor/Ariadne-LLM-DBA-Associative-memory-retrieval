@@ -63,8 +63,9 @@
         onclick: function () { switchGraphTo(g.name); },
       }));
     }
-    acts.appendChild(el('a', {
-      class: 'btn small', href: A.api.exportGraphUrl(g.name), download: '', text: '导出',
+    acts.appendChild(el('button', {
+      class: 'btn small', text: '导出',
+      onclick: function () { A.api.exportGraph(g.name); },
     }));
     acts.appendChild(el('button', {
       class: 'btn small', text: '载入 MCP',
@@ -1331,7 +1332,7 @@
         '<input class="input small" id="oplog-q" placeholder="关键字（op / actor / 内容）">' +
         '<select class="input small" id="oplog-tail"><option value="100">100 条</option><option value="200" selected>200 条</option><option value="500">500 条</option></select>' +
         '<button class="btn small" id="oplog-apply">筛选</button>' +
-        '<a class="btn small" href="' + A.api.exportOplogUrl() + '" download>导出</a>' +
+        '<button class="btn small" id="oplog-export">导出</button>' +
         '</div><div class="log-list" id="oplog-list"><div class="hint">加载中…</div></div>';
     },
 
@@ -1358,6 +1359,8 @@
     bindPanel() {
       const apply = $('oplog-apply');
       if (apply) apply.addEventListener('click', function () { observability.loadOplog(); });
+      const oplogExport = $('oplog-export');
+      if (oplogExport) oplogExport.addEventListener('click', function () { A.api.exportOplog(); });
       const logsApply = $('logs-apply');
       if (logsApply) logsApply.addEventListener('click', function () { observability.loadLogs(); });
       const pause = $('live-pause');
@@ -1769,9 +1772,18 @@
       const logSection = section('日志', '操作日志 / 服务运行日志 / 调用测试记录');
       if (A.api.isLive) {
         const row = el('div', { class: 'btn-row' });
-        row.appendChild(el('a', { class: 'btn', href: A.api.exportOplogUrl(), download: '', text: '导出操作日志' }));
-        row.appendChild(el('a', { class: 'btn', href: A.api.exportApplogUrl(), download: '', text: '导出运行日志' }));
-        row.appendChild(el('a', { class: 'btn', href: A.api.exportChainTestsUrl(), download: '', text: '导出调用测试日志' }));
+        row.appendChild(el('button', {
+          class: 'btn', text: '导出操作日志',
+          onclick: function () { A.api.exportOplog(); },
+        }));
+        row.appendChild(el('button', {
+          class: 'btn', text: '导出运行日志',
+          onclick: function () { A.api.exportApplog(); },
+        }));
+        row.appendChild(el('button', {
+          class: 'btn', text: '导出调用测试日志',
+          onclick: function () { A.api.exportChainTests(); },
+        }));
         logSection.body.appendChild(row);
       } else {
         logSection.body.appendChild(el('div', { class: 'hint', text: '离线 HTML 模式：数据操作不可用。' }));
@@ -2388,6 +2400,14 @@
   // 顶栏「当前用户 + 登出」：面板始终鉴权，故必定显示
   async function wireAuth() {
     if (!A.api.isLive) return;
+    // 内嵌 AstrBot 视图时由 Dashboard 负责登录态，面板自身的用户/登出/改密页不可用
+    if (A.api.bridgeMode) {
+      const pill = $('user-pill');
+      if (pill) pill.hidden = true;
+      const btn = $('btn-logout');
+      if (btn) btn.hidden = true;
+      return;
+    }
     let cfg;
     try { cfg = await A.api.getConfig(); } catch (e) { return; }
     // 初始密码尚未修改：先去改密页

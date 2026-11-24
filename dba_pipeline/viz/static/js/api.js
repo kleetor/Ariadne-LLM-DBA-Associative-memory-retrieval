@@ -7,6 +7,13 @@
   // 去掉末尾的文件名/斜杠，得到不带尾斜杠的应用根
   const BASE = (window.location.origin + window.location.pathname).replace(/\/[^/]*$/, '');
 
+  // AstrBot 插件视图的 iframe 没有 allow-same-origin，视图内既没有 Cookie 也没有
+  // localStorage，直接 fetch 面板 API 一定 401。检测到宿主注入的 bridge 时，
+  // 所有请求都交给父页面（带 Dashboard 登录态）转发给插件后端，再由插件用内部
+  // Bearer 访问容器内的面板服务；直连面板时行为保持不变。
+  const bridge = window.AstrBotPluginView || window.AstrBotPluginPage;
+  const bridgeMode = !!(bridge && typeof bridge.apiPost === 'function');
+
   // 后端可达性：网络层失败置为 false，任一次成功请求恢复 true。
   // 各轮询据此暂停，避免服务停止后控制台被 ERR_CONNECTION_REFUSED 刷屏。
   let online = true;
@@ -26,8 +33,122 @@
     return { signal: ctrl.signal, cancel: function () { clearTimeout(timer); } };
   }
 
+  function splitPath(path) {
+    const idx = path.indexOf('?');
+    if (idx === -1) return { path: path, query: '' };
+    return { path: path.slice(0, idx), query: path.slice(idx + 1) };
+  }
+
+  function raceTimeout(promise, ms) {
+    if (!ms) return promise;
+    return new Promise(function (resolve, reject) {
+      const timer = setTimeout(function () {
+        reject(new Error('请求超时（' + Math.round(ms / 1000) + ' 秒未响应）'));
+      }, ms);
+      promise.then(function (value) {
+        clearTimeout(timer);
+        resolve(value);
+      }, function (error) {
+        clearTimeout(timer);
+        reject(error);
+      });
+    });
+  }
+
+  // bridge 模式：POST 到插件的 /proxy，由插件按 method/path/query/body 转发。
+  // 不用 apiGet 是因为父页面把 params 交给 axios 序列化，传嵌套 body 不可控。
+  async function bridgeRequest(method, path, body, ms) {
+    const parts = splitPath(path);
+    const payload = { method: method, path: parts.path };
+    if (parts.query) payload.query = parts.query;
+    if (body !== undefined) payload.body = body;
+    let data;
+    try {
+      data = await raceTimeout(bridge.apiPost('proxy', payload), ms);
+    } catch (error) {
+      online = false;
+      throw error instanceof Error ? error : new Error(String(error));
+    }
+    online = true;
+    return data;
+  }
+
+  function downloadExport(path) {
+    if (bridgeMode) {
+      const parts = splitPath(path);
+      const params = { path: parts.path };
+      if (parts.query) params.query = parts.query;
+      return bridge.download('download', params);
+    }
+    const link = document.createElement('a');
+    link.href = BASE + path;
+    link.download = '';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    return Promise.resolve();
+  }
+
+  function bridgeStream(onEvent, onState) {
+    let closed = false;
+    let retry = 0;
+    let subscriptionId = null;
+    let timer = null;
+
+    function schedule() {
+      retry = Math.min(retry + 1, 30);
+      timer = setTimeout(open, Math.min(1000 * retry, 30000));
+    }
+
+    function open() {
+      if (closed) return;
+      bridge.subscribeSSE('stream', {
+        onMessage: function (message) {
+          if (closed || !message || message.hasData === false) return;
+          online = true;
+          try { onEvent(message.parsed); } catch (e) {}
+        },
+        onOpen: function () {
+          retry = 0;
+          online = true;
+          if (onState) onState('open');
+        },
+        onError: function () {
+          if (closed) return;
+          online = false;
+          if (onState) onState('closed');
+          if (subscriptionId) {
+            try { bridge.unsubscribeSSE(subscriptionId); } catch (e) {}
+            subscriptionId = null;
+          }
+          schedule();
+        },
+      }, { path: '/api/stream' }).then(function (id) {
+        if (closed) {
+          bridge.unsubscribeSSE(id);
+          return;
+        }
+        subscriptionId = id;
+      }).catch(function () {
+        if (!closed) schedule();
+      });
+    }
+
+    open();
+    return {
+      close: function () {
+        closed = true;
+        if (timer) clearTimeout(timer);
+        if (subscriptionId) bridge.unsubscribeSSE(subscriptionId);
+      },
+    };
+  }
+
   async function request(method, path, body, opts) {
     const ms = opts && opts.timeout !== undefined ? opts.timeout : DEFAULT_TIMEOUT;
+    if (bridgeMode) {
+      return bridgeRequest(method, path, body, ms);
+    }
     const limit = timeoutSignal(ms);
     const fetchOpts = { method: method, headers: {} };
     if (limit.signal) fetchOpts.signal = limit.signal;
@@ -79,11 +200,13 @@
   }
 
   function jumpBlocked() {
-    return !isLive || location.pathname === '/login';
+    // bridge 模式下鉴权由 AstrBot Dashboard 负责，视图内没有登录页可跳
+    return !isLive || bridgeMode || location.pathname === '/login';
   }
 
   const api = {
     isLive: isLive,
+    bridgeMode: bridgeMode,
     boot: boot,
     isOnline: function () { return online; },
 
@@ -126,16 +249,21 @@
     activateMcpGraph: function (name) {
       return request('POST', '/api/graphs/activate-mcp', { name: name });
     },
-    exportGraphUrl: function (name) {
-      return BASE + '/api/export/yaml?name=' + encodeURIComponent(name);
+    exportGraph: function (name) {
+      return downloadExport('/api/export/yaml?name=' + encodeURIComponent(name));
     },
+    exportOplog: function () { return downloadExport('/api/export/oplog'); },
+    exportApplog: function () { return downloadExport('/api/export/applog'); },
+    exportChainTests: function () { return downloadExport('/api/export/chaintests'); },
 
     // ---- 可观测性 ----
     getOplog: function (params) { return request('GET', '/api/oplog' + query(params)); },
     getLogs: function (params) { return request('GET', '/api/logs' + query(params)); },
     getMetrics: function () { return request('GET', '/api/metrics'); },
     getHealth: function () {
-      // 健康检查在降级时返回 503，但仍需读取其 body 展示具体检查项
+      // 健康检查在降级时返回 503，但仍需读取其 body 展示具体检查项。
+      // 插件代理已把 /api/health 统一包成 200，因此 bridge 模式直接走 request()。
+      if (bridgeMode) return request('GET', '/api/health');
       return fetch(BASE + '/api/health', { signal: timeoutSignal(DEFAULT_TIMEOUT).signal })
         .then(function (res) {
           online = true;
@@ -162,14 +290,16 @@
       return request('POST', '/api/chain/test', { query: query }, { timeout: 0 });
     },
 
-    exportYamlUrl: function () { return BASE + '/api/export/yaml'; },
-    exportOplogUrl: function () { return BASE + '/api/export/oplog'; },
-    exportApplogUrl: function () { return BASE + '/api/export/applog'; },
-    exportChainTestsUrl: function () { return BASE + '/api/export/chaintests'; },
-
     // ---- 实时流 ----
     connectStream: function (onEvent, onState) {
-      if (!isLive || typeof EventSource === 'undefined') {
+      if (!isLive) {
+        if (onState) onState('offline');
+        return { close: function () {} };
+      }
+      if (bridgeMode) {
+        return bridgeStream(onEvent, onState);
+      }
+      if (typeof EventSource === 'undefined') {
         if (onState) onState('offline');
         return { close: function () {} };
       }

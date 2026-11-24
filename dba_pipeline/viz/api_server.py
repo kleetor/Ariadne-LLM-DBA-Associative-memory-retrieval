@@ -1379,6 +1379,9 @@ def create_app(api: MemoryGraphAPI, config: VizConfig,
     app.add_middleware(MetricsMiddleware, metrics=metrics)
     app.add_middleware(
         webauth.AuthMiddleware, store=store, signer=signer,
+        # 面板与 MCP SSE 共用一套凭据：Bearer（ARIADNE_MCP_TOKEN）也要能访问面板 API，
+        # 否则插件/反代无法用内部 token 同源转发面板（只能退回 Basic 或会话 Cookie）。
+        bearer_token=webauth.load_bearer_token(),
         # 登录页要显示站点图标、要用图谱数据铺 3D 背景，故单独放行这两个静态资源。
         # graph.json 由图谱 YAML 烘成，只含 id/type/group，不含记忆正文。
         exempt_paths=webauth.ALWAYS_EXEMPT + ("/static/icon.png", "/static/graph.json"),

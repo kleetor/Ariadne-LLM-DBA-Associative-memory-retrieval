@@ -1,0 +1,169 @@
+{
+  "llm": {
+    "description": "语言模型：用于记忆抽取、维护判断与目的推断",
+    "type": "object",
+    "items": {
+      "api_key": {
+        "description": "API Key",
+        "type": "string",
+        "default": "",
+        "secret": true,
+        "hint": "兼容 OpenAI 接口的密钥，写入容器 / 进程的 OPENAI_API_KEY"
+      },
+      "api_base": {
+        "description": "API Base",
+        "type": "string",
+        "default": "https://api.deepseek.com/v1",
+        "hint": "例如 https://api.deepseek.com/v1 或 https://api.gpt.ge/v1"
+      },
+      "model": {
+        "description": "模型名",
+        "type": "string",
+        "default": "deepseek-v4-flash"
+      },
+      "thinking": {
+        "description": "思考模式",
+        "type": "bool",
+        "default": false,
+        "hint": "链路内部调用默认关闭：实测输出 token 降到约 1/16、写入快约 2.5 倍"
+      }
+    }
+  },
+  "embedding": {
+    "description": "向量模型：图谱索引与联想检索使用",
+    "type": "object",
+    "items": {
+      "mode": {
+        "description": "运行方式",
+        "type": "string",
+        "options": ["api", "local"],
+        "labels": ["API（推荐）", "本地 sentence-transformers"],
+        "default": "api",
+        "hint": "本地模式需要额外安装 torch 与模型权重，且首次加载较慢"
+      },
+      "api_key": {
+        "description": "API Key",
+        "type": "string",
+        "default": "",
+        "secret": true
+      },
+      "api_base": {
+        "description": "API Base",
+        "type": "string",
+        "default": "https://api.siliconflow.cn/v1"
+      },
+      "model": {
+        "description": "模型名",
+        "type": "string",
+        "default": "BAAI/bge-m3"
+      }
+    }
+  },
+  "storage": {
+    "description": "存储：图谱 YAML 与索引所在目录",
+    "type": "object",
+    "items": {
+      "graphs_dir": {
+        "description": "图谱目录",
+        "type": "string",
+        "default": "data",
+        "hint": "相对路径按插件数据目录解析；auth.json、日志与索引也在这里"
+      },
+      "yaml": {
+        "description": "起始图谱文件（可选）",
+        "type": "string",
+        "default": "",
+        "hint": "留空则从图谱目录里的 memory_graph.yaml 开始"
+      }
+    }
+  },
+  "mcp": {
+    "description": "MCP 服务：插件负责拉起并托管该进程",
+    "type": "object",
+    "items": {
+      "auto_start": {
+        "description": "随插件自动启动",
+        "type": "bool",
+        "default": true
+      },
+      "host": {
+        "description": "监听地址",
+        "type": "string",
+        "default": "127.0.0.1",
+        "hint": "仅本机使用保持 127.0.0.1；需要远程直连再改成 0.0.0.0"
+      },
+      "port": {
+        "description": "SSE 端口",
+        "type": "int",
+        "default": 8766,
+        "slider": { "min": 1024, "max": 65535, "step": 1 }
+      },
+      "token": {
+        "description": "Bearer Token（可选）",
+        "type": "string",
+        "default": "",
+        "secret": true,
+        "hint": "写入 ARIADNE_MCP_TOKEN；与面板账号密码并存"
+      }
+    }
+  },
+  "panel": {
+    "description": "3D 面板：可选，供浏览器查看记忆图谱",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "description": "随插件启动面板",
+        "type": "bool",
+        "default": false,
+        "hint": "默认关闭，避免无意中把面板暴露到非回环地址"
+      },
+      "host": {
+        "description": "监听地址",
+        "type": "string",
+        "default": "127.0.0.1"
+      },
+      "port": {
+        "description": "面板端口",
+        "type": "int",
+        "default": 8765,
+        "slider": { "min": 1024, "max": 65535, "step": 1 }
+      },
+      "user": {
+        "description": "面板账号",
+        "type": "string",
+        "default": "admin"
+      },
+      "password": {
+        "description": "面板密码",
+        "type": "string",
+        "default": "",
+        "secret": true,
+        "hint": "仅作为忘记密码时的重置后门；日常凭据以图谱目录下的 auth.json 为准"
+      }
+    }
+  },
+  "advanced": {
+    "description": "高级（一般保持默认）",
+    "type": "object",
+    "items": {
+      "log_level": {
+        "description": "日志级别",
+        "type": "string",
+        "options": ["DEBUG", "INFO", "WARNING", "ERROR"],
+        "default": "INFO"
+      },
+      "source_store": {
+        "description": "原文落盘",
+        "type": "bool",
+        "default": true,
+        "hint": "开启后可把记忆节点回溯到原文；落盘前会脱敏，默认保留 30 天"
+      },
+      "review_idle": {
+        "description": "空闲巡检秒数",
+        "type": "int",
+        "default": 300,
+        "slider": { "min": 30, "max": 3600, "step": 30 }
+      }
+    }
+  }
+}

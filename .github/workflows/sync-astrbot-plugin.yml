@@ -1,0 +1,71 @@
+name: Sync AstrBot plugin
+
+# 一次性配置：
+# 1. 在 kleetor/astrbot_plugin_ariadne 创建 fine-grained PAT，权限仅需 Contents: Read and write。
+# 2. 在本 monorepo 的 Settings -> Secrets and variables -> Actions 添加 PLUGIN_SYNC_TOKEN。
+# 3. 推送到 main，或在 Actions 页手动运行本 workflow。
+#
+# 同步方向：monorepo -> 独立插件仓库（发布镜像）。
+# 以 integrations/astrbot_plugin_ariadne 为唯一开发源，独立仓库只接收镜像。
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "integrations/astrbot_plugin_ariadne/**"
+      - ".github/workflows/sync-astrbot-plugin.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sync-astrbot-plugin
+  cancel-in-progress: true
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout monorepo
+        uses: actions/checkout@v4
+
+      - name: Check sync token
+        env:
+          TOKEN: ${{ secrets.PLUGIN_SYNC_TOKEN }}
+        run: |
+          if [ -z "$TOKEN" ]; then
+            echo "::error::缺少 PLUGIN_SYNC_TOKEN。请创建对 kleetor/astrbot_plugin_ariadne 有 Contents: Read and write 权限的 fine-grained PAT，并添加为本仓库 secret。"
+            exit 1
+          fi
+
+      - name: Checkout plugin mirror
+        uses: actions/checkout@v4
+        with:
+          repository: kleetor/astrbot_plugin_ariadne
+          ref: main
+          token: ${{ secrets.PLUGIN_SYNC_TOKEN }}
+          path: plugin-mirror
+
+      - name: Mirror plugin directory
+        run: |
+          rsync -a --delete \
+            --exclude='.git' \
+            --exclude='__pycache__' \
+            --exclude='*.pyc' \
+            --exclude='*.pyo' \
+            --exclude='data' \
+            integrations/astrbot_plugin_ariadne/ plugin-mirror/
+
+      - name: Commit and push mirror
+        working-directory: plugin-mirror
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No plugin changes to sync."
+            exit 0
+          fi
+          git commit -m "chore: sync from monorepo ${GITHUB_SHA::7}"
+          git push origin HEAD:main

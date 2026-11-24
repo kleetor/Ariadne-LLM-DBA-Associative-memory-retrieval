@@ -1,0 +1,6 @@
+# 本插件不往 AstrBot 的 Python 环境安装依赖。
+#
+# ariadne-mcp-server 需要 mcp>=2.2，而 AstrBot 4.x 固定 mcp<2；装在同一环境会把 AstrBot
+# 的 MCP SDK 顶掉（实测 4.29.4）。因此服务统一由 uvx 在独立虚拟环境中运行：
+#   uvx --from ariadne-mcp-server ariadne-mcp --sse ...
+# 只需要系统里有 uv（https://docs.astral.sh/uv/），AstrBot 官方镜像已自带。

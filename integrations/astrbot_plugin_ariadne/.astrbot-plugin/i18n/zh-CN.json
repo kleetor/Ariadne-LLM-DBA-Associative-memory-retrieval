@@ -1,0 +1,14 @@
+{
+  "views": {
+    "status": {
+      "title": "Ariadne 长期记忆",
+      "description": "查看 Ariadne 记忆服务的运行状态、图谱规模与日志，管理进程和连接配置。",
+      "heading": "长期记忆运行面板"
+    },
+    "panel": {
+      "title": "Ariadne 3D 面板",
+      "description": "在 AstrBot 插件视图内直接打开 Ariadne 的 3D 记忆图谱面板，无需额外配置访问地址。",
+      "heading": "3D 记忆图谱"
+    }
+  }
+}

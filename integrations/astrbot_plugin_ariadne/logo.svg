@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="Ariadne">
+  <!-- 三点两线的 Y 形记忆节点，颜色取自 website 主题绿 -->
+  <!-- AstrBot 插件图标源文件 -->
+  <g fill="none" stroke="#0d9488" stroke-width="16" stroke-linecap="round">
+    <path d="M71 136 L160 70" />
+    <path d="M71 136 L185 185" />
+  </g>
+  <g fill="#0d9488">
+    <circle cx="160" cy="70" r="26" />
+    <circle cx="71" cy="136" r="26" />
+    <circle cx="185" cy="185" r="26" />
+  </g>
+</svg>

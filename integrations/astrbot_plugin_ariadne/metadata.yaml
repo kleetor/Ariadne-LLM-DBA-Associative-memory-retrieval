@@ -1,0 +1,24 @@
+name: astrbot_plugin_ariadne
+display_name: Ariadne 长期记忆
+short_desc: 为 AstrBot 接入长期记忆：对话沉淀为可联想的记忆图谱，并带 3D 面板。
+desc: |
+  Ariadne 是一套面向个人陪伴场景的长期记忆服务：把对话中的事实抽取成有向、带类型的
+  记忆图谱，并在需要时沿因果与语义关系联想出相关经历，整理成连贯的故事交给模型。
+  官网：https://www.ariadne.top/
+
+  装上本插件后，AstrBot 会获得：
+  - 长期记忆：跨会话记住用户的事实、偏好、关系与重要经历，并持续纠错、去重、废弃过时记忆；
+  - 联想回忆：不只按相似度取片段，而是沿记忆之间的关系找回因果链与上下文；
+  - 3D 记忆面板：在插件视图里直接查看、搜索和编辑整张图谱；
+  - 运行状态与配置：在 WebUI 里完成模型配置、服务启停、日志查看与 MCP 接入。
+
+  记忆能力由独立的 ariadne-mcp-server 提供，本插件负责在 AstrBot 内安装、配置与托管它。
+  系统需要安装 uv（AstrBot 官方镜像已自带）。
+version: 0.1.0
+author: Ariadne Contributors
+repo: https://github.com/kleetor/astrbot_plugin_ariadne
+astrbot_version: ">=4.17.0"
+tags:
+  - memory
+  - mcp
+  - ariadne

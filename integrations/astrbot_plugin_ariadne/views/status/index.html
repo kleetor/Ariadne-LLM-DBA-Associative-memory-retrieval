@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Ariadne 长期记忆</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <header class="head">
+      <div>
+        <p class="kicker">Ariadne · Memory</p>
+        <h1 id="heading">长期记忆运行面板</h1>
+        <p class="sub" id="subtitle">加载中…</p>
+      </div>
+      <div class="head-actions">
+        <button id="refresh" class="btn ghost" type="button">刷新</button>
+      </div>
+    </header>
+
+    <section class="grid">
+      <article class="card" id="card-mcp">
+        <div class="card-head">
+          <h2>MCP 服务</h2>
+          <span class="dot" data-state="off"></span>
+        </div>
+        <p class="meta" id="mcp-meta">-</p>
+        <div class="row">
+          <button class="btn" data-action="start" data-target="mcp" type="button">启动</button>
+          <button class="btn ghost" data-action="stop" data-target="mcp" type="button">停止</button>
+          <button class="btn ghost" data-action="restart" data-target="mcp" type="button">重启</button>
+        </div>
+      </article>
+
+      <article class="card" id="card-panel">
+        <div class="card-head">
+          <h2>3D 面板</h2>
+          <span class="dot" data-state="off"></span>
+        </div>
+        <p class="meta" id="panel-meta">-</p>
+        <div class="row">
+          <button class="btn" data-action="start" data-target="panel" type="button">启动</button>
+          <button class="btn ghost" data-action="stop" data-target="panel" type="button">停止</button>
+          <button class="btn ghost" data-action="restart" data-target="panel" type="button">重启</button>
+        </div>
+      </article>
+
+      <article class="card">
+        <div class="card-head">
+          <h2>图谱</h2>
+        </div>
+        <p class="stat"><span id="graph-nodes">-</span><small>节点</small></p>
+        <p class="stat"><span id="graph-edges">-</span><small>关系</small></p>
+        <p class="meta mono" id="graph-path">-</p>
+      </article>
+    </section>
+
+    <section class="card">
+      <div class="card-head">
+        <h2>接入片段</h2>
+        <div class="row">
+          <button id="copy-sse" class="btn ghost" type="button">复制 SSE</button>
+          <button id="copy-stdio" class="btn ghost" type="button">复制 stdio</button>
+        </div>
+      </div>
+      <p class="hint">
+        把片段粘贴到 AstrBot「插件 → MCP → 新增服务器」。SSE 走已托管的进程；stdio 适合让 AstrBot 自己拉起。
+      </p>
+      <pre class="snippet mono" id="snippet">-</pre>
+    </section>
+
+    <section class="card">
+      <div class="card-head">
+        <h2>连接配置</h2>
+        <span class="hint" id="config-hint">留空的密钥表示保持原值</span>
+      </div>
+
+      <div class="form-grid">
+        <label>
+          <span>LLM API Key</span>
+          <input id="llm-api_key" type="password" autocomplete="off" placeholder="未设置" />
+        </label>
+        <label>
+          <span>LLM API Base</span>
+          <input id="llm-api_base" type="text" spellcheck="false" />
+        </label>
+        <label>
+          <span>LLM 模型</span>
+          <input id="llm-model" type="text" spellcheck="false" />
+        </label>
+        <label>
+          <span>Embedding 方式</span>
+          <select id="embedding-mode">
+            <option value="api">API（推荐）</option>
+            <option value="local">本地模型</option>
+          </select>
+        </label>
+        <label>
+          <span>Embedding API Key</span>
+          <input id="embedding-api_key" type="password" autocomplete="off" placeholder="未设置" />
+        </label>
+        <label>
+          <span>Embedding API Base</span>
+          <input id="embedding-api_base" type="text" spellcheck="false" />
+        </label>
+        <label>
+          <span>Embedding 模型</span>
+          <input id="embedding-model" type="text" spellcheck="false" />
+        </label>
+        <label>
+          <span>图谱目录</span>
+          <input id="storage-graphs_dir" type="text" spellcheck="false" />
+        </label>
+        <label>
+          <span>MCP 端口</span>
+          <input id="mcp-port" type="number" min="1024" max="65535" />
+        </label>
+        <label>
+          <span>MCP Bearer Token</span>
+          <input id="mcp-token" type="password" autocomplete="off" placeholder="可选" />
+        </label>
+        <label class="check">
+          <input id="panel-enabled" type="checkbox" />
+          <span>随插件启动 3D 面板</span>
+        </label>
+        <label>
+          <span>面板端口</span>
+          <input id="panel-port" type="number" min="1024" max="65535" />
+        </label>
+      </div>
+
+      <div class="row end">
+        <button id="save" class="btn" type="button">保存配置</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-head">
+        <h2>最近日志</h2>
+        <label class="check small">
+          <input id="autorefresh" type="checkbox" checked />
+          <span>自动刷新</span>
+        </label>
+      </div>
+      <pre class="logs mono" id="logs">-</pre>
+    </section>
+
+    <div class="toast" id="toast" hidden></div>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

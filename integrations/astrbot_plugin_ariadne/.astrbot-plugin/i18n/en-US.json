@@ -1,0 +1,14 @@
+{
+  "views": {
+    "status": {
+      "title": "Ariadne Long-Term Memory",
+      "description": "Inspect the Ariadne memory service status, graph size, and logs; manage processes and connection settings.",
+      "heading": "Memory runtime panel"
+    },
+    "panel": {
+      "title": "Ariadne 3D Panel",
+      "description": "Open the Ariadne 3D memory graph panel directly inside the AstrBot plugin view; no extra URL configuration needed.",
+      "heading": "3D memory graph"
+    }
+  }
+}

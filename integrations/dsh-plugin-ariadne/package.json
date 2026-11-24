@@ -1,0 +1,37 @@
+{
+  "name": "dsh-plugin-ariadne",
+  "version": "0.1.0",
+  "description": "Ariadne long-term memory for DeepSeek Harness (DSH): one-command install, env config and a status view.",
+  "type": "module",
+  "main": "index.js",
+  "bin": {
+    "ariadne-dsh": "bin/ariadne-dsh.js"
+  },
+  "files": [
+    "index.js",
+    "cordis.patch.yml",
+    "bin",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "memory",
+    "mcp",
+    "ariadne"
+  ],
+  "license": "AGPL-3.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kleetor/Ariadne-LLM-DBA-Associative-memory-retrieval.git",
+    "directory": "integrations/dsh-plugin-ariadne"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

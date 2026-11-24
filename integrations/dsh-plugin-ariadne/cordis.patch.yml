@@ -1,0 +1,28 @@
+# Ariadne 记忆服务：由 DSH 自带的 MCP client 以 stdio 拉起。
+# 只做“安装 + 配置”：不复制、不重写任何 MCP 工具。
+#
+# 先运行一次 `ariadne-dsh init` 把配置写进 shell 环境 / profile 的 .env，
+# 这里的所有 env 都从 process.env 读取；缺省时由 Ariadne 自身使用默认值。
+- insert:
+    - id: ariadne-memory
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: ariadne
+        transport: stdio
+        command: uvx
+        args:
+          - --from
+          - ariadne-mcp-server
+          - ariadne-mcp
+        env:
+          OPENAI_API_KEY: !!js process.env.OPENAI_API_KEY || ''
+          OPENAI_API_BASE: !!js process.env.OPENAI_API_BASE || ''
+          OPENAI_MODEL: !!js process.env.OPENAI_MODEL || ''
+          OPENAI_THINKING: !!js process.env.OPENAI_THINKING || '0'
+          EMBEDDING_LOCAL: !!js process.env.EMBEDDING_LOCAL || 'false'
+          EMBEDDING_API_KEY: !!js process.env.EMBEDDING_API_KEY || ''
+          EMBEDDING_API_BASE: !!js process.env.EMBEDDING_API_BASE || ''
+          EMBEDDING_MODEL: !!js process.env.EMBEDDING_MODEL || ''
+          ARIADNE_GRAPHS_DIR: !!js process.env.ARIADNE_GRAPHS_DIR || ''
+          ARIADNE_YAML: !!js process.env.ARIADNE_YAML || ''
+          ARIADNE_LOG_LEVEL: !!js process.env.ARIADNE_LOG_LEVEL || 'INFO'

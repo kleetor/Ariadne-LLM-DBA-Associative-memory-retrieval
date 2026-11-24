@@ -44,7 +44,7 @@ from dba_pipeline.extraction.dba import EDGE_BATCH_SIZE
 # system prompt 的特征词 → 该链的预设响应（与调用顺序无关）
 M_NODE = "节点抽取器"
 M_EDGE = "边连接器"
-M_TRIAGE = "值得长期记忆的新事实"
+M_TRIAGE = "值得进入抽取流程"
 M_PURPOSE = "对话意图分析助手"
 M_STORY = "记忆故事整理助手"
 M_ROUTE = "路由判定员"

@@ -20,7 +20,7 @@ import pytest
 from alm.engine import ALMEngine, space_dirname
 from alm.space import MemorySpace
 from dba_pipeline.core.jump_axis import NodeType
-from dba_pipeline.extraction.dba import MemoryDBA
+from dba_pipeline.extraction.dba import MemoryDBA, _normalize_ops
 from dba_pipeline.extraction.graph_builder import GraphBuilder
 from dba_pipeline.extraction.maintenance_scheduler import (
     MaintenanceScheduler,
@@ -178,6 +178,20 @@ def test_needs_raw_fallback_distinguishes_rejected_from_deduped():
         "result": {"created_ids": [], "deduped": 1},
     }
     assert MemoryDBA.needs_raw_fallback(None, result_deduped) is None
+
+
+def test_no_memory_verdict_is_preserved_and_skips_raw_fallback():
+    """抽取器显式判「没有长期价值」时，不能再用原文兜底写回可检索节点。"""
+    normalized = _normalize_ops(
+        {"node_ops": [], "edge_ops": [], "no_memory": True}
+    )
+    assert normalized["no_memory"] is True
+
+    result = {
+        "ops": {"node_ops": [], "edge_ops": [], "no_memory": True},
+        "result": {"created_ids": [], "deduped": 0},
+    }
+    assert MemoryDBA.needs_raw_fallback(None, result) is None
 
 
 # ---------- 5. 空间目录名：Windows 保留名 & 大小写冲突 ----------

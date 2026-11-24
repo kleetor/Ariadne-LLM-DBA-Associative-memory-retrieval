@@ -145,6 +145,15 @@ STATUS=客观处境 | REASON=导致状态/行为的原因 | ACTION=主动行为 
 ## 操作
 create(新事实) | update(事实变化) | fix_type(修正类型) | deprecate(标记过时,不物理删除)
 
+## 重要性闸门（先判断，再抽取）
+你维护的是**长期记忆**，不是聊天流水账。写任何节点前先自问：这条事实在几周或几个月后仍然成立、仍然值得被想起吗？
+- 值得抽取：稳定的身份/属性、长期偏好与习惯、持久的人际关系、持续中的处境/目标/计划、会造成长期影响的重大事件（换工作、搬家、确诊、重要承诺/决定）、用户明确要求记住的内容。
+- 不要抽取：一次性的日常行为/消费/饮食/出行/临时安排（如「刚吃了两个菜」「今天去了某地」「刚买了杯咖啡」）、瞬时情绪或身体感受（如「现在有点困」）、纯过程性描述。
+- 单次事件只有具备长期后果或会改变状态时才记录（如「用户从 A 公司离职，入职 B 公司」）；普通生活琐事一律跳过。
+- 助手自身经历/行为同样要过这道闸门：只有可复用的产出或重要操作才记录，不要把每次工具调用、每次回答都写成记忆。
+- 事实/事件节点的 content 中禁止出现依赖说话时刻的相对时间词：刚、刚才、现在、正在、今天、今晚、明天、昨天、等会、马上、最近、这次、上次、这几天。时间对事实有长期意义时用明确日期，否则不要在 content 里写时间。（时序增强模式单独抽取的「时间节点」不受此限，其 content 就是时间词本身。）
+- 拿不准是否值得长期记忆时，不抽取（宁缺毋滥）。
+
 ## 抽取原则（重要）
 1. 只抽事实，来源有二：用户的事实、助手自身经历/行为（助手为响应用户请求实际做过的事，如「助手帮用户整理了一份项目清单」「助手用Python写了个排序示例」）；忽略无信息量的寒暄/客套/共情
 2. 一个事实一个节点：一句话含多个事实时必须拆成多个节点，禁止合并
@@ -162,7 +171,7 @@ create(新事实) | update(事实变化) | fix_type(修正类型) | deprecate(�
 
 ## 输出
 """ + _NODE_OUTPUT_EXAMPLE + """
-无需抽取时返回空 node_ops。只输出 JSON。"""
+若整段对话没有任何值得长期记忆的事实，返回 {{"node_ops":[],"no_memory":true}}——这是「有意不记」，不要用空 node_ops 表示；空 node_ops 只用于「解析成功但本轮确实不需要新建/更新」。只输出 JSON。"""
 
 NODE_EXTRACTION_USER_PROMPT = """── 对话上下文 ──
 
@@ -380,10 +389,11 @@ def has_temporal_signal(text: str) -> bool:
 
 # ---- 维护判断（triage）Prompt ----
 
-DBA_TRIAGE_PROMPT = """判断对话是否包含值得长期记忆的新事实或助手自身经历/行为，只回答 NEEDED 或 SKIP。
+DBA_TRIAGE_PROMPT = """判断对话是否包含值得进入抽取流程的新内容，只回答 NEEDED 或 SKIP。
 
-SKIP：纯寒暄/打招呼、共情安慰、追问细节无新信息、仅延续话题。
-NEEDED：用户的新事实、事实变化、与已有记忆矛盾、话题切换；或助手做了值得记住的具体产出/行为（如生成文件、写代码、整理清单、给出可执行建议），这类「助手做过的事」同样需要记录。
+SKIP：纯寒暄/打招呼、共情安慰、追问细节无新信息、仅延续话题——完全没有新内容。
+NEEDED：只要用户或助手说到了具体信息（包括一次性的日常琐事），就回答 NEEDED，交给抽取器判断是否值得长期记忆；用户长期有效的个人信息、稳定属性、偏好/习惯、持久关系、持续中的计划/目标、有长期影响的重大事件或事实变化，或助手值得记住的具体产出/行为，当然也属于 NEEDED。
+注意：triage 只做粗筛，不做最终重要性判断。不要因为「这件事可能不重要」而 SKIP——SKIP 的内容会走原文兜底落库，反而绕过了抽取器的重要性过滤。
 
 对话：
 {conversation}
@@ -448,7 +458,12 @@ def _normalize_ops(obj) -> Optional[Dict]:
     edge_ops = obj.get("edge_ops", [])
     if not isinstance(node_ops, list) or not isinstance(edge_ops, list):
         return None
-    return {"node_ops": node_ops, "edge_ops": edge_ops}
+    out: Dict = {"node_ops": node_ops, "edge_ops": edge_ops}
+    # 显式「有意不记」标记：与解析失败/截断造成的空 node_ops 区分开。
+    # 前者不应触发原文兜底落库，否则刚被判定为琐事的原文又会被写成可检索节点。
+    if obj.get("no_memory") is True:
+        out["no_memory"] = True
+    return out
 
 # ---- DBA 类 ----
 
@@ -627,7 +642,9 @@ class MemoryDBA:
         else:
             node_chain = self.node_chain_temporal if temporal else self.node_chain
         node_context = self._build_node_context(conversation)
-        node_ops = self._parse_response(node_chain.invoke(node_context).content).get("node_ops", [])
+        node_parsed = self._parse_response(node_chain.invoke(node_context).content)
+        node_ops = node_parsed.get("node_ops", [])
+        no_memory = bool(node_parsed.get("no_memory"))
         evidence_stats = None
         if self.enable_evidence:
             # 程序化校验：不是该批原文子串的 evidence 一律丢弃（LLM 可能写成概括/改写）
@@ -674,8 +691,11 @@ class MemoryDBA:
         # 而「跨批连边有没有发生」是必要信号——本行只有计数，可以安全放行。
         logger.warning("边连边分布: 批内=%d 跨批=%d（本轮新节点 %d 个）", inner, cross, len(new_set))
 
+        ops_out: Dict = {"node_ops": node_ops, "edge_ops": edge_ops}
+        if no_memory:
+            ops_out["no_memory"] = True
         out = {
-            "ops": {"node_ops": node_ops, "edge_ops": edge_ops},
+            "ops": ops_out,
             "result": {
                 "created_ids": result1.get("created_ids", []),
                 "deduped": result1.get("deduped", 0),
@@ -802,6 +822,9 @@ class MemoryDBA:
         """
         if result.get("skipped"):
             return "triage"
+        # 抽取器显式判定「没有值得长期记忆的内容」：有意不记，不要再用原文兜底写回图
+        if (result.get("ops") or {}).get("no_memory"):
+            return None
         if (result.get("result") or {}).get("created_ids"):
             return None
         node_ops = (result.get("ops") or {}).get("node_ops") or []

@@ -5,6 +5,27 @@
 
 ## [Unreleased]
 
+## [0.1.8] - 2026-11-24
+
+> 0.1.7 已在 PyPI yank，请使用 0.1.8。
+
+### Added
+
+- AstrBot 插件 `integrations/astrbot_plugin_ariadne/`：在 AstrBot 内托管 MCP / 3D 面板，提供状态视图、配置表单与 MCP 接入片段；独立发布仓库为 `kleetor/astrbot_plugin_ariadne`。
+- DSH 插件 `integrations/dsh-plugin-ariadne/`：DeepSeek Harness 的安装、配置与状态 CLI。
+- 面板 API 支持 `ARIADNE_MCP_TOKEN` Bearer 鉴权；AstrBot 视图通过 bridge 代理访问面板，不依赖端口映射或域名。
+- 抽取器新增「重要性闸门」与 `no_memory` 判定：低价值日常琐事不写入记忆，也不再触发原文兜底落库。
+
+### Changed
+
+- 面板与网站图标统一为同一 SVG 风格，颜色改用 website 主题绿（浅色 `#0d9488`、暗色 `#2dd4bf`），并同步 website、AstrBot 插件与 viz 面板。
+- AstrBot 插件说明与 README 改为以服务作用为主，补充官网链接、版本与升级方式。
+
+### Fixed
+
+- 一次性记忆携带「刚 / 刚才 / 今天」等相对时间词，可能在后续查询中被误召回的问题。
+- 面板在 AstrBot sandbox iframe 内没有 Cookie / localStorage 时直接请求 API 返回 401 的问题。
+
 ## [0.1.6] - 2026-11-07
 
 ### Fixed

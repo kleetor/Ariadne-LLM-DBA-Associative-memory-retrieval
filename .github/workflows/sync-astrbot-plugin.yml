@@ -70,12 +70,12 @@ jobs:
             git push origin HEAD:main
           fi
 
-      # 版本号以 metadata.yaml 为准：有变更就补一个 v<version> 标签，
+      # 版本号以「已提交的」metadata.yaml 为准：有变更就补一个 v<version> 标签，
       # 已存在则跳过，避免重复推送同一个版本。
       - name: Tag plugin version
         working-directory: plugin-mirror
         run: |
-          VERSION=$(sed -n 's/^version:[[:space:]]*//p' metadata.yaml | head -n1 | tr -d '" ')
+          VERSION=$(git show HEAD:metadata.yaml | sed -n 's/^version:[[:space:]]*//p' | head -n1 | tr -d '" ')
           if [ -z "$VERSION" ]; then
             echo "::error::metadata.yaml 里没有 version 字段"
             exit 1

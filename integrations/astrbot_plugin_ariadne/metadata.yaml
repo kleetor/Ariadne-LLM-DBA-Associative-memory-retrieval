@@ -14,7 +14,7 @@ desc: |
 
   记忆能力由独立的 ariadne-mcp-server 提供，本插件负责在 AstrBot 内安装、配置与托管它。
   系统需要安装 uv（AstrBot 官方镜像已自带）。
-version: 0.1.2
+version: 0.1.3
 author: Ariadne Contributors
 repo: https://github.com/kleetor/astrbot_plugin_ariadne
 astrbot_version: ">=4.17.0"

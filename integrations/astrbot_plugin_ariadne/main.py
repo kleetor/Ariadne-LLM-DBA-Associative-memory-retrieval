@@ -23,7 +23,6 @@ import json
 import os
 import secrets
 import shutil
-import socket
 import sys
 from collections import deque
 from pathlib import Path
@@ -102,13 +101,28 @@ BOOL_PATHS = {
 }
 
 
-def _port_open(host: str, port: int, timeout: float = 0.4) -> bool:
+async def _port_open(host: str, port: int, timeout: float = 0.4) -> bool:
+    """异步探测端口。
+
+    这里必须用 asyncio 的连接方式：调用方都是协程（状态查询、启停、聊天指令、
+    MCP 重连），同步的 socket.create_connection 会把事件循环卡住最多 timeout 秒。
+    """
     probe = "127.0.0.1" if host in ("0.0.0.0", "::", "") else host
+    writer = None
     try:
-        with socket.create_connection((probe, int(port)), timeout=timeout):
-            return True
-    except OSError:
+        _, writer = await asyncio.wait_for(
+            asyncio.open_connection(probe, int(port)), timeout=timeout
+        )
+    except (OSError, asyncio.TimeoutError):
         return False
+    finally:
+        if writer is not None:
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except OSError:
+                pass
+    return True
 
 
 class AriadnePlugin(Star):
@@ -352,7 +366,7 @@ class AriadnePlugin(Star):
         失败不影响插件本身（用户仍可在 MCP 页面手动重连）。
         """
         for _ in range(20):
-            if _port_open("127.0.0.1", port):
+            if await _port_open("127.0.0.1", port):
                 break
             await asyncio.sleep(1)
         else:
@@ -415,7 +429,7 @@ class AriadnePlugin(Star):
                 bucket[key] = value
         return out
 
-    def _status(self) -> dict[str, Any]:
+    async def _status(self) -> dict[str, Any]:
         services: dict[str, Any] = {}
         for name, spec in SERVICE_SPECS.items():
             cfg = spec["cfg"]
@@ -429,7 +443,7 @@ class AriadnePlugin(Star):
                 "exit_code": None if proc is None else proc.returncode,
                 "host": host,
                 "port": port,
-                "healthy": _port_open(host, port) if running else False,
+                "healthy": await _port_open(host, port) if running else False,
                 "enabled": bool(self._get(cfg, "enabled", name == "mcp")),
             }
         return {
@@ -462,7 +476,7 @@ class AriadnePlugin(Star):
     # ---------- Web API ----------
 
     async def api_status(self):
-        payload = self._status()
+        payload = await self._status()
         payload["graph"] = await asyncio.to_thread(self._graph_stats_sync)
         return json_response(payload)
 
@@ -480,7 +494,7 @@ class AriadnePlugin(Star):
             message = await self._restart(target)
         else:
             return error_response("action 只能是 start / stop / restart", status_code=400)
-        return json_response({"message": message, "status": self._status()})
+        return json_response({"message": message, "status": await self._status()})
 
     async def api_logs(self):
         limit = request.query.get("limit", 120, type=int)
@@ -522,7 +536,7 @@ class AriadnePlugin(Star):
                 self.config.save_config()
             except Exception as exc:
                 return error_response(f"保存失败：{exc}", status_code=500)
-        return json_response({"changed": changed, "status": self._status()})
+        return json_response({"changed": changed, "status": await self._status()})
 
     async def api_snippet(self):
         graphs = str(self._graphs_dir())
@@ -718,7 +732,7 @@ class AriadnePlugin(Star):
         sub = parts[1].lower() if len(parts) > 1 else "status"
 
         if sub == "status":
-            status = self._status()
+            status = await self._status()
             graph = await asyncio.to_thread(self._graph_stats_sync)
             lines = [
                 f"Ariadne · 依赖{'已安装' if status['installed'] else '未安装'}",

@@ -48,6 +48,7 @@ Ariadne 的做法：
    - `storage.graphs_dir`（默认插件数据目录下的 `data`）
 4. 保存并重载插件。MCP 服务会按 `mcp.auto_start` 自动启动；首次启动由 uvx
    下载依赖，需要能访问 PyPI（国内可设 `UV_DEFAULT_INDEX` 镜像）。
+5. （可选）需要 3D 面板时，在状态卡点「3D 面板 → 启动」，或打开 `panel.enabled` 让面板随插件启动。
 
 ## 视图
 
@@ -57,10 +58,12 @@ Ariadne 的做法：
 - **图谱**：节点数、关系数、当前 YAML 路径；
 - **启停 / 重启**：只操作插件托管的子进程；
 - **接入片段**：一键复制 SSE 或 stdio 配置，粘贴到 `插件 → MCP → 新增服务器`；
-- **连接配置**：与 `_conf_schema.json` 同一份配置，密钥留空表示不修改；
-- **最近日志**：stderr/stdout 的环形缓冲，同时落盘到插件数据目录的 `mcp.log`。
+- **连接配置**：常用字段（LLM / Embedding / 图谱目录 / MCP 端口与 Token / 面板开关与端口），
+  完整字段仍在插件配置页；密钥留空表示不修改；
+- **最近日志**：stderr/stdout 的环形缓冲，同时落盘到插件数据目录的 `mcp.log` / `panel.log`。
 
 插件详情页 → `Ariadne 3D 面板`：直接打开原版 3D 记忆图谱，无需额外域名或端口映射。
+面板进程默认不启动，需要先在状态卡点「3D 面板 → 启动」（或打开 `panel.enabled`）。
 
 聊天指令：
 
@@ -85,14 +88,19 @@ Ariadne 的做法：
 ```
 
 MCP 的 SSE 端点和面板共用鉴权：没带 `Authorization` 会返回 `401 {"error": "未登录或凭据无效"}`。
-token 由插件在首次启动时生成并写入 `mcp.token`，视图里的片段会自动带上；也可以在插件配置里手动改。
+token 由插件在首次加载时生成并写入 `mcp.token`，视图里的片段会自动带上；也可以在插件配置里手动改。
+插件启动 MCP 后会等端口就绪，并让 AstrBot 里指向该端口的 SSE 条目自动重连一次（旧条目缺 `Authorization` 时会先补上）。
 
 如果希望 AstrBot 自己拉起服务（不启用本插件的托管），复制 **stdio** 片段：
 
 ```json
 {
-  "command": "<AstrBot 的 python>",
-  "args": ["-m", "dba_pipeline.mcp_server", "--graph-dir", "<插件数据目录>/data"],
+  "command": "uvx",
+  "args": [
+    "--from", "ariadne-mcp-server",
+    "ariadne-mcp",
+    "--graph-dir", "<插件数据目录>/data"
+  ],
   "env": {
     "OPENAI_API_KEY": "<YOUR_KEY>",
     "OPENAI_API_BASE": "https://api.deepseek.com/v1",
@@ -100,19 +108,26 @@ token 由插件在首次启动时生成并写入 `mcp.token`，视图里的片�
     "EMBEDDING_LOCAL": "false",
     "EMBEDDING_API_KEY": "<YOUR_KEY>",
     "EMBEDDING_API_BASE": "https://api.siliconflow.cn/v1",
-    "EMBEDDING_MODEL": "BAAI/bge-m3"
+    "EMBEDDING_MODEL": "BAAI/bge-m3",
+    "ARIADNE_GRAPHS_DIR": "<插件数据目录>/data"
   }
 }
 ```
 
+> stdio 也用 `uvx` 在独立环境运行：AstrBot 自带 `mcp<2`，而 `ariadne-mcp-server` 需要
+> `mcp>=2.2`，装进 AstrBot 的 Python 环境会把它的 MCP SDK 顶掉。
 > 同一份图谱目录不要同时被两个进程写入：SSE 托管与 stdio 自拉二选一。
 
 ## 数据与安全
 
-- 图谱、`auth.json`、日志、原文落盘都在 `storage.graphs_dir`（默认插件数据目录），重装插件不会丢。
-- `mcp.token`、`panel.password`、两个 API Key 在表单里是密码框；视图只显示“是否已设置”。
-- 默认只绑 `127.0.0.1`。改成 `0.0.0.0` 前请确认已有 TLS 反向代理与鉴权。
-- 面板密码只是重置后门；日常凭据以图谱目录下 `auth.json` 为准。
+- 图谱 YAML、`auth.json`、`.ariadne_secret`、`operations.log` / `ariadne.log` 与原文落盘都在
+  `storage.graphs_dir`（默认插件数据目录下的 `data`），重装插件不会丢；
+- 插件托管的进程输出（`mcp.log` / `panel.log`）在插件数据目录；`mcp.token` 保存在插件配置里；
+- `mcp.token`、`panel.password`、两个 API Key 在表单里是密码框；视图只显示“是否已设置”；
+- 默认只绑 `127.0.0.1`。改成 `0.0.0.0` 前请确认已有 TLS 反向代理与鉴权；
+- 面板日常凭据是 `<图谱目录>/auth.json`（PBKDF2 加盐散列）。首次直接打开
+  `http://127.0.0.1:8765` 用默认账号 `ariadne / ariadne` 登录，登录后会强制改密；
+  `panel.password` 只是忘记密码时的重置后门。
 
 ## 3D 面板
 
@@ -125,7 +140,7 @@ token 由插件在首次启动时生成并写入 `mcp.token`，视图里的片�
 - 面板进程仍然只监听 `127.0.0.1:8765`，不对外暴露。
 
 > 面板 API 的 Bearer 鉴权需要 `ariadne-mcp-server >= 0.1.8`（`ARIADNE_MCP_TOKEN`）。
-> PyPI 上的 0.1.7 已被 yank，`uvx` 会自动回退到 0.1.6；请发布并使用 0.1.8。
+> 0.1.8 已在 PyPI 发布，`uvx` 默认会取到它；0.1.7 已被 yank，0.1.6 及更早版本没有该鉴权。
 
 ## 版本与升级
 
@@ -134,7 +149,7 @@ token 由插件在首次启动时生成并写入 `mcp.token`，视图里的片�
 （或重载插件，让子进程用新值重新启动）：
 
 ```bash
-# 固定版本（发布后可用）
+# 固定版本
 ARIADNE_UVX_FROM=ariadne-mcp-server==0.1.8
 
 # 或直接指向包含修复的 Git 提交

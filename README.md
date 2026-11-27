@@ -19,7 +19,7 @@ python start_all.py         # 面板 127.0.0.1:8765 + MCP SSE 127.0.0.1:8766
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue)](https://www.python.org/)
 [![MCP](https://img.shields.io/badge/MCP-Model_Context_Protocol-orange)](https://modelcontextprotocol.io/)
 [![License](https://img.shields.io/badge/License-AGPLv3-blue)](LICENSE)
-![Version](https://img.shields.io/badge/Version-0.1.6-lightgrey)
+![Version](https://img.shields.io/badge/Version-0.1.8-lightgrey)
 
 > *"A thread through the labyrinth of memory."*
 >
@@ -95,7 +95,7 @@ Ariadne 将 LLM 对话中的事实抽取、纠错、去重、废弃等数据库�
 - **自动化记忆维护**：对话日志经 DBA 批量异步调度，抽取为节点与关系，持续纠错、废弃旧记忆；
 - **目的驱动检索**：以跳转轴、目的回归、寻峰终止三层机制，在图中沿因果/语义方向有界扩展；
 - **故事化输出**：检索结果被 StoryRank 整理为故事片段文档，而非扁平候选列表；
-- **多端接入**：3D 可视化面板、[MCP](https://modelcontextprotocol.io/) Server（供 LLM Agent 调用）、离线 HTML 三种形态。
+- **多端接入**：3D 可视化面板、[MCP](https://modelcontextprotocol.io/) Server（供 LLM Agent 调用）、离线 HTML，以及 AstrBot 插件（[`integrations/astrbot_plugin_ariadne`](integrations/astrbot_plugin_ariadne/README.md)）。
 
 ## 核心特性
 
@@ -388,6 +388,7 @@ MCP Server 将记忆图谱暴露为 10 个工具，支持 stdio 与 SSE 两种�
 - `alm/`：同步 HTTP 记忆服务
 - `deploy/`：两套容器化文件（`Dockerfile` + `docker-compose.yml` 供 MCP/面板，`Dockerfile.alm` + `docker-compose.alm.yml` 供 ALM）
 - `packaging/`：发行打包（npm 薄壳、quickstart 启动脚本）
+- `integrations/astrbot_plugin_ariadne/`：AstrBot 插件（安装/托管 MCP 与面板，提供状态视图与 3D 面板入口）
 - `data/`：图谱库与示例数据
 - `tests/`：pytest 测试
 

@@ -22,7 +22,7 @@ The retrieval weight table is tunable: different usage scenarios can adjust the 
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue)](https://www.python.org/)
 [![MCP](https://img.shields.io/badge/MCP-Model_Context_Protocol-orange)](https://modelcontextprotocol.io/)
 [![License](https://img.shields.io/badge/License-AGPLv3-blue)](LICENSE)
-![Version](https://img.shields.io/badge/Version-0.1.6-lightgrey)
+![Version](https://img.shields.io/badge/Version-0.1.8-lightgrey)
 
 > *"A thread through the labyrinth of memory."*
 
@@ -96,7 +96,7 @@ The core thesis is that the value of memory lies not in storing more, but in bei
 - **Automated memory maintenance**: conversation logs are extracted into nodes and relations via batched, asynchronous DBA scheduling, with continuous correction and deprecation of stale memories;
 - **Purpose-driven retrieval**: a three-stage mechanism (Jump Axis, Purpose Regression, Peak Finding) performs bounded expansion along causal/semantic directions in the graph;
 - **Story-based output**: retrieval results are organized by StoryRank into story-fragment documents rather than flat candidate lists;
-- **Multi-endpoint access**: a 3D visualization panel, an [MCP](https://modelcontextprotocol.io/) server for LLM agents, and an offline HTML export.
+- **Multi-endpoint access**: a 3D visualization panel, an [MCP](https://modelcontextprotocol.io/) server for LLM agents, an offline HTML export, and an AstrBot plugin ([`integrations/astrbot_plugin_ariadne`](integrations/astrbot_plugin_ariadne/README.md)).
 
 ## Key Features
 
@@ -368,6 +368,7 @@ See [docs/architecture.en.md](docs/architecture.en.md) for the full tree and mod
 - `alm/`: synchronous HTTP memory service
 - `deploy/`: container files (`Dockerfile` + `docker-compose.yml` for MCP/panel, `Dockerfile.alm` + `docker-compose.alm.yml` for ALM)
 - `packaging/`: release packaging (npm shim, quickstart scripts)
+- `integrations/astrbot_plugin_ariadne/`: AstrBot plugin (installs/hosts the MCP server and panel, with status views and a 3D panel entry)
 - `data/`: graph library and sample data
 - `tests/`: pytest suite
 

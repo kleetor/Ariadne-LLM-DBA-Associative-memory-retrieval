@@ -364,10 +364,18 @@ class AriadnePlugin(Star):
             if llm_tools is None:
                 return
             servers = (llm_tools.load_mcp_config() or {}).get("mcpServers", {})
+            token = self._ensure_mcp_token()
             for name, cfg in servers.items():
                 url = str(cfg.get("url", ""))
                 if f":{port}" not in url or not cfg.get("active", True):
                     continue
+                # 旧版本写入的条目没有 headers，直接重连仍会 401；补上再连。
+                headers = cfg.get("headers")
+                if not isinstance(headers, dict):
+                    headers = {}
+                if "Authorization" not in headers:
+                    headers["Authorization"] = f"Bearer {token}"
+                    cfg["headers"] = headers
                 try:
                     await llm_tools.disable_mcp_server(name, timeout=3)
                 except Exception:
@@ -542,6 +550,9 @@ class AriadnePlugin(Star):
                 "sse": {
                     "url": f"http://{'127.0.0.1' if host in ('0.0.0.0', '::') else host}:{port}/sse",
                     "transport": "sse",
+                    # MCP 的 SSE 端点与面板共用鉴权（WebUI 面板改过的密码 / ARIADNE_MCP_TOKEN），
+                    # 不带凭据一律 401。AstrBot 的 MCP 配置支持 headers，这里直接给出 Bearer。
+                    "headers": {"Authorization": f"Bearer {self._ensure_mcp_token()}"},
                 },
             }
         )

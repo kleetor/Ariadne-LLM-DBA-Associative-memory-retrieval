@@ -205,10 +205,17 @@ ariadne-mcp --yaml /path/to/memory_graph.yaml --sse --port 8766
 ```json
 {
   "mcpServers": {
-    "ariadne": { "url": "http://127.0.0.1:8766/sse" }
+    "ariadne": {
+      "url": "http://127.0.0.1:8766/sse",
+      "transport": "sse",
+      "headers": { "Authorization": "Bearer <ARIADNE_MCP_TOKEN>" }
+    }
   }
 }
 ```
+
+> SSE 端点始终鉴权，不带 `Authorization` 会直接返回 `401 {"error": "未登录或凭据无效"}`。
+> AstrBot 等支持 `headers` 的客户端按上面填；只支持 URL 的客户端需要换成带凭据的写法，或改用 stdio。
 
 ### 远程接入与安全
 

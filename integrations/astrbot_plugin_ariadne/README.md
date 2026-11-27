@@ -74,7 +74,18 @@ Ariadne 的做法：
 
 ## MCP 接入
 
-视图里复制 **SSE** 片段：`{"url": "http://127.0.0.1:8766/sse", "transport": "sse"}`。
+视图里复制 **SSE** 片段，直接粘贴到 AstrBot 的 MCP 配置里：
+
+```json
+{
+  "url": "http://127.0.0.1:8766/sse",
+  "transport": "sse",
+  "headers": { "Authorization": "Bearer <插件自动生成的 token>" }
+}
+```
+
+MCP 的 SSE 端点和面板共用鉴权：没带 `Authorization` 会返回 `401 {"error": "未登录或凭据无效"}`。
+token 由插件在首次启动时生成并写入 `mcp.token`，视图里的片段会自动带上；也可以在插件配置里手动改。
 
 如果希望 AstrBot 自己拉起服务（不启用本插件的托管），复制 **stdio** 片段：
 
